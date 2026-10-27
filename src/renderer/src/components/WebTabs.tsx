@@ -53,6 +53,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
     const onAttached = (): void => {
       try {
         const wcId = wv.getWebContentsId()
+        useStore.getState().setTabWcId(tab.id, wcId)
         void (async () => {
           let sid = tab.sessionId
           if (!sid) {

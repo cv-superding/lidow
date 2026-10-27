@@ -4,17 +4,18 @@
 
 ## 当前状态
 
-- ✅ **已实现：19 个**（`src/main/dsh/host.ts` 服务注册表，插件经 `ctx.<service>` 调用）
-- ⏳ 待补：100 个，按批次推进
+- ✅ **已实现：31 个**（`src/main/dsh/host.ts` 服务注册表，插件经 `ctx.<service>` 调用）
+- ⏳ 待补：88 个，按批次推进
 
 ### 已实现
 
 | 类别 | 服务 |
 | --- | --- |
 | core | `tools` `fs` `shell` `web` |
-| registry | `providers`(≈llm) `workspaceRegistry` `tokenMeter` |
-| ui | `slots` `settings` |
+| session (B1) | `sessions` `sessionTitle` `sessionPersistence` `sessionQuery` |
 | storage | `storage` |
+| registry (B4) | `skills` `subagents` `goals` `workspaceFiles` `providers`(≈llm) `workspaceRegistry` `tokenMeter` |
+| ui (B2) | `slots` `settings` `settingsController` `shortcuts` `theme` `locale` |
 
 > 说明：Lidow 以自有能力映射 DSH 语义（如 `providers` 对应 `llm`），语义差异在适配层消化。
 
@@ -22,10 +23,10 @@
 
 | 批次 | 服务 | 状态 |
 | --- | --- | --- |
-| B1 | `sessions` `sessionTitle` `sessionPersistence` `sessionQuery` | 待做（SessionStore 已有底座） |
-| B2 | `uiWorkspace` `settingsController` `shortcuts` `theme` | 待做（设置/热键已有底座） |
+| B1 | 会话四件套 | ✅ 已完成 |
+| B2 | `settingsController` `shortcuts` `theme` `locale` | ✅ 已完成（uiWorkspace 待做） |
 | B3 | `jobs` `jobController` `schedule` `credentials` | 待做 |
-| B4 | `subagents` `skills` `goals` `workspaceFiles` | 待做（生态模块已有底座） |
+| B4 | `subagents` `skills` `goals` `workspaceFiles` | ✅ 已完成 |
 | B5 | 客户端 UI 其余（`uiChat` `uiInput` `uiMessages`… 20 个） | 待做 |
 | B6 | 扩展机制 + 低频 misc | 待做 |
 

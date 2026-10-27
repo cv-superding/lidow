@@ -32,6 +32,8 @@ interface WebTab {
   overlayPath: string
   home: string
   sessionId: string
+  /** webview attach 后记录的 webContentsId（重绑会话时必需） */
+  wcId?: number
   connected: boolean
   loggedIn: boolean
 }
@@ -82,6 +84,7 @@ interface LidowState {
   closeTab(id: string): void
   setActiveTab(id: string): void
   bindTabSession(tabId: string, sessionId: string, webContentsId: number): Promise<void>
+  setTabWcId(tabId: string, wcId: number): void
   sendPrompt(text: string): Promise<void>
   stop(level: 'generate' | 'tool' | 'auto-loop' | 'all'): Promise<void>
   answerConfirm(ok: boolean): Promise<void>
@@ -205,7 +208,7 @@ export const useStore = create<LidowState>((set, get) => ({
     const existing = tabs.find((t) => t.providerId === providerId)
     if (existing) {
       set({ activeTabId: existing.id })
-      if (sessionId) await get().bindTabSession(existing.id, sessionId, -1)
+      if (sessionId) await get().bindTabSession(existing.id, sessionId, existing.wcId ?? -1)
       return
     }
     const info = await api.attachWebview(providerId, provider.activeAccountId ?? provider.accounts[0]?.id ?? '')
@@ -236,8 +239,12 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async bindTabSession(tabId, sessionId, webContentsId) {
     const { tabs } = get()
-    set({ tabs: tabs.map((t) => (t.id === tabId ? { ...t, sessionId } : t)) })
+    set({ tabs: tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t)) })
     if (webContentsId > 0) await api.bindSession(sessionId, webContentsId)
+  },
+
+  setTabWcId(tabId, wcId) {
+    set({ tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, wcId } : t)) })
   },
 
   async sendPrompt(text) {

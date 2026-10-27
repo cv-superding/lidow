@@ -88,7 +88,20 @@ export function ChatPanel(): React.JSX.Element {
     if (!text) return
     setInput('')
     setSlashOpen(false)
+    const session = activeSession
     if (text === '/new') {
+      const providerId = session?.providerId ?? useStore.getState().providers[0]?.id
+      if (providerId) await useStore.getState().createSession(providerId)
+      return
+    }
+    if (!session) return
+    if (text === '/compact') {
+      const next = await api.compactSession(session.id)
+      useStore.setState({ activeSession: next })
+      return
+    }
+    if (text === '/memory') {
+      await sendPrompt('请用 remember 工具保存本次会话的关键结论与用户偏好（若无可保存内容请直接说明）。')
       return
     }
     if (text === '/plan') {

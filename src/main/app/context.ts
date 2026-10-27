@@ -102,7 +102,16 @@ export class AppContext {
       projectRoot: () => this.activeProject()?.root ?? '',
       providers: () => [...this.providerRegistries.values()].flatMap((r) => r.list()),
       tokenStats: () => ({ totalChars: 0, tps: 0 }),
-      slots: { register: () => undefined, list: () => [] }
+      slots: { register: () => undefined, list: () => [] },
+      sessions: () => {
+        const p = this.activeProject()
+        return p ? this.sessionStoreOf(p.id) : null
+      },
+      activeProjectId: () => this.activeProject()?.id ?? null,
+      plans: this.plans,
+      readFileTree: (root, rel, depth) => this.readFileTree(root, rel, depth),
+      settings: { get: () => this.settings.get(), patch: (p) => this.settings.set(p) },
+      onHotkeysChange: () => this.hotkeys.applyAll()
     })
 
     this.registerEcosystemTools()

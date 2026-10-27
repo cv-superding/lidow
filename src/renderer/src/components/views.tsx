@@ -289,7 +289,7 @@ export function AuditView(): React.JSX.Element {
 }
 
 export function SettingsView(): React.JSX.Element {
-  const { settings, providers, projects } = useStore()
+  const { settings, providers, projects, mcpServers, mcpTools } = useStore()
   const s = settings
   const patch = (p: Parameters<typeof api.updateSettings>[0]): void => {
     void api.updateSettings(p).then((next) => {
@@ -391,18 +391,18 @@ export function SettingsView(): React.JSX.Element {
             </button>
           </div>
           <div className="mt-2 space-y-1">
-            {useStore.getState().mcpServers.map((srv) => (
+            {mcpServers.map((srv) => (
               <div key={srv.name} className="flex items-center gap-2 text-[12px]">
                 <span className="font-mono">{srv.name}</span>
                 <span style={dim}>{srv.command} {srv.args?.join(' ')}</span>
-                <button className="ml-auto" style={{ color: '#e06c6c' }} onClick={() => void api.removeMcpServer(srv.name)}>
+                <button className="ml-auto" style={{ color: '#e06c6c' }} onClick={() => void api.removeMcpServer(srv.name).then(() => api.listMcpServers().then((s2) => useStore.setState({ mcpServers: s2 })))}>
                   移除
                 </button>
               </div>
             ))}
-            {useStore.getState().mcpTools.length > 0 && (
+            {mcpTools.length > 0 && (
               <div className="text-[11.5px]" style={dim}>
-                可用工具：{useStore.getState().mcpTools.map((t) => `${t.server}/${t.name}`).join('、')}
+                可用工具：{mcpTools.map((t) => `${t.server}/${t.name}`).join('、')}
               </div>
             )}
           </div>

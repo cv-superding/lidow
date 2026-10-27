@@ -80,6 +80,11 @@ export class AgentLoop {
         status: 'done'
       }
       store.appendTurn(sessionId, firstTurn)
+      // 自动命名：首个任务取前 24 字符作为会话标题
+      if (store.get(sessionId)?.title === '新会话') {
+        const autoTitle = userText.replace(/\s+/g, ' ').trim().slice(0, 24) || '新会话'
+        store.update(sessionId, (s) => ({ ...s, title: autoTitle }))
+      }
       this.deps.emit({ type: 'session-updated', sessionId })
 
       let prompt = userText

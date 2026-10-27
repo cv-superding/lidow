@@ -1,7 +1,9 @@
-import type { ProviderDescriptor } from '@shared/types'
+import type { AppSettings, FileNode, ProviderDescriptor, SessionMeta } from '@shared/types'
 import type { ToolRegistry } from '@main/tools/registry'
-import type { ToolContext } from '@main/tools/types'
-import type { ToolDef } from '@main/tools/types'
+import type { ToolContext, ToolDef } from '@main/tools/types'
+import type { SessionStore } from '@main/session/store'
+import type { TaskPlanStore } from '@main/ecosystem/taskPlan'
+import { listAgents, listSkills, readSkill } from '@main/ecosystem/skills'
 
 /**
  * DSH 宿主（DeepSeek Harness 兼容层）。
@@ -33,6 +35,15 @@ export class DshHost {
       providers: () => ProviderDescriptor[]
       tokenStats: () => { totalChars: number; tps: number }
       slots: { register: (slot: unknown) => void; list: () => unknown[] }
+      /** B1：会话服务底座 */
+      sessions: () => SessionStore | null
+      activeProjectId: () => string | null
+      /** B4：任务计划 / 文件树 */
+      plans: TaskPlanStore
+      readFileTree: (root: string, rel: string, depth: number) => FileNode[]
+      /** B2：设置 / 快捷键 */
+      settings: { get: () => AppSettings; patch: (p: Partial<AppSettings>) => AppSettings }
+      onHotkeysChange?: () => void
     }
   ) {
     this.registerBuiltIns()
@@ -88,8 +99,88 @@ export class DshHost {
       keys: () => [...this.kv.keys()]
     })
     svc('settings', 'ui', {
-      // 由 handler 层桥接 AppSettings
-      echo: (v: unknown) => v
+      get: () => d.settings.get(),
+      patch: (p: Partial<AppSettings>) => d.settings.patch(p)
+    })
+    svc('settingsController', 'ui', {
+      patch: (p: Partial<AppSettings>) => d.settings.patch(p),
+      reset: () => d.settings.patch({ theme: 'dark', accent: '#5b8cff' })
+    })
+    svc('shortcuts', 'ui', {
+      get: () => d.settings.get().globalHotkeys,
+      set: (hotkeys: Record<string, string>) => {
+        d.settings.patch({ globalHotkeys: hotkeys })
+        d.onHotkeysChange?.()
+        return true
+      }
+    })
+    svc('theme', 'ui', {
+      get: () => d.settings.get().theme,
+      set: (theme: 'dark' | 'light' | 'system') => {
+        d.settings.patch({ theme })
+        return true
+      }
+    })
+    svc('locale', 'ui', {
+      get: () => d.settings.get().language,
+      set: (lang: 'zh-CN' | 'en-US') => {
+        d.settings.patch({ language: lang })
+        return true
+      }
+    })
+    // ---- B1：会话 ----
+    svc('sessions', 'session', {
+      list: (providerId?: string): SessionMeta[] => d.sessions()?.list(providerId) ?? [],
+      get: (id: string) => d.sessions()?.get(String(id)) ?? null,
+      create: (providerId: string) => {
+        const store = d.sessions()
+        if (!store) throw new Error('未打开项目')
+        return store.create(d.activeProjectId() ?? 'default', String(providerId))
+      }
+    })
+    svc('sessionTitle', 'session', {
+      get: (id: string) => d.sessions()?.get(String(id))?.title ?? null,
+      rename: (id: string, title: string) => {
+        d.sessions()?.rename(String(id), String(title))
+        return true
+      }
+    })
+    svc('sessionPersistence', 'session', {
+      // Lidow 会话天然持久化；此服务暴露读写标记供插件感知
+      status: (id: string) => (d.sessions()?.get(String(id)) ? 'persisted' : 'missing'),
+      flush: () => true
+    })
+    svc('sessionQuery', 'session', {
+      search: (keyword: string): SessionMeta[] => {
+        const store = d.sessions()
+        if (!store) return []
+        const kw = String(keyword).toLowerCase()
+        return store
+          .list()
+          .filter((m) => m.title.toLowerCase().includes(kw))
+          .slice(0, 20)
+      }
+    })
+    // ---- B4：注册表 ----
+    svc('skills', 'registry', {
+      list: () => listSkills(d.projectRoot()),
+      read: (name: string) => {
+        const skill = listSkills(d.projectRoot()).find((s) => s.name === String(name))
+        return skill ? readSkill(skill.path, d.projectRoot()) : null
+      }
+    })
+    svc('subagents', 'registry', {
+      list: () => listAgents(d.projectRoot())
+    })
+    svc('goals', 'registry', {
+      active: (sessionId: string) => d.plans.activeOf(String(sessionId)),
+      propose: (sessionId: string, goal: string, steps: { title: string; detail: string }[]) =>
+        d.plans.propose(String(sessionId), String(goal), steps),
+      confirm: (sessionId: string) => d.plans.confirm(String(sessionId)),
+      abort: (sessionId: string) => d.plans.abort(String(sessionId))
+    })
+    svc('workspaceFiles', 'registry', {
+      tree: (rel: string, depth: number) => d.readFileTree(d.projectRoot(), String(rel ?? ''), Number(depth ?? 2))
     })
   }
 
