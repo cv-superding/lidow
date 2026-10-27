@@ -23,17 +23,17 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 ## 核心特性
 
 **Agent 内核**
-- 全工具集：read / write / edit（保留原换行 + diff 卡片）/ glob / grep / bash / pwsh / webFetch / webSearch / mysql / deleteFile / todoWrite / injectJS / mcpCall / kbSearch / remember
+- 全工具集（19 个）：read / write / edit（保换行 + diff 卡片）/ glob / grep / bash / pwsh / webFetch / webSearch / mysql / deleteFile / todoWrite / injectJS / clipboard / screenshot / sysinfo / mcpCall / kbSearch / remember
 - 三层停止：面板按钮 + 悬浮球右键，分别中断网页生成 / 工具执行 / 自动循环
-- 稳定性：90s SSE 看门狗、自动重试、上下文自动压缩（可手动）、tok/s 实时显示
-- 会话血缘：多窗口并发严格隔离（修复上游 #24），支持分叉、自动命名、压缩摘要
+- 稳定性：90s SSE 看门狗、自动重试、上下文自动压缩（可手动）、tok/s 实时显示、填入读回校验 + 发送重试
+- 会话血缘：多窗口并发严格隔离（修复上游 #24），支持分叉、自动命名、压缩摘要、导出 Markdown
 
 **生态**
 - Skill / Agent / Rules 三级体系（项目级 `.lidow/` + 用户级 `~/.lidow/`，渐进式披露）
 - 用户记忆：remember / forgetMemory 工具 + 侧边栏管理
 - MCP：Claude Desktop 配置格式兼容，资源 / 提示 / 工具三组件
 - 插件市场：GitHub + Gitee 双源发现，打包技能/代理/规则/MCP/自定义平台/网页脚本/DSH 服务
-- DSH 兼容宿主：119 Context 服务清单分批补全（[进度](docs/dsh-coverage.md)）
+- DSH 兼容宿主：**119 Context 服务全覆盖**（native / 事件桥 / 存储兜底三档，[明细](docs/dsh-coverage.md)）
 
 **安全**
 - 危险命令复合检测（rm 语义解析、管道注入、变体归一化）+ UI 二次确认
@@ -45,8 +45,8 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 - 三栏极简布局（Cursor 风格）：图标栏 hover 展开 + 沉浸 webview 标签 + 可收起 Harness 面板
 - 可视化工具卡片：diff 对比 / 实时终端 / 表格 / 文件列表
 - 深浅双主题 + 自定义主色；纯净模式一键隐藏全部 UI
-- 智能任务拆解（planSubmit 确认卡）、项目模板一键初始化、本地知识库挂载检索、
-  多账号一键切换、自定义快捷指令（斜杠菜单）、全局热键
+- 智能任务拆解（planSubmit 确认卡）、**人机共用任务看板**（AI todoWrite 与用户双向同步）、
+  项目模板一键初始化、本地知识库挂载检索、多账号一键切换、自定义快捷指令（斜杠菜单）、全局热键
 - 多端同步：飞书 / 企业微信 / 钉钉群机器人推送
 
 ## 快速开始
@@ -66,6 +66,7 @@ npm run dist:mac   # macOS dmg
 
 ## 文档
 
+- [使用手册](docs/usage.md)（5 分钟上手 + 全视图说明）
 - [架构设计](docs/architecture.md)
 - [Provider 开发](docs/provider-dev.md)（自定义平台 / 选择器调试）
 - [插件开发](docs/plugin-dev.md)

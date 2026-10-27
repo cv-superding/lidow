@@ -8,6 +8,7 @@ import type { DshHost } from './host'
 import type { ChatTurn, ProjectInfo, ProviderDescriptor, Session } from '@shared/types'
 import type { PluginManager } from '@main/plugins/manager'
 import type { McpManager } from '@main/mcp/manager'
+import type { KnowledgeManager } from '@main/ecosystem/knowledge'
 
 /**
  * DSH B5/B6 运行期服务：三档实现并诚实标注——
@@ -28,6 +29,7 @@ export interface DshRuntimeDeps {
   runShell: (command: string) => Promise<unknown>
   llmProviders: () => ProviderDescriptor[]
   promptFragments: () => string
+  knowledge: KnowledgeManager
 }
 
 type AnyFn = (...args: never[]) => unknown
@@ -310,11 +312,32 @@ export function registerRuntimeServices(host: DshHost, deps: DshRuntimeDeps): vo
   S('llmCache', 'misc', genericStore(kv, 'llmCache'))
   S('promptLibrary', 'misc', genericStore(kv, 'promptLibrary'))
 
+  // ---------- 知识库底座 native（rag/search/index） ----------
+  const kbSearchText = (query: string, limit: number): string => {
+    const kb = deps.knowledge.list()[0]
+    if (!kb) return '未挂载任何知识库'
+    const hits = deps.knowledge.search(kb.id, String(query), Number(limit ?? 5))
+    if (hits.length === 0) return '无匹配内容'
+    return hits.map((h) => `[${h.path}] (${h.score})\n${h.snippet}`).join('\n\n')
+  }
+  S('rag', 'misc', {
+    query: (query: string, limit?: number) => kbSearchText(String(query), Number(limit ?? 5)),
+    list: () => deps.knowledge.list()
+  })
+  S('search', 'misc', {
+    query: (query: string, limit?: number) => kbSearchText(String(query), Number(limit ?? 5)),
+    list: () => deps.knowledge.list()
+  })
+  S('index', 'misc', {
+    reindex: (id: string) => deps.knowledge.reindex(String(id)),
+    stats: () => deps.knowledge.list().map((k) => ({ id: k.id, name: k.name, files: k.fileCount }))
+  })
+
   // ---------- misc 其余（📦 泛用存储兜底） ----------
   const MISC = [
     'workflowEngine', 'webhookRuntime', 'otel', 'telemetry', 'metrics', 'tracing', 'logging', 'audit',
     'permissions', 'auth', 'users', 'teams', 'shares', 'comments', 'email', 'calendar', 'tasks', 'kanban',
-    'wiki', 'docs', 'search', 'index', 'embeddings', 'vectors', 'rag', 'templateEngine', 'render', 'export',
+    'wiki', 'docs', 'embeddings', 'vectors', 'templateEngine', 'render', 'export',
     'import', 'convert', 'diff', 'merge', 'patch', 'vcs', 'git', 'containers', 'docker', 'k8s', 'cloud',
     'browser', 'screenshot'
   ]

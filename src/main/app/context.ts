@@ -157,7 +157,8 @@ export class AppContext {
         return { ok: out.ok, output: out.output, error: out.error }
       },
       llmProviders: () => [...this.providerRegistries.values()].flatMap((r) => r.list()),
-      promptFragments: () => this.promptFragments()
+      promptFragments: () => this.promptFragments(),
+      knowledge: this.knowledge
     })
 
     this.registerEcosystemTools()

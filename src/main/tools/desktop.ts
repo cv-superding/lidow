@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
 import { join } from 'node:path'
 import { clipboard, desktopCapturer } from 'electron'
 import type { ToolDef } from './types'
@@ -49,5 +50,28 @@ export const screenshotTool: ToolDef = {
     writeFileSync(abs, primary.thumbnail.toPNG())
     ctx.audit?.('tool', `截屏 ${rel}`, { path: abs, bytes: primary.thumbnail.toPNG().length })
     return { ok: true, output: `截屏已保存：${rel}（${Math.round(primary.thumbnail.toPNG().length / 1024)}KB，主显示器）` }
+  }
+}
+
+
+export const sysinfoTool: ToolDef = {
+  name: 'sysinfo',
+  description: '读取系统运行状态：CPU 核数/负载、内存占用、运行时长、平台信息。',
+  parameters: {},
+  dangerLevel: 'safe',
+  async run() {
+    const total = os.totalmem()
+    const free = os.freemem()
+    const used = total - free
+    const gb = (n: number): string => `${(n / 1024 ** 3).toFixed(1)}GB`
+    const load = os.loadavg().map((x) => x.toFixed(2)).join(', ')
+    const lines = [
+      `平台: ${os.platform()} ${os.arch()} (${os.type()} ${os.release()})`,
+      `CPU: ${os.cpus().length} 核 × ${os.cpus()[0]?.speed ?? '?'}MHz · 负载(1/5/15min): ${load}`,
+      `内存: 已用 ${gb(used)} / ${gb(total)}（${((used / total) * 100).toFixed(0)}%，空闲 ${gb(free)}）`,
+      `运行时长: ${(os.uptime() / 3600).toFixed(1)} 小时`,
+      `主机名: ${os.hostname()} · 用户: ${os.userInfo().username}`
+    ]
+    return { ok: true, output: lines.join('\n') }
   }
 }

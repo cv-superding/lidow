@@ -8,9 +8,9 @@
 
 | 档位 | 含义 | 数量 |
 | --- | --- | --- |
-| ⚙️ native | Lidow 真实能力映射（工具/会话/文件/作业/凭据/插件/钩子/MCP/webServer…） | 45 |
+| ⚙️ native | Lidow 真实能力映射（工具/会话/文件/作业/凭据/插件/钩子/MCP/webServer/知识库检索…） | 48 |
 | 🔗 event-bridge | 转发到 renderer 事件或确认门（客户端 UI 类：toast/dialog/输入框/消息列表…） | 14 |
-| 📦 storage-backed | 泛用 CRUD 兜底（持久化 `dsh-kv.json`，插件可存取领域条目不崩溃；低频服务待深度实现） | 60 |
+| 📦 storage-backed | 泛用 CRUD 兜底（持久化 `dsh-kv.json`，插件可存取领域条目不崩溃；低频服务待深度实现） | 57 |
 
 ### native 明细（⚙️）
 
@@ -28,6 +28,7 @@
 ### storage-backed 明细（📦）
 
 `storageDomain` · `sessionProjectionCache` `sessionFileReferences` `sessionReferenceResolver` `sessionSkillCatalog` `sessionTelemetry` `sessionFeedback` `fileReferences` `spillStore` · `subagentModelSelection` `llmRouter` `llmFallback` `llmCache` `promptLibrary` · `ptcRuntime` `typert` `typertGateway` `lsp` `sandbox` `sandboxPolicy` `shellEnv`(半 native) ·
-misc：`workflowEngine` `webhookRuntime` `otel` `telemetry` `metrics` `tracing` `audit` `permissions` `auth` `users` `teams` `shares` `comments` `email` `calendar` `tasks` `kanban` `wiki` `docs` `search` `index` `embeddings` `vectors` `rag` `templateEngine` `render` `export` `import` `convert` `diff` `merge` `patch` `vcs` `git` `containers` `docker` `k8s` `cloud` `browser` `screenshot`
+misc：`workflowEngine` `webhookRuntime` `otel` `telemetry` `metrics` `tracing` `audit` `permissions` `auth` `users` `teams` `shares` `comments` `email` `calendar` `tasks` `kanban` `wiki` `docs` `embeddings` `vectors` `templateEngine` `render` `export` `import` `convert` `diff` `merge` `patch` `vcs` `git` `containers` `docker` `k8s` `cloud` `browser` `screenshot`
 
-> 升级路径：任何 📦 服务都可在后续批次升级为 native（如 `rag` 接知识库索引、`search` 接全文检索）；当前实现保证 DSH 插件调用不崩溃、数据可持久化。
+> 升级路径：任何 📦 服务都可在后续批次升级为 native（如 `email` 接同步通道、`kanban` 接任务看板）；当前实现保证 DSH 插件调用不崩溃、数据可持久化。`rag`/`search`/`index` 已于 v0.2.0 升级 native（接本地知识库 BM25 检索）。
+

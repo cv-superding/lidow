@@ -63,6 +63,15 @@ export class KnowledgeManager {
     this.store.update((d) => ({ bases: d.bases.filter((b) => b.id !== id) }))
   }
 
+  /** 重建索引（目录内容变化后调用） */
+  reindex(id: string): number {
+    const kb = this.store.get().bases.find((b) => b.id === id)
+    if (!kb) throw new Error(`知识库不存在: ${id}`)
+    const count = this.rebuild(id, kb.root)
+    this.store.update((d) => ({ bases: d.bases.map((b) => (b.id === id ? { ...b, fileCount: count } : b)) }))
+    return count
+  }
+
   private rebuild(kbId: string, root: string): number {
     this.docs = this.docs.filter((d) => d.kbId !== kbId)
     let count = 0
