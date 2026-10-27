@@ -122,6 +122,10 @@ export class AppContext {
         autoCompact: this.settings.get().autoCompact,
         compactThreshold: this.settings.get().compactThreshold
       }),
+      securityMod: () => {
+        const m = this.settings.get().securityMod
+        return { mode: m.refusalRewrite, ctfInject: m.ctfInject, maxRewrites: m.maxRewrites, rewriteApi: m.rewriteApi }
+      },
       systemPromptFor: (sessionId) => this.systemPromptFor(sessionId)
     })
 

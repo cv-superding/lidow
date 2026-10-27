@@ -4,6 +4,7 @@ import type { SessionStore } from '@main/session/store'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext } from '@main/tools/types'
 import { formatObservations, parseToolCalls } from './parser'
+import { attemptRewrite } from '@main/security/refusal'
 import { Logger } from '@main/infra/log'
 
 export interface LoopDeps {
@@ -20,6 +21,8 @@ export interface LoopDeps {
   /** 事件上报 renderer */
   emit: (event: { type: string; sessionId: string; [k: string]: unknown }) => void
   settings: () => { autoCompact: boolean; compactThreshold: number }
+  /** 安全 MOD 配置（拒绝改写） */
+  securityMod: () => { mode: 'off' | 'local' | 'api'; ctfInject: boolean; maxRewrites: number; rewriteApi?: string }
   /** 首轮注入的系统提示词 */
   systemPromptFor: (sessionId: string) => string
 }
@@ -88,8 +91,26 @@ export class AgentLoop {
       for (let round = 0; round < MAX_TURNS; round++) {
         if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
 
-        // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗）
-        const reply = await this.collectReply(sessionId, prompt)
+        // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗 + 拒绝改写）
+        let reply = await this.collectReply(sessionId, prompt)
+        let rewriteCount = 0
+        for (;;) {
+          const mod = this.deps.securityMod()
+          const outcome = await attemptRewrite(
+            reply,
+            { mode: mod.mode, ctfInject: mod.ctfInject, maxRewrites: mod.maxRewrites, rewriteApi: mod.rewriteApi },
+            rewriteCount
+          )
+          if (!outcome.followUp) {
+            if (outcome.exhausted) {
+              this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
+            }
+            break
+          }
+          rewriteCount++
+          Logger.info('loop', `检测到拒绝，改写重试 ${rewriteCount}/${mod.maxRewrites}`)
+          reply = await this.collectReply(sessionId, outcome.followUp)
+        }
         const turn: ChatTurn = { id: `turn_${nanoid(8)}`, role: 'assistant', text: reply, ts: Date.now(), status: 'done' }
         store.appendTurn(sessionId, turn)
         this.deps.emit({ type: 'session-updated', sessionId })

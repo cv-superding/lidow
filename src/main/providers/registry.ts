@@ -91,7 +91,97 @@ const CHATGPT: ProviderDescriptor = {
   }
 }
 
-const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT]
+const DOUBAO: ProviderDescriptor = {
+  id: 'doubao',
+  name: '豆包',
+  home: 'https://www.doubao.com/chat/',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: ['textarea[placeholder*="输入"]', 'textarea[data-testid="chat_input_input"]', 'textarea', 'div[contenteditable="true"]', '[role="textbox"]'],
+    send: ['button[data-testid="chat_input_send_button"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
+    messages: ['[data-testid="conversation_container"]', 'main'],
+    bubble: ['[data-testid="receive_message"]', '[data-testid="message_item_content"]'],
+    streamingFlag: ['button[data-testid="chat_input_stop_button"]', 'button[aria-label*="停止"]'],
+    newChat: ['button[data-testid="new_session"]', 'button[aria-label*="新会话"]'],
+    loginFlag: ['img[class*="avatar"]', '[class*="user-info"]']
+  }
+}
+
+const QWEN: ProviderDescriptor = {
+  id: 'qwen',
+  name: '通义千问',
+  home: 'https://www.tongyi.com/',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: ['textarea[placeholder*="问题"]', 'textarea[placeholder*="输入"]', 'textarea', 'div[contenteditable="true"]'],
+    send: ['button[class*="send"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
+    messages: ['[class*="answerContainer"]', '[class*="chat-window"]', 'main'],
+    bubble: ['[class*="answerItem"]', '[class*="tongyi-markdown"]'],
+    streamingFlag: ['button[class*="stop"]', 'button[aria-label*="停止"]'],
+    newChat: ['button[class*="new"]', 'a[href*="chat"]'],
+    loginFlag: ['img[class*="avatar"]']
+  }
+}
+
+const ERNIE: ProviderDescriptor = {
+  id: 'wenxin',
+  name: '文心一言',
+  home: 'https://yiyan.baidu.com/',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: ['textarea[placeholder*="和文心"]', 'textarea[placeholder*="输入"]', 'textarea', 'div[contenteditable="true"]'],
+    send: ['button[class*="send-btn"]', 'button[aria-label*="发送"]', '#sendBtn'],
+    messages: ['[class*="answer-item"]', '#app'],
+    bubble: ['[class*="answer-item"]', '[class*="markdown-body"]'],
+    streamingFlag: ['button[class*="stop"]', 'button[aria-label*="停止"]'],
+    newChat: ['button[aria-label*="新对话"]', 'a[class*="new"]'],
+    loginFlag: ['img[class*="avatar"]', '[class*="username"]']
+  }
+}
+
+const KIMI: ProviderDescriptor = {
+  id: 'kimi',
+  name: 'Kimi',
+  home: 'https://www.kimi.com/',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: ['textarea[placeholder*="发消息"]', 'textarea', 'div[contenteditable="true"]'],
+    send: ['button[class*="send"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
+    messages: ['[class*="message-list"]', 'main'],
+    bubble: ['[class*="bubble"]', '[class*="markdown"]'],
+    streamingFlag: ['button[class*="stop"]', 'button[aria-label*="停止"]'],
+    newChat: ['button[aria-label*="新会话"]', 'a[class*="new"]'],
+    loginFlag: ['img[class*="avatar"]']
+  }
+}
+
+const GLM: ProviderDescriptor = {
+  id: 'chatglm',
+  name: '智谱清言',
+  home: 'https://chatglm.cn/',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: ['textarea[placeholder*="输入"]', 'textarea', 'div[contenteditable="true"]'],
+    send: ['button[class*="send"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
+    messages: ['[class*="message"]', 'main'],
+    bubble: ['[class*="answer"]', '[class*="markdown"]'],
+    streamingFlag: ['button[class*="stop"]', 'button[aria-label*="停止"]'],
+    newChat: ['button[aria-label*="新对话"]'],
+    loginFlag: ['img[class*="avatar"]']
+  }
+}
+
+const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, DOUBAO, QWEN, ERNIE, KIMI, GLM]
 
 interface ProviderStoreData {
   providers: ProviderDescriptor[]

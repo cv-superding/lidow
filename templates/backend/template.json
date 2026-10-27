@@ -1,0 +1,4 @@
+{
+  "name": "后端服务（Node + Express + TS）",
+  "description": "Express + TypeScript 分层骨架：路由/服务/仓储三层，含 API 设计规则"
+}
