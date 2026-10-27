@@ -24,7 +24,7 @@ import type {
 /** renderer → main 可调用接口（preload contextBridge 实现同名方法） */
 export interface LidowApi {
   // 应用
-  getAppState(): Promise<{ projects: ProjectInfo[]; settings: AppSettings; version: string }>
+  getAppState(): Promise<{ projects: ProjectInfo[]; activeProjectId: string | null; settings: AppSettings; version: string }>
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   pickDirectory(): Promise<string | null>
   openProject(root: string): Promise<ProjectInfo>

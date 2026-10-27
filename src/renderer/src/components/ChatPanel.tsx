@@ -204,7 +204,8 @@ export function ChatPanel(): React.JSX.Element {
                 key={q.id}
                 className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px]"
                 onClick={() => {
-                  setInput(q.template)
+                  // {{input}} 占位：无内容时替换为空串，用户可续填；有占位则保留待编辑
+                  setInput(q.template.includes('{{input}}') ? q.template : `${q.template} `)
                   setSlashOpen(false)
                 }}
               >

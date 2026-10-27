@@ -23,6 +23,11 @@ import type {
 
 export type ViewId = 'home' | 'sessions' | 'files' | 'plugins' | 'memory' | 'knowledge' | 'audit' | 'settings'
 
+/** 统一的项目解析：与 main 的 activeProjectId 对齐（修多项目时取错 projects[0]） */
+export function useProject(s: LidowState): ProjectInfo | null {
+  return s.projects.find((p) => p.id === s.activeProjectId) ?? s.projects[0] ?? null
+}
+
 interface WebTab {
   id: string
   providerId: string
@@ -43,6 +48,8 @@ interface LidowState {
   version: string
   settings: AppSettings
   projects: ProjectInfo[]
+  /** 当前项目（与 main 的 activeProjectId 对齐，避免多项目时读错会话列表） */
+  activeProjectId: string | null
   providers: ProviderDescriptor[]
   sessions: SessionMeta[]
   activeSession: Session | null
@@ -112,6 +119,7 @@ export const useStore = create<LidowState>((set, get) => ({
     sync: {}
   },
   projects: [],
+  activeProjectId: null,
   providers: [],
   sessions: [],
   activeSession: null,
@@ -141,11 +149,10 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async boot() {
     const state = await api.getAppState()
-    set({ booted: true, version: state.version, settings: state.settings, projects: state.projects })
+    set({ booted: true, version: state.version, settings: state.settings, projects: state.projects, activeProjectId: state.activeProjectId })
     get().applyTheme(state.settings)
     api.onEvent((e) => get().handleEvent(e))
-    const active = state.projects[0]
-    if (active) {
+    if (state.projects.length > 0) {
       await get().refreshProviders()
       await get().refreshSessions()
     }
@@ -171,25 +178,25 @@ export const useStore = create<LidowState>((set, get) => ({
   async openProject(root) {
     await api.openProject(root)
     const state = await api.getAppState()
-    set({ projects: state.projects, activeSession: null, sessions: [] })
+    set({ projects: state.projects, activeProjectId: state.activeProjectId, activeSession: null, sessions: [] })
     await get().refreshProviders()
     await get().refreshSessions()
   },
 
   async refreshProviders() {
-    const active = get().projects.find((p) => p.lastOpenedAt === Math.max(...get().projects.map((x) => x.lastOpenedAt)))
-    if (!active) return
-    set({ providers: await api.listProviders(active.id) })
+    const project = useProject(get())
+    if (!project) return
+    set({ providers: await api.listProviders(project.id) })
   },
 
   async refreshSessions() {
-    const project = get().projects[0]
+    const project = useProject(get())
     if (!project) return
     set({ sessions: await api.listSessions(project.id) })
   },
 
   async createSession(providerId) {
-    const project = get().projects[0]
+    const project = useProject(get())
     if (!project) return
     const s = await api.createSession(project.id, providerId)
     await get().refreshSessions()
@@ -288,6 +295,7 @@ export const useStore = create<LidowState>((set, get) => ({
     const s = get()
     switch (e.type) {
       case 'session-updated':
+        set({ streamingText: '', streamingTps: 0 }) // 流已落盘，清除残留流文本（修重复渲染）
         void api.getSession(e.sessionId).then((sess) => {
           if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
         })

@@ -15,6 +15,7 @@ export function registerHandlers(
   // ---------- 应用 ----------
   R('getAppState', () => ({
     projects: ctx.projects,
+    activeProjectId: ctx.activeProjectId(),
     settings: ctx.settings.get(),
     version: app.getVersion()
   }))

@@ -302,6 +302,10 @@ export class AppContext {
     return this.projects.find((p) => p.id === id) ?? null
   }
 
+  activeProjectId(): string | null {
+    return this.projectStore.get().activeProjectId
+  }
+
   openProject(root: string): ProjectInfo {
     let p = this.projects.find((x) => x.root === root)
     if (!p) {

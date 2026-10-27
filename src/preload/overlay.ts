@@ -104,15 +104,34 @@ function click(el: Element): void {
 let observer: MutationObserver | null = null
 let lastText = ''
 let streaming = false
+let everFlag = false // 平台是否出现过流式标志（决定是否启用文本稳定兜底判定）
+let stableSince = 0
 let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
 
+/** 取最后一个可见匹配（消息类选择器用户/AI 共用时，AI 回复必然在最后） */
+function findLast(selectors: string[]): Element | null {
+  if (!selectors) return null
+  for (const sel of selectors) {
+    try {
+      const list = document.querySelectorAll(sel)
+      for (let i = list.length - 1; i >= 0; i--) {
+        const el = list[i]
+        if (el && visible(el)) return el
+      }
+    } catch {
+      /* 无效选择器跳过 */
+    }
+  }
+  return null
+}
+
 function lastBubbleText(): string {
   const container = findFirst(adapter?.messages ?? [])
+  // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
+  const bubble = findLast(adapter?.bubble ?? [])
+  if (bubble) return (bubble as HTMLElement).innerText ?? ''
   if (!container) return ''
-  // 取容器内文本最深一层：优先 bubble 选择器，否则整个容器
-  const bubble = findFirst(adapter?.bubble ?? [])
-  if (bubble && container.contains(bubble)) return (bubble as HTMLElement).innerText ?? ''
   return (container as HTMLElement).innerText ?? ''
 }
 
@@ -134,17 +153,25 @@ function scheduleChunk(): void {
   }, 300)
 }
 
+function finishStream(): void {
+  streaming = false
+  const finalText = lastBubbleText()
+  lastText = finalText
+  send({ type: 'stream-end', text: finalText })
+}
+
 function watchMessages(): void {
   observer?.disconnect()
   observer = new MutationObserver(() => {
     const flag = isStreaming()
     const text = lastBubbleText()
-    const count = document.querySelectorAll('*').length // 轻量变化信号
-    void count
 
-    if (flag && !streaming) {
-      streaming = true
-      send({ type: 'stream-start' })
+    if (flag) {
+      everFlag = true
+      if (!streaming) {
+        streaming = true
+        send({ type: 'stream-start' })
+      }
     }
     if (streaming) {
       scheduleChunk()
@@ -152,16 +179,17 @@ function watchMessages(): void {
       if (!flag && text === lastText) {
         // 停止按钮消失且文本未再变化 → 延迟确认结束
         endTimer = setTimeout(() => {
-          if (!isStreaming()) {
-            streaming = false
-            const finalText = lastBubbleText()
-            lastText = finalText
-            send({ type: 'stream-end', text: finalText })
-          }
+          if (!isStreaming()) finishStream()
         }, 900)
       }
+    } else if (flag === false && !everFlag && text && text !== lastText) {
+      // 平台始终无流式标志：文本变化后稳定 2.5s 判定一轮结束（兜底，等待流超时仍是最终防线）
+      if (stableSince === 0) stableSince = Date.now()
+      scheduleChunk()
+      if (endTimer) clearTimeout(endTimer)
+      if (Date.now() - stableSince > 2500) finishStream()
     } else if (text && text !== lastText) {
-      // 页面加载历史消息等场景
+      stableSince = 0
       lastText = text
     }
   })
@@ -185,7 +213,8 @@ async function doSend(text: string): Promise<void> {
     if (!input || !filled) throw new Error('输入框填入失败（选择器可能过期或页面未就绪）')
     await new Promise((r) => setTimeout(r, 120))
 
-    // 发送按钮延迟就绪时循环重试：优先真实点击，交替 Enter 兜底，最多 10 次
+    // 发送：优先真实点击按钮；按钮未就绪时最多等 3s，仍无则 Enter 兜底——
+    // 只执行一次发送动作，杜绝重复发送（回归修复：此前 Enter 会被触发 3 次）
     let sent = false
     for (let i = 0; i < 10 && !sent; i++) {
       const sendBtn = findFirst(adapter.send, (el) => {
@@ -195,15 +224,18 @@ async function doSend(text: string): Promise<void> {
       if (sendBtn) {
         click(sendBtn)
         sent = true
-      } else {
+      } else if (i >= 9) {
         pressEnter(input)
-        sent = i >= 2 // 前 3 次仍继续尝试找按钮（页面刚填入按钮可能未亮起）
+        sent = true
+      } else {
+        await new Promise((r) => setTimeout(r, 300))
       }
-      if (!sent) await new Promise((r) => setTimeout(r, 300))
     }
     if (!sent) throw new Error('发送动作未能完成（按钮持续未就绪）')
     send({ type: 'send-result', ok: true })
     streaming = false
+    everFlag = false
+    stableSince = 0
     lastText = ''
   } catch (e) {
     send({ type: 'send-result', ok: false, error: String(e instanceof Error ? e.message : e) })

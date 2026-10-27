@@ -66,8 +66,8 @@ function TreeNodes({ nodes, depth, onOpen }: { nodes: Awaited<ReturnType<typeof 
 }
 
 export function FilesView(): React.JSX.Element {
-  const { projects, fileTree, selectedFile } = useStore()
-  const project = projects[0]
+  const { projects, activeProjectId, fileTree, selectedFile } = useStore()
+  const project = projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null
   useEffect(() => {
     if (project) void api.readFileTree(project.id, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
   }, [project])
@@ -289,7 +289,7 @@ export function AuditView(): React.JSX.Element {
 }
 
 export function SettingsView(): React.JSX.Element {
-  const { settings, providers, projects, mcpServers, mcpTools } = useStore()
+  const { settings, providers, projects, activeProjectId, mcpServers, mcpTools } = useStore()
   const s = settings
   const patch = (p: Parameters<typeof api.updateSettings>[0]): void => {
     void api.updateSettings(p).then((next) => {
@@ -297,7 +297,7 @@ export function SettingsView(): React.JSX.Element {
       useStore.getState().applyTheme(next)
     })
   }
-  const project = projects[0]
+  const project = projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null
   const refreshProviders = (): void => {
     if (project) void api.listProviders(project.id).then((p) => useStore.setState({ providers: p }))
   }

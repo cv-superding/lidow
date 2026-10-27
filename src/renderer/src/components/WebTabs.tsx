@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useStore } from '../store'
+import { useStore, useProject } from '../store'
 import { api } from '../api'
 
 export function WebTabs(): React.JSX.Element {
@@ -57,7 +57,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
         void (async () => {
           let sid = tab.sessionId
           if (!sid) {
-            const project = useStore.getState().projects[0]
+            const project = useProject(useStore.getState())
             if (project) {
               const s = await api.createSession(project.id, tab.providerId)
               sid = s.id
