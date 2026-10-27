@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
+import type { TaskItem } from '@shared/types'
 
 function Page({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }): React.JSX.Element {
   return (
@@ -33,13 +34,26 @@ export function SessionsView(): React.JSX.Element {
       {sessions.length === 0 && <div style={dim}>暂无会话 — 到工作台选择平台开始</div>}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         {sessions.map((s) => (
-          <button key={s.id} className="rounded-2xl p-3.5 text-left transition-panel hover:scale-[1.01]" style={card} onClick={() => void openSession(s.id)}>
-            <div className="mb-1 truncate text-[13px] font-medium">{s.title}</div>
-            <div className="text-[11.5px]" style={dim}>
-              {s.providerId} · {new Date(s.updatedAt).toLocaleString()} · {s.compactedTurns > 0 ? `已压缩${s.compactedTurns}轮` : '未压缩'}
-              {s.parentSessionId ? ' · 分叉' : ''}
-            </div>
-          </button>
+          <div key={s.id} className="rounded-2xl p-3.5 transition-panel hover:scale-[1.01]" style={card}>
+            <button className="w-full text-left" onClick={() => void openSession(s.id)}>
+              <div className="mb-1 truncate text-[13px] font-medium">{s.title}</div>
+              <div className="text-[11.5px]" style={dim}>
+                {s.providerId} · {new Date(s.updatedAt).toLocaleString()} · {s.compactedTurns > 0 ? `已压缩${s.compactedTurns}轮` : '未压缩'}
+                {s.parentSessionId ? ' · 分叉' : ''}
+              </div>
+            </button>
+            <button
+              className="mt-2 rounded-lg px-2.5 py-1 text-[11.5px]"
+              style={{ background: 'var(--bg-hover)' }}
+              onClick={() =>
+                void api.exportSession(s.id).then((path) => {
+                  useStore.getState().notice(`已导出：${path}`)
+                })
+              }
+            >
+              导出 Markdown
+            </button>
+          </div>
         ))}
       </div>
     </Page>
@@ -92,6 +106,82 @@ export function FilesView(): React.JSX.Element {
           </div>
         </div>
       )}
+    </Page>
+  )
+}
+
+const TODO_STATUS: { id: TaskItem['status']; label: string; color: string }[] = [
+  { id: 'pending', label: '待办', color: 'var(--text-dim)' },
+  { id: 'running', label: '进行中', color: 'var(--accent)' },
+  { id: 'done', label: '完成', color: '#4caf7d' },
+  { id: 'failed', label: '失败', color: '#e06c6c' },
+  { id: 'skipped', label: '跳过', color: 'var(--text-dim)' }
+]
+
+/** 人机共用待办看板：AI 经 todoWrite 写入，用户在此查看/勾选 */
+export function TasksView(): React.JSX.Element {
+  const { todos, projects } = useStore()
+  const hasProject = projects.length > 0
+  const refresh = (): void => void api.listTodos().then((t) => useStore.setState({ todos: t }))
+  useEffect(() => {
+    if (hasProject) refresh()
+  }, [hasProject])
+  const [newTitle, setNewTitle] = useState('')
+
+  if (!hasProject) return <Page title="任务看板"><div style={dim}>先打开项目</div></Page>
+
+  return (
+    <Page
+      title="任务看板（人机共用）"
+      actions={
+        <>
+          <button className="rounded-lg px-3 py-1.5 text-[12px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.clearDoneTodos().then(refresh)}>
+            清理已完成
+          </button>
+          <button className="rounded-lg px-3 py-1.5 text-[12px]" style={{ background: 'var(--bg-hover)' }} onClick={refresh}>
+            刷新
+          </button>
+        </>
+      }
+    >
+      <div className="mb-4 flex gap-2">
+        <input
+          className="flex-1 rounded-xl px-3 py-2 text-[12.5px] outline-none"
+          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
+          placeholder="添加待办（AI 也会通过 todoWrite 工具更新这份看板）"
+          value={newTitle}
+          onChange={(e) => setNewTitle(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && newTitle.trim()) {
+              void api.addTodo(newTitle.trim()).then((t) => {
+                useStore.setState({ todos: t })
+                setNewTitle('')
+              })
+            }
+          }}
+        />
+      </div>
+      <div className="space-y-2">
+        {todos.length === 0 && <div style={dim}>看板为空 — 让 AI 执行多步任务时它会用 todoWrite 同步进度到这里</div>}
+        {todos.map((t) => (
+          <div key={t.id} className="flex items-center gap-3 rounded-2xl px-3.5 py-2.5" style={card}>
+            <span className="text-[13px]" style={{ color: TODO_STATUS.find((x) => x.id === t.status)?.color }}>
+              {TODO_STATUS.find((x) => x.id === t.status)?.label}
+            </span>
+            <span className={`min-w-0 flex-1 truncate text-[13px] ${t.status === 'done' ? 'line-through opacity-60' : ''}`}>{t.title}</span>
+            <select
+              className="rounded-lg px-2 py-1 text-[11.5px]"
+              style={{ background: 'var(--bg-hover)' }}
+              value={t.status}
+              onChange={(e) => void api.setTodoStatus(t.id, e.target.value as TaskItem['status']).then(refresh)}
+            >
+              {TODO_STATUS.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
     </Page>
   )
 }

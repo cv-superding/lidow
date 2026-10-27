@@ -1,8 +1,9 @@
 import { app, dialog, shell } from 'electron'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
+import { TodoBoard } from '@main/ecosystem/todos'
 import type { McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
 /** 全量 IPC 方法注册：方法名 = LidowApi 契约方法名（renderer Proxy 按 name 调用） */
@@ -99,6 +100,55 @@ export function registerHandlers(
     ctx.loop.stop(String(sessionId), 'all')
   })
   R('getActivePlan', (sessionId: string) => ctx.plans.activeOf(String(sessionId)))
+
+  // ---------- 人机共用待办看板 ----------
+  const boardOf = (): TodoBoard => {
+    const project = ctx.activeProject()
+    if (!project) throw new Error('请先打开项目')
+    return new TodoBoard(project.root)
+  }
+  R('listTodos', () => boardOf().list())
+  R('addTodo', (title: string) => {
+    boardOf().add(String(title))
+    return boardOf().list()
+  })
+  R('setTodoStatus', (id: string, status: 'pending' | 'running' | 'done' | 'failed' | 'skipped') => {
+    boardOf().setStatus(String(id), status)
+    return boardOf().list()
+  })
+  R('clearDoneTodos', () => {
+    boardOf().clearDone()
+    return boardOf().list()
+  })
+
+  // ---------- 会话导出 ----------
+  R('exportSession', (sessionId: string) => {
+    const session = ctx.sessionOf(String(sessionId))
+    if (!session) throw new Error('会话不存在')
+    const project = ctx.activeProject()
+    if (!project) throw new Error('请先打开项目')
+    const md = [
+      `# ${session.title}`,
+      ``,
+      `- 平台：${session.providerId}`,
+      `- 导出时间：${new Date().toLocaleString()}`,
+      `- 轮次：${session.turns.length}${session.compactedTurns > 0 ? `（已压缩 ${session.compactedTurns} 轮）` : ''}`,
+      ``,
+      `---`,
+      ``,
+      ...session.turns.map((t) => {
+        const role = t.role === 'user' ? '## 🧑 用户' : t.role === 'assistant' ? '## 🤖 AI' : '## ⚙️ 系统'
+        const tools = t.toolResults?.map((r) => `> 工具 ${r.name} → ${r.ok ? '✓' : '✗'} ${r.durationMs}ms`).join('\n') ?? ''
+        return `${role}\n\n${t.text}\n${tools ? `\n${tools}\n` : ''}`
+      })
+    ].join('\n')
+    const dir = join(project.root, '.lidow', 'exports')
+    mkdirSync(dir, { recursive: true })
+    const safeName = session.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) || 'session'
+    const file = join(dir, `${safeName}-${session.id.slice(-6)}.md`)
+    writeFileSync(file, md, 'utf-8')
+    return file
+  })
 
   // ---------- 工具 / 文件 ----------
   R('readFileTree', (projectId: string, dir: string, depth: number) => {

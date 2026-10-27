@@ -2,12 +2,13 @@ import { useEffect } from 'react'
 import { useStore, type ViewId } from '../store'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
-import { SessionsView, FilesView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
+import { SessionsView, FilesView, TasksView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
 
 const RAIL: { id: ViewId; icon: string; label: string }[] = [
   { id: 'home', icon: '⌂', label: '工作台' },
   { id: 'sessions', icon: '💬', label: '会话' },
   { id: 'files', icon: '📁', label: '文件' },
+  { id: 'tasks', icon: '☑', label: '任务' },
   { id: 'plugins', icon: '🧩', label: '插件' },
   { id: 'memory', icon: '🧠', label: '记忆' },
   { id: 'knowledge', icon: '📚', label: '知识库' },
@@ -128,6 +129,7 @@ export function AppShell(): React.JSX.Element {
             {view === 'home' && <WebTabs />}
             {view === 'sessions' && <SessionsView />}
             {view === 'files' && <FilesView />}
+            {view === 'tasks' && <TasksView />}
             {view === 'plugins' && <PluginsView />}
             {view === 'memory' && <MemoryView />}
             {view === 'knowledge' && <KnowledgeView />}

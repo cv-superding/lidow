@@ -14,6 +14,7 @@ import type {
   AgentMeta,
   RuleEntry,
   TaskPlan,
+  TaskItem,
   QuickCommand,
   KnowledgeBase,
   AuditEntry,
@@ -21,7 +22,7 @@ import type {
   McpServerConfig
 } from '@shared/types'
 
-export type ViewId = 'home' | 'sessions' | 'files' | 'plugins' | 'memory' | 'knowledge' | 'audit' | 'settings'
+export type ViewId = 'home' | 'sessions' | 'files' | 'tasks' | 'plugins' | 'memory' | 'knowledge' | 'audit' | 'settings'
 
 /** 统一的项目解析：与 main 的 activeProjectId 对齐（修多项目时取错 projects[0]） */
 export function useProject(s: LidowState): ProjectInfo | null {
@@ -74,6 +75,7 @@ interface LidowState {
   kbs: KnowledgeBase[]
   audits: AuditEntry[]
   quickCmds: QuickCommand[]
+  todos: TaskItem[]
   fileTree: Awaited<ReturnType<typeof api.readFileTree>>
   selectedFile: { path: string; content: string } | null
 
@@ -95,6 +97,7 @@ interface LidowState {
   sendPrompt(text: string): Promise<void>
   stop(level: 'generate' | 'tool' | 'auto-loop' | 'all'): Promise<void>
   answerConfirm(ok: boolean): Promise<void>
+  notice(message: string, level?: 'info' | 'warn' | 'error'): void
   refreshAll(): Promise<void>
   handleEvent(e: LidowEvent): void
 }
@@ -144,6 +147,7 @@ export const useStore = create<LidowState>((set, get) => ({
   kbs: [],
   audits: [],
   quickCmds: [],
+  todos: [],
   fileTree: [],
   selectedFile: null,
 
@@ -275,6 +279,10 @@ export const useStore = create<LidowState>((set, get) => ({
     await api.confirmTool(req.callId, ok)
   },
 
+  notice(message, level = 'info') {
+    set({ notices: [...get().notices.slice(-20), { level, message, ts: Date.now() }] })
+  },
+
   async refreshAll() {
     const s = get()
     await Promise.all([
@@ -287,7 +295,8 @@ export const useStore = create<LidowState>((set, get) => ({
       (async () => set({ installedPlugins: await api.listInstalledPlugins() }))(),
       (async () => set({ kbs: await api.listKnowledgeBases() }))(),
       (async () => set({ audits: await api.listAudit(undefined, 100) }))(),
-      (async () => set({ quickCmds: await api.listQuickCommands() }))()
+      (async () => set({ quickCmds: await api.listQuickCommands() }))(),
+      (async () => set({ todos: await api.listTodos().catch(() => []) }))()
     ])
   },
 

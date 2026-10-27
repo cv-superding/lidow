@@ -1,6 +1,7 @@
 import type { MemoryStore } from '@main/ecosystem/memory'
 import type { AuditLedger } from '@main/ecosystem/audit'
 import { listRules, skillsDigest } from '@main/ecosystem/skills'
+import { TodoBoard } from '@main/ecosystem/todos'
 import { toolProtocolPrompt } from '@main/bridge/parser'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { AppSettings } from '@shared/types'
@@ -38,6 +39,12 @@ export function buildSystemPrompt(input: PromptInput): string {
     (() => {
       const mem = memory.digest()
       return mem ? `## 用户长期记忆\n${mem}\n（重要偏好请用 remember 工具保存；过时记忆用 forgetMemory 删除）` : ''
+    })(),
+    (() => {
+      const board = new TodoBoard(projectRoot).digest()
+      return board
+        ? `## 当前任务看板（人机共用，用户实时可见）\n${board}\n（用 todoWrite 工具同步状态；完成后置 done）`
+        : ''
     })(),
     (() => {
       const recent = audit.recentDigest(sessionId)

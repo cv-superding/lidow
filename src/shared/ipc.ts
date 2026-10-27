@@ -16,6 +16,7 @@ import type {
   SkillMeta,
   AgentMeta,
   RuleEntry,
+  TaskItem,
   TaskPlan,
   ToolResult,
   StopLevel
@@ -89,6 +90,15 @@ export interface LidowApi {
 
   // 任务拆解
   getActivePlan(sessionId: string): Promise<TaskPlan | null>
+
+  // 人机共用待办看板
+  listTodos(): Promise<TaskItem[]>
+  addTodo(title: string): Promise<TaskItem[]>
+  setTodoStatus(id: string, status: TaskItem['status']): Promise<TaskItem[]>
+  clearDoneTodos(): Promise<TaskItem[]>
+
+  // 会话导出
+  exportSession(sessionId: string): Promise<string>
 
   // 审计
   listAudit(sessionId?: string, limit?: number): Promise<AuditEntry[]>

@@ -70,3 +70,16 @@ describe('toolProtocolPrompt', () => {
     expect(p).toContain('观察')
   })
 })
+
+describe('protocolPrompt（升级后的系统提示词）', () => {
+  it('包含协议关键段与自查清单', async () => {
+    const { protocolPrompt } = await import('@main/prompt/protocol')
+    const p = protocolPrompt('- read(path): 读取')
+    expect(p).toContain('```lidow')
+    expect(p).toContain('自查清单')
+    expect(p).toContain('外科手术式')
+    expect(p).toContain('先读后改')
+    expect(p).toContain('- read(path): 读取')
+    expect(p).toContain('禁忌')
+  })
+})

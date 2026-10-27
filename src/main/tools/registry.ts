@@ -3,6 +3,7 @@ import { readTool, writeTool, editTool, globTool, grepTool, deleteFileTool } fro
 import { bashTool, pwshTool } from './exec'
 import { webFetchTool, webSearchTool, todoWriteTool, injectJsTool } from './net'
 import { mysqlTool } from './mysql'
+import { clipboardTool, screenshotTool } from './desktop'
 
 export type { ToolDef, ToolContext, ToolOutput } from './types'
 
@@ -19,7 +20,9 @@ const BUILT_IN: ToolDef[] = [
   webSearchTool,
   todoWriteTool,
   injectJsTool,
-  mysqlTool
+  mysqlTool,
+  clipboardTool,
+  screenshotTool
 ]
 
 /** 工具注册表：内置 + MCP + DSH 插件工具统一在此注册 */

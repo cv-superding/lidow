@@ -55,29 +55,12 @@ export function parseToolCalls(reply: string): ParsedReply {
 
 /** 构造给 AI 的观察结果消息 */
 export function formatObservations(results: { name: string; ok: boolean; output: string; error?: string }[]): string {
-  return results
+  const body = results
     .map((r) => `【工具 ${r.name} → ${r.ok ? '成功' : '失败'}】\n${r.error ? `错误: ${r.error}\n` : ''}${r.output}`)
     .join('\n\n')
+  return `${body}\n\n（以上是真实的工具执行结果，请基于它继续工作；任务未完成则继续调用工具，已全部完成则给出最终答复。）`
 }
 
-/** 系统提示词核心：工具协议说明 */
-export function toolProtocolPrompt(tools: string): string {
-  return `你是运行在 Lidow 桌面端中的 AI Agent，运行在用户的 AI 网页会话内，可以调用本地工具完成真实操作。
+/** 系统提示词核心：工具协议说明（实现在 prompt/protocol.ts，此处保留兼容导出） */
+export { protocolPrompt as toolProtocolPrompt } from '@main/prompt/protocol'
 
-## 工具调用协议
-需要调用工具时，输出如下代码块（可一次输出多个）：
-\`\`\`lidow
-{"tool": "工具名", "input": { 参数对象 }}
-\`\`\`
-- 系统会执行工具并把结果作为下一条消息回传给你（观察），然后你继续。
-- 所有工具执行完毕、任务完成后，输出不含工具块的最终答复。
-- 文本回答用 Markdown；不要在工具块外编造执行结果。
-
-## 可用工具
-${tools}
-
-## 约束
-- 文件操作一律使用项目内相对路径
-- 危险命令会请求用户确认，被拒绝时调整方案而不是重试原命令
-- 长任务先输出简短计划，再逐步执行`
-}

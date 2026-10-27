@@ -114,7 +114,7 @@ export const webSearchTool: ToolDef = {
 
 export const todoWriteTool: ToolDef = {
   name: 'todoWrite',
-  description: '维护当前任务清单（计划面板可见）。每次传入完整清单。',
+  description: '维护人机共用的任务看板（项目 .lidow/todos.json，用户在「任务」视图同步可见）。每次传入完整清单。',
   parameters: { todos: { type: 'string', description: 'JSON 数组字符串：[{"title":"…","status":"pending|running|done"}]', required: true } },
   dangerLevel: 'safe',
   async run(input, ctx) {
@@ -124,10 +124,16 @@ export const todoWriteTool: ToolDef = {
       if (!Array.isArray(parsed)) throw new Error('not array')
       const items = parsed.map((t) => {
         const o = t as Record<string, unknown>
-        return { title: String(o.title ?? ''), status: String(o.status ?? 'pending') }
+        const st = String(o.status ?? 'pending')
+        return {
+          title: String(o.title ?? ''),
+          status: (['pending', 'running', 'done', 'failed', 'skipped'].includes(st) ? st : 'pending') as 'pending'
+        }
       })
-      ctx.audit?.('tool', 'todoWrite 更新任务清单', { todos: items })
-      return { ok: true, output: `任务清单已更新（${items.length} 项）` }
+      const { TodoBoard } = await import('@main/ecosystem/todos')
+      const saved = new TodoBoard(ctx.projectRoot).replace(items)
+      ctx.audit?.('tool', 'todoWrite 更新任务看板', { count: saved.length })
+      return { ok: true, output: `任务看板已更新（${saved.length} 项，用户可在「任务」视图实时看到）：\n${saved.map((t) => `- ${t.status} ${t.title}`).join('\n')}` }
     } catch (e) {
       return { ok: false, output: '', error: `todos 必须是 JSON 数组: ${String(e)}` }
     }
