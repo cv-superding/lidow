@@ -1,0 +1,47 @@
+appId: ai.lidow.app
+productName: Lidow
+copyright: Copyright © 2026 Lidow Contributors
+
+directories:
+  buildResources: build
+  output: dist
+
+# 修复上游 #45：显式只打包构建产物，排除中间文件导致的启动失败
+files:
+  - out/**
+  - package.json
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}"
+  - "!**/node_modules/*.d.ts"
+  - "!**/node_modules/.bin"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!.editorconfig"
+  - "!**/._*"
+  - "!**/{.git,.hg,.svn,CVS,RCS,SCCS,__pycache__,.DS_Store,Thumbs.db,.gitignore,.gitkeep,.gitattributes,.editorconfig,.flowconfig,.jshintrc,.eslintrc}"
+
+asar: true
+
+win:
+  target:
+    - nsis
+    - portable
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+
+portable:
+  artifactName: ${productName}-${version}-portable.${ext}
+
+mac:
+  target: dmg
+  category: public.app-category.developer-tools
+
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/
+
+publish:
+  provider: github
+  owner: lidow-ai
+  repo: lidow

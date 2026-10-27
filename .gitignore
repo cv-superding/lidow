@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+dist-e2e/
+coverage/
+*.local
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.tsbuildinfo
+
+.zcode/
+reference/

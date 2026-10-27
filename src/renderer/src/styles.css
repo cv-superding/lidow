@@ -1,0 +1,71 @@
+@import 'tailwindcss';
+
+/* Lidow 设计令牌：低饱和、轻阴影、大圆角；深浅双主题 + 自定义主色 */
+:root {
+  --accent: #5b8cff;
+
+  --bg: #f6f7f9;
+  --bg-panel: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(15, 18, 25, 0.05);
+  --border: rgba(15, 18, 25, 0.08);
+  --text: #1a1d23;
+  --text-dim: #6b7280;
+  --shadow: 0 1px 3px rgba(15, 18, 25, 0.06), 0 8px 24px rgba(15, 18, 25, 0.06);
+}
+
+:root.dark {
+  --bg: #101014;
+  --bg-panel: #17171c;
+  --bg-elevated: #1e1e24;
+  --bg-hover: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.08);
+  --text: #e7e9ee;
+  --text-dim: #9aa1ad;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    'PingFang SC',
+    'Microsoft YaHei',
+    sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 统一动效：面板切换 200-300ms 自然缓动 */
+.transition-panel {
+  transition:
+    width 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.2s ease;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
