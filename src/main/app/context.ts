@@ -1,0 +1,458 @@
+import { app, BrowserWindow } from 'electron'
+import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
+import { basename, dirname, join } from 'node:path'
+import { nanoid } from 'nanoid'
+import { JsonStore } from '@main/infra/store'
+import { Logger } from '@main/infra/log'
+import { ToolRegistry } from '@main/tools/registry'
+import { createEcosystemTools } from '@main/tools/ecosystem'
+import type { ToolContext, ToolDef } from '@main/tools/types'
+import { ProviderRegistry } from '@main/providers/registry'
+import { SessionStore } from '@main/session/store'
+import { OverlayManager } from '@main/bridge/overlayManager'
+import { AgentLoop } from '@main/bridge/loop'
+import { MemoryStore } from '@main/ecosystem/memory'
+import { AuditLedger } from '@main/ecosystem/audit'
+import { TaskPlanStore } from '@main/ecosystem/taskPlan'
+import { KnowledgeManager, QuickCommandStore } from '@main/ecosystem/knowledge'
+import { McpManager } from '@main/mcp/manager'
+import { DshHost } from '@main/dsh/host'
+import { PluginManager } from '@main/plugins/manager'
+import { SyncService } from '@main/sync/service'
+import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
+import { buildSystemPrompt } from '@main/prompt/build'
+import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
+
+const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'dark',
+  accent: '#5b8cff',
+  language: 'zh-CN',
+  pureMode: false,
+  dangerConfirm: true,
+  ssrfProtection: true,
+  commandTimeoutMs: 30_000,
+  sandboxTimeoutMs: 60_000,
+  outputBufferLimit: 1024 * 1024,
+  compactThreshold: 60_000,
+  autoCompact: true,
+  globalHotkeys: HotkeyManager.defaults(),
+  securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
+  sync: {}
+}
+
+/** 循环所需的会话存储门面：按会话所属项目动态路由（修复上游 #24 串扰的根） */
+function routedSessionFacade(resolve: (sessionId: string) => SessionStore): SessionStore {
+  const facade = {
+    appendTurn: (id: string, t: Parameters<SessionStore['appendTurn']>[1]) => resolve(id).appendTurn(id, t),
+    patchTurn: (id: string, tid: string, p: Parameters<SessionStore['patchTurn']>[2]) => resolve(id).patchTurn(id, tid, p),
+    update: (id: string, fn: Parameters<SessionStore['update']>[1]) => resolve(id).update(id, fn),
+    get: (id: string) => resolve(id).get(id)
+  }
+  return facade as unknown as SessionStore
+}
+
+/** 全量运行时上下文：main 进程内一切管理器的聚合点 */
+export class AppContext {
+  settings!: JsonStore<AppSettings>
+  private projectStore!: JsonStore<{ projects: ProjectInfo[]; activeProjectId: string | null }>
+  projects: ProjectInfo[] = []
+
+  tools = new ToolRegistry()
+  memory!: MemoryStore
+  audit!: AuditLedger
+  plans = new TaskPlanStore()
+  knowledge!: KnowledgeManager
+  quickCommands!: QuickCommandStore
+  mcp!: McpManager
+  dsh!: DshHost
+  plugins!: PluginManager
+  sync!: SyncService
+  overlay = new OverlayManager()
+  loop!: AgentLoop
+  hotkeys!: HotkeyManager
+
+  emitFn?: (event: unknown) => void
+
+  private pendingConfirms = new Map<string, (ok: boolean) => void>()
+  private projectDirs = new Map<string, string>()
+  private sessionStores = new Map<string, SessionStore>()
+  private providerRegistries = new Map<string, ProviderRegistry>()
+  lastSessionId = ''
+
+  init(): void {
+    const userData = app.getPath('userData')
+    this.settings = new JsonStore<AppSettings>(join(userData, 'settings.json'), DEFAULT_SETTINGS)
+    this.projectStore = new JsonStore<{ projects: ProjectInfo[]; activeProjectId: string | null }>(join(userData, 'projects.json'), {
+      projects: [],
+      activeProjectId: null
+    })
+    this.projects = this.projectStore.get().projects
+    for (const p of this.projects) this.projectDirs.set(p.id, p.root)
+
+    this.memory = new MemoryStore(userData)
+    this.audit = new AuditLedger(userData)
+    this.knowledge = new KnowledgeManager(userData)
+    this.quickCommands = new QuickCommandStore(userData)
+    this.mcp = new McpManager(userData)
+    this.plugins = new PluginManager(userData, () => this.toolCtx(''))
+    this.sync = new SyncService(() => this.settings.get())
+    this.dsh = new DshHost({
+      tools: this.tools,
+      execTool: this.tools.get('bash')!,
+      projectRoot: () => this.activeProject()?.root ?? '',
+      providers: () => [...this.providerRegistries.values()].flatMap((r) => r.list()),
+      tokenStats: () => ({ totalChars: 0, tps: 0 }),
+      slots: { register: () => undefined, list: () => [] }
+    })
+
+    this.registerEcosystemTools()
+    this.registerMcpTool()
+    this.registerKbTool()
+
+    this.loop = new AgentLoop({
+      store: routedSessionFacade((id) => this.sessionStoreOf(this.sessionProjectOf(id))),
+      tools: this.tools,
+      toolCtxBase: () => this.toolCtx(''),
+      confirm: (sessionId, reason) => this.requestConfirm(sessionId, reason),
+      sendToPage: (sessionId, text) => this.overlay.sendToPage(sessionId, text),
+      awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
+      interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
+      emit: (event) => this.emit(event),
+      settings: () => ({
+        autoCompact: this.settings.get().autoCompact,
+        compactThreshold: this.settings.get().compactThreshold
+      }),
+      systemPromptFor: (sessionId) => this.systemPromptFor(sessionId)
+    })
+
+    this.hotkeys = new HotkeyManager(() => this.settings.get().globalHotkeys)
+    this.hotkeys.registerAction('show-window', () => {
+      const w = BrowserWindow.getAllWindows()[0]
+      if (w) {
+        if (w.isMinimized()) w.restore()
+        w.show()
+        w.focus()
+      }
+    })
+    this.hotkeys.registerAction('stop-all', () => this.stopAll('all'))
+    this.hotkeys.registerAction('new-session', () => this.emit({ type: 'notice', sessionId: '', level: 'info', message: 'action:new-session' }))
+    this.hotkeys.registerAction('toggle-pure', () => this.emit({ type: 'notice', sessionId: '', level: 'info', message: 'action:toggle-pure' }))
+    this.hotkeys.applyAll()
+
+    this.overlay.setFloatActionHandler((sessionId, action) => {
+      const level = action === 'stop-generate' ? 'generate' : action === 'stop-tool' ? 'tool' : 'all'
+      this.loop.stop(sessionId, level)
+    })
+    this.overlay.onReady = (sessionId) => this.configureOverlay(sessionId)
+
+    app.on('web-contents-created', (_e, wc) => {
+      wc.on('destroyed', () => this.overlay.disposeWebContents(wc.id))
+    })
+
+    void this.mcp.connectAll()
+    Logger.info('context', 'AppContext 初始化完成')
+  }
+
+  emit(event: { type: string; sessionId: string; [k: string]: unknown }): void {
+    this.emitFn?.(event)
+  }
+
+  /** 向 webview 下发对应 provider 的 DOM 适配器（bindSession 与 ready 双路径调用） */
+  configureOverlay(sessionId: string): void {
+    const session = this.sessionOf(sessionId)
+    if (!session) return
+    const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
+    if (!provider) return
+    this.overlay.sendCmd(sessionId, { kind: 'configure', adapter: provider.adapter })
+  }
+
+  private registerEcosystemTools(): void {
+    for (const t of createEcosystemTools({
+      memory: this.memory,
+      plans: this.plans,
+      projectRoot: () => this.activeProject()?.root ?? '',
+      currentSessionId: () => this.lastSessionId
+    })) {
+      this.tools.register(t)
+    }
+  }
+
+  private registerMcpTool(): void {
+    const mcpCall: ToolDef = {
+      name: 'mcpCall',
+      description: '调用 MCP 服务器的工具（listMcpTools 可查可用项）。',
+      parameters: {
+        server: { type: 'string', description: 'MCP 服务名', required: true },
+        tool: { type: 'string', description: '工具名', required: true },
+        args: { type: 'string', description: 'JSON 参数字符串' }
+      },
+      dangerLevel: 'safe',
+      run: async (input) => {
+        let args: Record<string, unknown>
+        try {
+          args = JSON.parse(String(input.args ?? '{}')) as Record<string, unknown>
+        } catch {
+          return { ok: false, output: '', error: 'args 必须是 JSON 字符串' }
+        }
+        try {
+          const out = await this.mcp.callTool(String(input.server), String(input.tool), args)
+          return { ok: true, output: out }
+        } catch (e) {
+          return { ok: false, output: '', error: String(e) }
+        }
+      }
+    }
+    this.tools.register(mcpCall)
+  }
+
+  private registerKbTool(): void {
+    const kbSearch: ToolDef = {
+      name: 'kbSearch',
+      description: '检索已挂载的本地知识库。',
+      parameters: {
+        kb: { type: 'string', description: '知识库名', required: true },
+        query: { type: 'string', description: '查询语句', required: true }
+      },
+      dangerLevel: 'safe',
+      run: async (input) => {
+        const kb = this.knowledge.list().find((b) => b.name === String(input.kb) || b.id === String(input.kb))
+        if (!kb) return { ok: false, output: '', error: `知识库不存在: ${String(input.kb)}` }
+        const hits = this.knowledge.search(kb.id, String(input.query))
+        if (hits.length === 0) return { ok: true, output: '知识库中无匹配内容' }
+        return {
+          ok: true,
+          output: hits.map((h) => `[${h.path}] (相关度 ${h.score})\n${h.snippet}`).join('\n\n')
+        }
+      }
+    }
+    this.tools.register(kbSearch)
+  }
+
+  // ---------- 项目 ----------
+
+  activeProject(): ProjectInfo | null {
+    const id = this.projectStore.get().activeProjectId
+    return this.projects.find((p) => p.id === id) ?? null
+  }
+
+  openProject(root: string): ProjectInfo {
+    let p = this.projects.find((x) => x.root === root)
+    if (!p) {
+      p = { id: `proj_${nanoid(8)}`, name: basename(root), root, createdAt: Date.now(), lastOpenedAt: Date.now() }
+      this.projects.push(p)
+    }
+    p.lastOpenedAt = Date.now()
+    this.projectStore.set({ projects: this.projects, activeProjectId: p.id })
+    return p
+  }
+
+  closeProject(projectId: string): void {
+    const cur = this.projectStore.get().activeProjectId
+    if (cur === projectId) this.projectStore.set({ activeProjectId: null })
+  }
+
+  private projectDirOf(projectId: string): string {
+    let dir = this.projectDirs.get(projectId)
+    if (!dir) {
+      dir = join(app.getPath('userData'), 'projects', projectId)
+      mkdirSync(dir, { recursive: true })
+      this.projectDirs.set(projectId, dir)
+    }
+    return dir
+  }
+
+  sessionStoreOf(projectId: string): SessionStore {
+    let s = this.sessionStores.get(projectId)
+    if (!s) {
+      s = new SessionStore(this.projectDirOf(projectId))
+      this.sessionStores.set(projectId, s)
+    }
+    return s
+  }
+
+  providerRegistryOf(projectId: string): ProviderRegistry {
+    let r = this.providerRegistries.get(projectId)
+    if (!r) {
+      r = new ProviderRegistry(this.projectDirOf(projectId))
+      this.providerRegistries.set(projectId, r)
+    }
+    return r
+  }
+
+  private sessionProjectOf(sessionId: string): string {
+    for (const p of this.projects) {
+      if (this.sessionStoreOf(p.id).get(sessionId)) return p.id
+    }
+    return this.projectStore.get().activeProjectId ?? this.projects[0]?.id ?? ''
+  }
+
+  sessionOf(sessionId: string): ReturnType<SessionStore['get']> {
+    for (const p of this.projects) {
+      const s = this.sessionStoreOf(p.id).get(sessionId)
+      if (s) return s
+    }
+    return null
+  }
+
+  // ---------- 循环支撑 ----------
+
+  toolCtx(sessionId: string): ToolContext {
+    const s = this.settings.get()
+    const project = this.activeProject()
+    return {
+      projectRoot: project?.root ?? process.cwd(),
+      settings: {
+        commandTimeoutMs: s.commandTimeoutMs,
+        sandboxTimeoutMs: s.sandboxTimeoutMs,
+        outputBufferLimit: s.outputBufferLimit,
+        ssrfProtection: s.ssrfProtection,
+        dangerConfirm: s.dangerConfirm
+      },
+      confirm: (reason) => this.requestConfirm(sessionId, reason),
+      injectJs: (code) => this.overlay.executeJs(sessionId, code),
+      audit: (kind, summary, detail, backupPath) => this.audit.record(sessionId, kind, summary, detail, backupPath)
+    }
+  }
+
+  private requestConfirm(sessionId: string, reason: string): Promise<boolean> {
+    this.lastSessionId = sessionId
+    return new Promise((resolve) => {
+      const callId = `cfm_${nanoid(6)}`
+      const timer = setTimeout(() => {
+        this.pendingConfirms.delete(callId)
+        resolve(false) // 超时视为拒绝（安全默认）
+      }, 120_000)
+      this.pendingConfirms.set(callId, (ok) => {
+        clearTimeout(timer)
+        this.pendingConfirms.delete(callId)
+        resolve(ok)
+      })
+      this.emitFn?.({ type: 'tool-confirm-required', sessionId, callId, reason })
+    })
+  }
+
+  resolveConfirm(callId: string, ok: boolean): void {
+    this.pendingConfirms.get(callId)?.(ok)
+  }
+
+  systemPromptFor(sessionId: string): string {
+    const project = this.activeProject()
+    if (!project) return ''
+    return buildSystemPrompt({
+      projectRoot: project.root,
+      projectName: project.name,
+      treeSummary: this.treeSummary(project.root),
+      tools: this.tools,
+      memory: this.memory,
+      audit: this.audit,
+      sessionId,
+      settings: this.settings.get(),
+      ctfInject: this.settings.get().securityMod.ctfInject
+    })
+  }
+
+  private treeSummary(root: string): string {
+    if (!existsSync(root)) return ''
+    const EXCL = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', 'coverage', '__pycache__', '.venv', 'target'])
+    const lines: string[] = []
+    const walk = (dir: string, depth: number): void => {
+      if (depth > 2 || lines.length > 60) return
+      let entries: string[]
+      try {
+        entries = readdirSync(dir).filter((n) => !EXCL.has(n) && !n.startsWith('.'))
+      } catch {
+        return
+      }
+      for (const name of entries.slice(0, 24)) {
+        if (lines.length > 60) return
+        const full = join(dir, name)
+        let isDir: boolean
+        try {
+          isDir = statSync(full).isDirectory()
+        } catch {
+          continue
+        }
+        lines.push(`${name}${isDir ? '/' : ''}`)
+        if (isDir) walk(full, depth + 1)
+      }
+    }
+    walk(root, 0)
+    return lines.join('\n')
+  }
+
+  readFileTree(root: string, rel: string, depth: number): FileNode[] {
+    const abs = join(root, rel || '')
+    if (!existsSync(abs)) return []
+    const EXCL = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'target'])
+    const walk = (dir: string, level: number): FileNode[] => {
+      let entries: string[]
+      try {
+        entries = readdirSync(dir)
+      } catch {
+        return []
+      }
+      const nodes: FileNode[] = []
+      for (const name of entries) {
+        if (name.startsWith('.') || EXCL.has(name)) continue
+        const full = join(dir, name)
+        let isDir: boolean
+        try {
+          isDir = statSync(full).isDirectory()
+        } catch {
+          continue
+        }
+        nodes.push({
+          path: full.slice(root.length + 1).replace(/\\/g, '/'),
+          name,
+          type: isDir ? 'dir' : 'file',
+          children: isDir && level < depth ? walk(full, level + 1) : undefined
+        })
+      }
+      return nodes
+    }
+    return walk(abs, 0)
+  }
+
+  runningSessionIds(): string[] {
+    return this.loop.runningSessionIds()
+  }
+
+  stopAll(level: 'generate' | 'tool' | 'auto-loop' | 'all'): void {
+    for (const sid of this.runningSessionIds()) this.loop.stop(sid, level)
+  }
+
+  // ---------- 模板 / 同步 / 更新 / DSH ----------
+
+  private templatesRoot(): string {
+    return app.isPackaged ? join(process.resourcesPath ?? '', 'templates') : join(app.getAppPath(), 'templates')
+  }
+
+  templates(): { id: string; name: string; description: string }[] {
+    return listTemplates(this.templatesRoot()).map((t) => ({ id: t.id, name: t.name, description: t.description }))
+  }
+
+  applyTemplate(templateId: string, root: string): void {
+    const tpl = listTemplates(this.templatesRoot()).find((t) => t.id === templateId)
+    if (!tpl) throw new Error(`模板不存在: ${templateId}`)
+    mkdirSync(root, { recursive: true })
+    for (const f of tpl.files) {
+      const target = join(root, f.path)
+      mkdirSync(dirname(target), { recursive: true })
+      writeFileSync(target, f.content, 'utf-8')
+    }
+    const lidowSrc = join(this.templatesRoot(), templateId, '.lidow')
+    if (existsSync(lidowSrc)) cpSync(lidowSrc, join(root, '.lidow'), { recursive: true })
+  }
+
+  pushSync(text: string): Promise<void> {
+    return this.sync.pushAll(text)
+  }
+
+  async updateCheck(): Promise<{ hasUpdate: boolean; version?: string; url?: string }> {
+    return checkForUpdate()
+  }
+
+  async dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }> {
+    return this.dsh.coverage()
+  }
+}

@@ -41,7 +41,7 @@ export interface LidowApi {
   updateProviderAdapter(projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']): Promise<ProviderDescriptor>
 
   // 会话
-  listSessions(projectId: string, providerId: string): Promise<SessionMeta[]>
+  listSessions(projectId: string, providerId?: string): Promise<SessionMeta[]>
   getSession(sessionId: string): Promise<Session | null>
   createSession(projectId: string, providerId: string, parentSessionId?: string): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
@@ -106,16 +106,20 @@ export interface LidowApi {
   deleteQuickCommand(id: string): Promise<QuickCommand[]>
 
   // 视图控制
-  attachWebview(providerId: string, accountId: string): Promise<string>
+  attachWebview(providerId: string, accountId: string): Promise<{ partition: string; overlayPath: string; home: string }>
+  bindSession(sessionId: string, webContentsId: number): Promise<void>
   setPureMode(on: boolean): Promise<void>
   checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string }>
+  listTemplates(): Promise<{ id: string; name: string; description: string }[]>
+  applyTemplate(templateId: string, root: string): Promise<void>
+  pushToSync(text: string): Promise<void>
 
   // 事件订阅（main → renderer）
   onEvent(cb: (event: LidowEvent) => void): () => void
 }
 
 export type LidowEvent =
-  | { type: 'session-updated'; session: Session }
+  | { type: 'session-updated'; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }
   | { type: 'tool-start'; sessionId: string; result: ToolResult }
   | { type: 'tool-confirm-required'; sessionId: string; result: ToolResult; callId: string; name: string; input: Record<string, unknown>; reason: string }

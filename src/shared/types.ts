@@ -282,8 +282,10 @@ export interface FileNode {
 }
 
 export interface OverlayCommand {
-  kind: 'send' | 'new-chat' | 'extract' | 'get-input' | 'set-input' | 'clear'
+  kind: 'send' | 'new-chat' | 'extract' | 'get-input' | 'set-input' | 'clear' | 'stop' | 'configure'
   text?: string
+  /** configure：下发当前 provider 的 DOM 适配器 */
+  adapter?: DomAdapter
 }
 
 export type OverlayEvent =
