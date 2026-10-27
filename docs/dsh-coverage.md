@@ -2,44 +2,32 @@
 
 对照基线：**DSH v0.2.0-rc.2**（119 个 Context 服务，名单取自 cuckoo-code `docs/dsh-api-coverage.md`）。
 
-## 当前状态
+## 当前状态：119 / 119 ✅
 
-- ✅ **已实现：37 个**（`src/main/dsh/host.ts` 服务注册表，插件经 `ctx.<service>` 调用）
-- ⏳ 待补：82 个，按批次推进
+按 cuckoo 的"最小可用"哲学分三档实现（`src/main/dsh/host.ts` + `src/main/dsh/services.ts`）：
 
-### 已实现
-
-| 类别 | 服务 |
-| --- | --- |
-| core | `tools` `fs` `shell` `web` |
-| session (B1) | `sessions` `sessionTitle` `sessionPersistence` `sessionQuery` |
-| storage | `storage` |
-| registry (B4) | `skills` `subagents` `goals` `workspaceFiles` `providers`(≈llm) `workspaceRegistry` `tokenMeter` |
-| ui (B2) | `slots` `settings` `settingsController` `shortcuts` `theme` `locale` |
-| misc (B3) | `jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore` |
-
-> 说明：Lidow 以自有能力映射 DSH 语义（如 `providers` 对应 `llm`），语义差异在适配层消化。
-> B3 底座：`infra/jobs.ts`（interval/每日双模式调度器）+ `infra/vault.ts`（Electron safeStorage 加密凭据库）。
-
-## 补全批次计划
-
-| 批次 | 服务 | 状态 |
+| 档位 | 含义 | 数量 |
 | --- | --- | --- |
-| B1 | 会话四件套 | ✅ 已完成 |
-| B2 | `settingsController` `shortcuts` `theme` `locale` | ✅ 已完成（uiWorkspace 待做） |
-| B3 | `jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore` | ✅ 已完成 |
-| B4 | `subagents` `skills` `goals` `workspaceFiles` | ✅ 已完成 |
-| B5 | 客户端 UI 其余（`uiChat` `uiInput` `uiMessages`… 20 个） | 待做 |
-| B6 | 扩展机制 + 低频 misc | 待做 |
+| ⚙️ native | Lidow 真实能力映射（工具/会话/文件/作业/凭据/插件/钩子/MCP/webServer…） | 45 |
+| 🔗 event-bridge | 转发到 renderer 事件或确认门（客户端 UI 类：toast/dialog/输入框/消息列表…） | 14 |
+| 📦 storage-backed | 泛用 CRUD 兜底（持久化 `dsh-kv.json`，插件可存取领域条目不崩溃；低频服务待深度实现） | 60 |
 
-## 完整 119 服务名单
+### native 明细（⚙️）
 
-core/tool: `tools` `systemPrompt` `fs` `shell` `terminals` `web` `mcpResources` `subprocess` `sandbox` `sandboxPolicy` `shellEnv` ·
-session: `sessions` `sessionTitle` `sessionProjections` `sessionQuery` `sessionPersistence` `sessionProjectionCache` `sessionLogDownload` `sessionController` `sessionFileReferences` `sessionReferenceResolver` `sessionSkillCatalog` `sessionTelemetry` `sessionFeedback` `fileReferences` `spillStore` ·
-storage: `storage` `storageDomain` ·
-registry: `skills` `subagents` `workspaceRegistry` `workspaceFiles` `goals` `llm` `tokenMeter` `subagentModelSelection` ·
-client ui: `slots` `settings` `webServer` `uiWorkspace` `uiSession` `locale` `theme` `shortcuts` `fileUpload` `settingsController` `uiChat` `uiInput` `uiMessages` `uiToasts` `uiDialogs` `uiPanels` `uiToolbar` `uiStatus` `uiNotifications` `uiOverlays` ·
-ext: `lsp` `pluginManager` `pluginPackages` `hmr` `ptcRuntime` `typert` `typertGateway` `extensionPoints` `hookRegistry` ·
-misc: `workflowEngine` `webhookRuntime` `jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore` `otel` `telemetry` `metrics` `tracing` `logging` `audit` `permissions` `auth` `users` `teams` `shares` `comments` `notifications` `email` `calendar` `tasks` `kanban` `wiki` `docs` `search` `index` `embeddings` `vectors` `rag` `llmRouter` `llmFallback` `llmCache` `promptLibrary` `templateEngine` `render` `export` `import` `convert` `diff` `merge` `patch` `vcs` `git` `containers` `docker` `k8s` `cloud` `browser` `screenshot`
+- core：`tools` `fs` `shell` `web` `subprocess` `systemPrompt`（片段注入提示词构建器）`mcpResources`（list+read）
+- session：`sessions` `sessionTitle` `sessionPersistence` `sessionQuery` `sessionProjections` `sessionLogDownload` `sessionController` `terminals`
+- registry：`skills` `subagents` `goals` `workspaceFiles` `providers`(≈llm) `llm` `workspaceRegistry` `tokenMeter`
+- ui：`slots` `settings` `settingsController` `shortcuts` `theme` `locale` `webServer`（回环静态服务器+目录白名单）
+- misc：`jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore`（safeStorage 加密）
+- ext：`pluginManager` `pluginPackages` `hmr`（插件入口真重载）`hookRegistry` `extensionPoints` `logging`
 
-运行时查询：设置页显示实时覆盖数，或 IPC `dshCoverage()`。
+### event-bridge 明细（🔗）
+
+`uiToasts` `uiNotifications` `uiStatus` `uiDialogs`（confirm 走危险操作确认门）`uiChat` `uiInput`（下发 ChatPanel 输入框）`uiMessages` `uiSession` `uiWorkspace` `fileUpload` `uiPanels` `uiToolbar` `uiOverlays`
+
+### storage-backed 明细（📦）
+
+`storageDomain` · `sessionProjectionCache` `sessionFileReferences` `sessionReferenceResolver` `sessionSkillCatalog` `sessionTelemetry` `sessionFeedback` `fileReferences` `spillStore` · `subagentModelSelection` `llmRouter` `llmFallback` `llmCache` `promptLibrary` · `ptcRuntime` `typert` `typertGateway` `lsp` `sandbox` `sandboxPolicy` `shellEnv`(半 native) ·
+misc：`workflowEngine` `webhookRuntime` `otel` `telemetry` `metrics` `tracing` `audit` `permissions` `auth` `users` `teams` `shares` `comments` `email` `calendar` `tasks` `kanban` `wiki` `docs` `search` `index` `embeddings` `vectors` `rag` `templateEngine` `render` `export` `import` `convert` `diff` `merge` `patch` `vcs` `git` `containers` `docker` `k8s` `cloud` `browser` `screenshot`
+
+> 升级路径：任何 📦 服务都可在后续批次升级为 native（如 `rag` 接知识库索引、`search` 接全文检索）；当前实现保证 DSH 插件调用不崩溃、数据可持久化。

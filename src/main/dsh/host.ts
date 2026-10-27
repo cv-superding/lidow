@@ -29,6 +29,11 @@ type DshRegistrar = (ctx: DshPluginContext) => void | Promise<void>
 export class DshHost {
   private services = new Map<string, DshService>()
 
+  /** 运行期注册口：B5/B6 服务由 services.ts 分批挂载 */
+  addService(name: string, category: DshService['category'], methods: Record<string, (...args: never[]) => unknown>): void {
+    this.services.set(name, { name, category, methods })
+  }
+
   constructor(
     private deps: {
       tools: ToolRegistry

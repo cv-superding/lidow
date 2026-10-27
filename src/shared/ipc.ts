@@ -125,6 +125,7 @@ export type LidowEvent =
   | { type: 'tool-confirm-required'; sessionId: string; result: ToolResult; callId: string; name: string; input: Record<string, unknown>; reason: string }
   | { type: 'plan-proposed'; sessionId: string; plan: TaskPlan }
   | { type: 'overlay-event'; providerId: string; event: unknown }
+  | { type: 'ui-input'; sessionId: string; text: string }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
 
 export const IPC_INVOKE_PREFIX = 'lidow:'

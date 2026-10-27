@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { Logger } from './infra/log'
 import { AppContext } from './app/context'
 import { registerHandlers } from './app/handlers'
+import { disposeRuntimeServices } from './dsh/services'
 
 /**
  * main 进程入口：生命周期 + IPC 分发器。
@@ -85,6 +86,7 @@ app.on('window-all-closed', () => {
 app.on('will-quit', () => {
   ctx.jobs.dispose()
   ctx.mcp.disposeAll()
+  disposeRuntimeServices()
 })
 
 process.on('uncaughtException', (err) => {

@@ -23,6 +23,7 @@ import { CredentialVault } from '@main/infra/vault'
 import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
 import { buildSystemPrompt } from '@main/prompt/build'
+import { registerRuntimeServices } from '@main/dsh/services'
 import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -81,6 +82,7 @@ export class AppContext {
   private projectDirs = new Map<string, string>()
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
+  private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
   lastSessionId = ''
 
   init(): void {
@@ -129,6 +131,33 @@ export class AppContext {
       onHotkeysChange: () => this.hotkeys.applyAll(),
       vault: this.vault,
       jobs: this.jobs
+    })
+
+    this.dshKv = new JsonStore<Record<string, Record<string, unknown>>>(join(userData, 'dsh-kv.json'), {})
+    registerRuntimeServices(this.dsh, {
+      kv: this.dshKv,
+      emit: (event) => this.emit(event as { type: string; sessionId: string }),
+      requestConfirm: (reason) => this.requestConfirm(this.lastSessionId || 'global', reason),
+      activeSession: () => this.sessionOf(this.lastSessionId),
+      activeProject: () => this.activeProject(),
+      appendTurn: (sessionId, role, text) => {
+        this.sessionStoreOf(this.sessionProjectOf(sessionId)).appendTurn(sessionId, {
+          id: `turn_${nanoid(8)}`,
+          role,
+          text,
+          ts: Date.now(),
+          status: 'done'
+        })
+        this.emit({ type: 'session-updated', sessionId })
+      },
+      pluginManager: this.plugins,
+      mcp: this.mcp,
+      runShell: async (command) => {
+        const out = await this.tools.get('bash')!.run({ command }, this.toolCtx(''))
+        return { ok: out.ok, output: out.output, error: out.error }
+      },
+      llmProviders: () => [...this.providerRegistries.values()].flatMap((r) => r.list()),
+      promptFragments: () => this.promptFragments()
     })
 
     this.registerEcosystemTools()
@@ -373,10 +402,19 @@ export class AppContext {
     this.pendingConfirms.get(callId)?.(ok)
   }
 
+  /** DSH 插件注入的提示词片段（global + 当前会话） */
+  promptFragments(): string {
+    const all = this.dshKv.get().__promptFragments ?? {}
+    const merged = [all['global'] as string | undefined, all[this.lastSessionId] as string | undefined]
+      .filter(Boolean)
+      .join('\n')
+    return merged.trim()
+  }
+
   systemPromptFor(sessionId: string): string {
     const project = this.activeProject()
     if (!project) return ''
-    return buildSystemPrompt({
+    const base = buildSystemPrompt({
       projectRoot: project.root,
       projectName: project.name,
       treeSummary: this.treeSummary(project.root),
@@ -387,6 +425,8 @@ export class AppContext {
       settings: this.settings.get(),
       ctfInject: this.settings.get().securityMod.ctfInject
     })
+    const fragments = this.promptFragments()
+    return fragments ? `${base}\n\n## 插件注入指令\n${fragments}` : base
   }
 
   private treeSummary(root: string): string {

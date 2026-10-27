@@ -136,6 +136,20 @@ export class McpManager {
     return [...this.connections.values()].flatMap((c) => c.prompts.map((p) => ({ server: c.name, name: p.name, description: p.description })))
   }
 
+  /** 读取 MCP 资源内容（DSH mcpResources 服务落点） */
+  async readResource(server: string, uri: string): Promise<string> {
+    const conn = this.connections.get(server)
+    if (!conn) throw new Error(`MCP 服务未连接: ${server}`)
+    const client = conn.client as { readResource: (a: unknown) => Promise<unknown> }
+    const res = (await Promise.race([client.readResource({ uri }), timeout(30_000)])) as {
+      contents?: { uri: string; mimeType?: string; text?: string; blob?: string }[]
+    }
+    return (res.contents ?? [])
+      .map((c) => c.text ?? (c.blob ? `[binary ${c.mimeType ?? 'unknown'}]` : ''))
+      .join('\n')
+      .slice(0, 16_000)
+  }
+
   /** mcpCall 工具落点 */
   async callTool(server: string, toolName: string, args: Record<string, unknown>): Promise<string> {
     const conn = this.connections.get(server)

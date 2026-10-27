@@ -76,6 +76,13 @@ export function ChatPanel(): React.JSX.Element {
   const [slashOpen, setSlashOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
+  // DSH 插件经 uiInput.set 下发的输入框内容
+  useEffect(() => {
+    return api.onEvent((e) => {
+      if (e.type === 'ui-input') setInput(e.text)
+    })
+  }, [])
+
   const turns = useMemo(() => activeSession?.turns ?? [], [activeSession])
   const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
 
