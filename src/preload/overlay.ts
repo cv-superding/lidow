@@ -27,13 +27,17 @@ function visible(el: Element | null | undefined): el is Element {
   return style.visibility !== 'hidden' && style.display !== 'none'
 }
 
-function findFirst(selectors: string[], filter?: (el: Element) => boolean): Element | null {
+function findFirst(selectors: string[], filter?: (el: Element, index: number) => boolean): Element | null {
   if (!selectors) return null
+  let seen = 0
   for (const sel of selectors) {
     try {
       const list = document.querySelectorAll(sel)
       for (const el of list) {
-        if (visible(el) && (!filter || filter(el))) return el
+        if (visible(el)) {
+          if (!filter || filter(el, seen)) return el
+          seen++
+        }
       }
     } catch {
       /* 无效选择器跳过 */
@@ -60,7 +64,8 @@ function fillEditable(el: HTMLElement, text: string): boolean {
   return ok && (el.textContent?.length ?? 0) > 0
 }
 
-function fillInput(el: Element, text: string): void {
+/** 填入后读回校验（≥期望长度 90% 视为成功，防 ProseMirror/受控组件静默丢字） */
+function fillVerified(el: Element, text: string): boolean {
   if (el instanceof HTMLTextAreaElement) {
     el.focus()
     setNativeValue(el, text)
@@ -70,7 +75,14 @@ function fillInput(el: Element, text: string): void {
   } else if (el instanceof HTMLInputElement) {
     el.focus()
     setNativeValue(el, text)
+  } else {
+    return false
   }
+  const current =
+    el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
+      ? el.value
+      : ((el as HTMLElement).textContent ?? '')
+  return current.length >= Math.floor(text.length * 0.9)
 }
 
 function pressEnter(el: Element): void {
@@ -161,20 +173,35 @@ function watchMessages(): void {
 async function doSend(text: string): Promise<void> {
   try {
     if (!adapter) throw new Error('未配置 DOM 适配器')
-    const input = findFirst(adapter.input)
-    if (!input) throw new Error('找不到输入框（可能页面未加载完成或选择器过期）')
-    fillInput(input, text)
+    // 填入 + 读回校验，失败换候选输入框重试（页面存在多个输入框时首查可能命中隐藏元素）
+    let filled = false
+    let input: Element | null = null
+    for (let attempt = 0; attempt < 3 && !filled; attempt++) {
+      input = findFirst(adapter.input, (_el, i) => i >= attempt)
+      if (!input) break
+      filled = fillVerified(input, text)
+      if (!filled) await new Promise((r) => setTimeout(r, 200))
+    }
+    if (!input || !filled) throw new Error('输入框填入失败（选择器可能过期或页面未就绪）')
     await new Promise((r) => setTimeout(r, 120))
 
-    const sendBtn = findFirst(adapter.send, (el) => {
-      const b = el as HTMLButtonElement
-      return !(b instanceof HTMLButtonElement && b.disabled) && (el as HTMLElement).getAttribute('aria-disabled') !== 'true'
-    })
-    if (sendBtn) {
-      click(sendBtn)
-    } else {
-      pressEnter(input)
+    // 发送按钮延迟就绪时循环重试：优先真实点击，交替 Enter 兜底，最多 10 次
+    let sent = false
+    for (let i = 0; i < 10 && !sent; i++) {
+      const sendBtn = findFirst(adapter.send, (el) => {
+        const b = el as HTMLButtonElement
+        return !(b instanceof HTMLButtonElement && b.disabled) && (el as HTMLElement).getAttribute('aria-disabled') !== 'true'
+      })
+      if (sendBtn) {
+        click(sendBtn)
+        sent = true
+      } else {
+        pressEnter(input)
+        sent = i >= 2 // 前 3 次仍继续尝试找按钮（页面刚填入按钮可能未亮起）
+      }
+      if (!sent) await new Promise((r) => setTimeout(r, 300))
     }
+    if (!sent) throw new Error('发送动作未能完成（按钮持续未就绪）')
     send({ type: 'send-result', ok: true })
     streaming = false
     lastText = ''

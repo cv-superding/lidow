@@ -19,6 +19,8 @@ import { McpManager } from '@main/mcp/manager'
 import { DshHost } from '@main/dsh/host'
 import { PluginManager } from '@main/plugins/manager'
 import { SyncService } from '@main/sync/service'
+import { CredentialVault } from '@main/infra/vault'
+import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
 import { buildSystemPrompt } from '@main/prompt/build'
 import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
@@ -67,6 +69,8 @@ export class AppContext {
   dsh!: DshHost
   plugins!: PluginManager
   sync!: SyncService
+  vault!: CredentialVault
+  jobs!: JobScheduler
   overlay = new OverlayManager()
   loop!: AgentLoop
   hotkeys!: HotkeyManager
@@ -96,6 +100,17 @@ export class AppContext {
     this.mcp = new McpManager(userData)
     this.plugins = new PluginManager(userData, () => this.toolCtx(''))
     this.sync = new SyncService(() => this.settings.get())
+
+    this.vault = new CredentialVault(userData)
+    this.jobs = new JobScheduler()
+    this.jobs.setRunner(async (job) => {
+      const ctx = this.toolCtx('')
+      const def = this.tools.get('bash')
+      if (!def) throw new Error('bash 工具不可用')
+      const out = await def.run({ command: job.action }, ctx)
+      if (!out.ok) throw new Error(out.error ?? out.output)
+    })
+
     this.dsh = new DshHost({
       tools: this.tools,
       execTool: this.tools.get('bash')!,
@@ -111,7 +126,9 @@ export class AppContext {
       plans: this.plans,
       readFileTree: (root, rel, depth) => this.readFileTree(root, rel, depth),
       settings: { get: () => this.settings.get(), patch: (p) => this.settings.set(p) },
-      onHotkeysChange: () => this.hotkeys.applyAll()
+      onHotkeysChange: () => this.hotkeys.applyAll(),
+      vault: this.vault,
+      jobs: this.jobs
     })
 
     this.registerEcosystemTools()
@@ -133,8 +150,16 @@ export class AppContext {
       }),
       securityMod: () => {
         const m = this.settings.get().securityMod
-        return { mode: m.refusalRewrite, ctfInject: m.ctfInject, maxRewrites: m.maxRewrites, rewriteApi: m.rewriteApi }
+        return {
+          mode: m.refusalRewrite,
+          ctfInject: m.ctfInject,
+          maxRewrites: m.maxRewrites,
+          rewriteApi: m.rewriteApi,
+          customPatterns: m.customPatterns ?? [],
+          customNotice: m.customNotice ?? ''
+        }
       },
+      captureMemory: (content) => this.memory.add(content.slice(0, 40), content, ['标记'], 'marker'),
       systemPromptFor: (sessionId) => this.systemPromptFor(sessionId)
     })
 

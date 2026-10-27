@@ -331,6 +331,23 @@ export function SettingsView(): React.JSX.Element {
           <label className="flex items-center gap-2 py-1 text-[12.5px]">
             <input type="checkbox" checked={s.securityMod.ctfInject} onChange={(e) => patch({ securityMod: { ...s.securityMod, ctfInject: e.target.checked } })} /> CTF/安全研究模式提示词
           </label>
+          <div className="py-1 text-[12.5px]">
+            AI 回复拦截（每行一条正则，命中即阻止工具执行）：
+            <textarea
+              className="mt-1 min-h-[64px] w-full rounded-xl px-2.5 py-2 font-mono text-[11.5px] outline-none"
+              style={{ background: 'var(--bg-hover)', border: '1px solid var(--border)' }}
+              placeholder={'如：\n请提供.*支付凭证'}
+              defaultValue={(s.securityMod.customPatterns ?? []).join('\n')}
+              onBlur={(e) =>
+                patch({
+                  securityMod: {
+                    ...s.securityMod,
+                    customPatterns: e.target.value.split('\n').map((x) => x.trim()).filter(Boolean)
+                  }
+                })
+              }
+            />
+          </div>
           <div className="flex items-center gap-2 py-1 text-[12.5px]">
             命令超时(s)
             <input className="w-20 rounded-lg px-2 py-1" style={{ background: 'var(--bg-hover)' }} type="number" value={s.commandTimeoutMs / 1000} onChange={(e) => patch({ commandTimeoutMs: Number(e.target.value) * 1000 })} />

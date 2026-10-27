@@ -83,6 +83,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  ctx.jobs.dispose()
   ctx.mcp.disposeAll()
 })
 

@@ -4,8 +4,8 @@
 
 ## 当前状态
 
-- ✅ **已实现：31 个**（`src/main/dsh/host.ts` 服务注册表，插件经 `ctx.<service>` 调用）
-- ⏳ 待补：88 个，按批次推进
+- ✅ **已实现：37 个**（`src/main/dsh/host.ts` 服务注册表，插件经 `ctx.<service>` 调用）
+- ⏳ 待补：82 个，按批次推进
 
 ### 已实现
 
@@ -16,8 +16,10 @@
 | storage | `storage` |
 | registry (B4) | `skills` `subagents` `goals` `workspaceFiles` `providers`(≈llm) `workspaceRegistry` `tokenMeter` |
 | ui (B2) | `slots` `settings` `settingsController` `shortcuts` `theme` `locale` |
+| misc (B3) | `jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore` |
 
 > 说明：Lidow 以自有能力映射 DSH 语义（如 `providers` 对应 `llm`），语义差异在适配层消化。
+> B3 底座：`infra/jobs.ts`（interval/每日双模式调度器）+ `infra/vault.ts`（Electron safeStorage 加密凭据库）。
 
 ## 补全批次计划
 
@@ -25,7 +27,7 @@
 | --- | --- | --- |
 | B1 | 会话四件套 | ✅ 已完成 |
 | B2 | `settingsController` `shortcuts` `theme` `locale` | ✅ 已完成（uiWorkspace 待做） |
-| B3 | `jobs` `jobController` `schedule` `credentials` | 待做 |
+| B3 | `jobs` `jobController` `schedule` `scheduler` `credentials` `secretStore` | ✅ 已完成 |
 | B4 | `subagents` `skills` `goals` `workspaceFiles` | ✅ 已完成 |
 | B5 | 客户端 UI 其余（`uiChat` `uiInput` `uiMessages`… 20 个） | 待做 |
 | B6 | 扩展机制 + 低频 misc | 待做 |

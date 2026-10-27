@@ -4,7 +4,7 @@ import type { SessionStore } from '@main/session/store'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext } from '@main/tools/types'
 import { formatObservations, parseToolCalls } from './parser'
-import { attemptRewrite } from '@main/security/refusal'
+import { attemptRewrite, extractMemoryMarkers, interceptCheck } from '@main/security/refusal'
 import { Logger } from '@main/infra/log'
 
 export interface LoopDeps {
@@ -21,8 +21,17 @@ export interface LoopDeps {
   /** 事件上报 renderer */
   emit: (event: { type: string; sessionId: string; [k: string]: unknown }) => void
   settings: () => { autoCompact: boolean; compactThreshold: number }
-  /** 安全 MOD 配置（拒绝改写） */
-  securityMod: () => { mode: 'off' | 'local' | 'api'; ctfInject: boolean; maxRewrites: number; rewriteApi?: string }
+  /** 安全 MOD 配置（拒绝改写 + 自定义拦截） */
+  securityMod: () => {
+    mode: 'off' | 'local' | 'api'
+    ctfInject: boolean
+    maxRewrites: number
+    rewriteApi?: string
+    customPatterns: string[]
+    customNotice: string
+  }
+  /** [记忆] 标记捕获落点 */
+  captureMemory: (content: string) => void
   /** 首轮注入的系统提示词 */
   systemPromptFor: (sessionId: string) => string
 }
@@ -116,9 +125,38 @@ export class AgentLoop {
           Logger.info('loop', `检测到拒绝，改写重试 ${rewriteCount}/${mod.maxRewrites}`)
           reply = await this.collectReply(sessionId, outcome.followUp)
         }
-        const turn: ChatTurn = { id: `turn_${nanoid(8)}`, role: 'assistant', text: reply, ts: Date.now(), status: 'done' }
+
+        // 1.5 自定义拦截：命中即终止本轮，不执行工具
+        {
+          const mod = this.deps.securityMod()
+          const hit = interceptCheck(reply, mod.customPatterns)
+          if (hit) {
+            Logger.warn('loop', `回复命中拦截规则: ${hit}`)
+            this.deps.emit({
+              type: 'notice',
+              sessionId,
+              level: 'warn',
+              message: mod.customNotice || `回复命中拦截规则（${hit}），已阻止工具执行`
+            })
+          }
+        }
+
+        // 1.6 [记忆] 正文标记自动捕获
+        for (const marker of extractMemoryMarkers(reply)) {
+          this.deps.captureMemory(marker)
+        }
+        const intercepted = interceptCheck(reply, this.deps.securityMod().customPatterns) !== null
+        const turn: ChatTurn = {
+          id: `turn_${nanoid(8)}`,
+          role: 'assistant',
+          text: reply,
+          ts: Date.now(),
+          status: intercepted ? 'stopped' : 'done'
+        }
         store.appendTurn(sessionId, turn)
         this.deps.emit({ type: 'session-updated', sessionId })
+
+        if (intercepted) break
 
         // 2. 解析工具调用
         const parsed = parseToolCalls(reply)

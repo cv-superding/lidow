@@ -248,7 +248,17 @@ export interface AppSettings {
   compactThreshold: number
   autoCompact: boolean
   globalHotkeys: Record<string, string>
-  securityMod: { enabled: boolean; ctfInject: boolean; refusalRewrite: 'off' | 'local' | 'api'; rewriteApi?: string; maxRewrites: number }
+  securityMod: {
+    enabled: boolean
+    ctfInject: boolean
+    refusalRewrite: 'off' | 'local' | 'api'
+    rewriteApi?: string
+    maxRewrites: number
+    /** AI 回复拦截：自定义正则列表（每行一条，任意命中即拦截，不再执行工具） */
+    customPatterns?: string[]
+    /** 拦截后的提示语 */
+    customNotice?: string
+  }
   sync: {
     feishu?: { webhookUrl: string; enabled: boolean }
     wecom?: { webhookUrl: string; enabled: boolean }

@@ -3,6 +3,8 @@ import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext, ToolDef } from '@main/tools/types'
 import type { SessionStore } from '@main/session/store'
 import type { TaskPlanStore } from '@main/ecosystem/taskPlan'
+import type { CredentialVault } from '@main/infra/vault'
+import type { JobScheduler, Job } from '@main/infra/jobs'
 import { listAgents, listSkills, readSkill } from '@main/ecosystem/skills'
 
 /**
@@ -44,6 +46,9 @@ export class DshHost {
       /** B2：设置 / 快捷键 */
       settings: { get: () => AppSettings; patch: (p: Partial<AppSettings>) => AppSettings }
       onHotkeysChange?: () => void
+      /** B3：凭据保险库 / 作业调度 */
+      vault: CredentialVault
+      jobs: JobScheduler
     }
   ) {
     this.registerBuiltIns()
@@ -181,6 +186,47 @@ export class DshHost {
     })
     svc('workspaceFiles', 'registry', {
       tree: (rel: string, depth: number) => d.readFileTree(d.projectRoot(), String(rel ?? ''), Number(depth ?? 2))
+    })
+    // ---- B3：作业与凭据 ----
+    svc('jobs', 'misc', {
+      create: (name: string, kind: 'interval' | 'daily', value: number | string, action: string): Job =>
+        d.jobs.create(
+          String(name),
+          kind === 'interval' ? { kind: 'interval', intervalMs: Number(value) } : { kind: 'daily', at: String(value) },
+          String(action)
+        ),
+      list: () => d.jobs.list(),
+      get: (id: string) => d.jobs.get(String(id)) ?? null,
+      remove: (id: string) => d.jobs.remove(String(id)),
+      trigger: (id: string) => d.jobs.trigger(String(id))
+    })
+    svc('jobController', 'misc', {
+      start: (id: string) => d.jobs.setEnabled(String(id), true),
+      stop: (id: string) => d.jobs.setEnabled(String(id), false)
+    })
+    svc('schedule', 'misc', {
+      interval: (name: string, minutes: number, action: string) =>
+        d.jobs.create(String(name), { kind: 'interval', intervalMs: Math.max(1, Number(minutes)) * 60_000 }, String(action)),
+      daily: (name: string, at: string, action: string) =>
+        d.jobs.create(String(name), { kind: 'daily', at: String(at) }, String(action))
+    })
+    svc('scheduler', 'misc', {
+      list: () => d.jobs.list(),
+      cancel: (id: string) => d.jobs.remove(String(id))
+    })
+    svc('credentials', 'misc', {
+      set: (key: string, value: string) => {
+        d.vault.set(String(key), String(value))
+        return true
+      },
+      get: (key: string) => d.vault.get(String(key)),
+      delete: (key: string) => d.vault.delete(String(key)),
+      keys: () => d.vault.keys()
+    })
+    svc('secretStore', 'misc', {
+      set: (key: string, value: string) => d.vault.set(String(key), String(value)),
+      get: (key: string) => d.vault.get(String(key)),
+      delete: (key: string) => d.vault.delete(String(key))
     })
   }
 

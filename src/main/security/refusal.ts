@@ -68,3 +68,29 @@ export async function attemptRewrite(
   const prefix = cfg.ctfInject ? '[授权安全研究环境] ' : ''
   return { followUp: prefix + LOCAL_FOLLOWUP, exhausted: false }
 }
+
+/**
+ * 自定义回复拦截（对齐 cuckoo 0.8.18）：每行一条正则，任意命中即拦截。
+ * 返回命中的模式；无效正则忽略。
+ */
+export function interceptCheck(text: string, patterns: string[]): string | null {
+  for (const p of patterns) {
+    if (!p.trim()) continue
+    try {
+      if (new RegExp(p, 'i').test(text)) return p
+    } catch {
+      /* 无效正则跳过 */
+    }
+  }
+  return null
+}
+
+/** 提取正文中的 [记忆] 标记（对齐 cuckoo 0.8.16）：每条标记单独存一条记忆 */
+export function extractMemoryMarkers(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(/\[记忆\]\s*(.+)/g)) {
+    const content = m[1]!.trim()
+    if (content) out.push(content.slice(0, 400))
+  }
+  return out
+}

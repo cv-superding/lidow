@@ -78,8 +78,9 @@ export function normalizeCmd(cmd: string): string {
 
 /**
  * rm 语义解析（正则难以兼顾 flag 前置/后置与目标判定，改用 token 分析）：
- * - `rm` 可以出现在任意位置（如 `sudo rm`），取其后的参数分析
- * - 目标为 / ~ $home * .. ./ 且带递归/强制 → blocked
+ * - `rm` 可出现在任意位置，且跳过前缀修饰词（sudo/env/nohup/command/time/nice）
+ * - 兼容长选项（--recursive --force --no-preserve-root）
+ * - 目标为 / ~ $home * .. ./ 或通配符根（/*、~*）且带递归/强制 → blocked
  * - 其余任何 rm → confirm
  */
 export function judgeRm(seg: string): 'blocked' | 'confirm' | null {
@@ -92,9 +93,22 @@ export function judgeRm(seg: string): 'blocked' | 'confirm' | null {
   const recursive = flags.includes('r')
   const force = flags.includes('f')
   const dangerous = targets.some(
-    (t) => t === '/' || t === '~' || t === '$home' || t === '*' || t === '..' || t === './'
+    (t) =>
+      t === '/' ||
+      t === '~' ||
+      t === '$home' ||
+      t === '*' ||
+      t === '..' ||
+      t === './' ||
+      t.startsWith('/*') || // rm -rf /* 与 rm -rf /*.log 等根目录通配
+      t === '~*' ||
+      t === '~/' ||
+      t === '/**' ||
+      t === '$home/*'
   )
-  if (dangerous && (recursive || force)) return 'blocked'
+  // --no-preserve-root 是强信号：即使没有 -r/-f 也视为最高危
+  if (dangerous && (recursive || force || flags.includes('no-preserve-root'))) return 'blocked'
+  if (flags.includes('no-preserve-root')) return 'blocked'
   return 'confirm'
 }
 
