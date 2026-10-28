@@ -463,8 +463,8 @@ export const useStore = create<LidowState>((set, get) => ({
         break
       }
       case 'ui-panel': {
-        // 悬浮球"打开面板"：退出净模式并展开右侧对话面板
-        set({ pureMode: false, view: 'home', rightOpen: e.panel === 'chat' ? e.open : get().rightOpen })
+        // 悬浮球「打开面板」= 进入纯净模式对话界面（面板语义已废弃，球是唯一入口时此路径必须可用）
+        set({ pureMode: true, pureView: 'home' })
         break
       }
       case 'ui-toggle-pure': {
