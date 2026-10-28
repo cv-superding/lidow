@@ -120,7 +120,16 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
 }
 
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
-  const { activeSession, streamingText, streamingTps, thinkingText, sendPrompt, stop, confirmRequest, answerConfirm, plan, quickCmds } = useStore()
+  const activeSession = useStore((s) => s.activeSession)
+  const streamingText = useStore((s) => s.streamingText)
+  const streamingTps = useStore((s) => s.streamingTps)
+  const thinkingText = useStore((s) => s.thinkingText)
+  const sendPrompt = useStore((s) => s.sendPrompt)
+  const stop = useStore((s) => s.stop)
+  const confirmRequest = useStore((s) => s.confirmRequest)
+  const answerConfirm = useStore((s) => s.answerConfirm)
+  const plan = useStore((s) => s.plan)
+  const quickCmds = useStore((s) => s.quickCmds)
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)

@@ -211,11 +211,21 @@ export class AgentLoop {
     let lastTs = Date.now()
     let watchdog: NodeJS.Timeout | null = null
 
+    // 流式上报节流：net hook 每 80ms 一条全量文本，长回复时 IPC 序列化
+    // + renderer 全量重渲染会打满主线程（用户实测卡死）。合并到 250ms 一条。
+    let pendingFlush: NodeJS.Timeout | null = null
+    let latestPartial = ''
+    let latestTps = 0
+    const flushChunk = (): void => {
+      pendingFlush = null
+      this.deps.emit({ type: 'turn-chunk', sessionId, turnId: 'streaming', text: latestPartial, tps: latestTps })
+    }
     const chunkPromise = this.deps.awaitReply(sessionId, (partial, tps) => {
       const now = Date.now()
-      const turnText = partial
-      this.deps.emit({ type: 'turn-chunk', sessionId, turnId: 'streaming', text: turnText, tps })
-      lastLen = turnText.length
+      latestPartial = partial
+      latestTps = tps
+      if (!pendingFlush) pendingFlush = setTimeout(flushChunk, 250)
+      lastLen = partial.length
       lastTs = now
       // SSE 看门狗：每次 chunk 重置；超时由 awaitReply 内部配合处理
       if (watchdog) clearTimeout(watchdog)
@@ -229,6 +239,10 @@ export class AgentLoop {
     await this.deps.sendToPage(sessionId, prompt)
     const reply = await chunkPromise
     if (watchdog) clearTimeout(watchdog)
+    if (pendingFlush) {
+      clearTimeout(pendingFlush)
+      pendingFlush = null
+    }
     void lastLen
     void lastTs
     if (reply.trim() === '') throw new Error('AI 回复为空（网页可能未就绪或被中断）')
