@@ -14,6 +14,75 @@ import {
   IconFile
 } from './icons'
 
+
+/** 初始化项目弹窗：选目录 + 输入第一句话（cuckoo init-prompt 同款） */
+function InitProjectModal({ onClose, onSend }: { onClose: () => void; onSend: (text: string) => void }): React.JSX.Element {
+  const [dir, setDir] = useState('')
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const pick = async (): Promise<void> => {
+    const d = await api.pickDirectory()
+    if (d) setDir(d)
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.45)' }}>
+      <div
+        className="anim-pop w-[560px] max-w-[92vw] rounded-2xl p-5"
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}
+      >
+        <div className="mb-4 text-[15px] font-semibold">初始化项目</div>
+        <div className="mb-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>项目目录</div>
+        <div className="mb-4 flex gap-2">
+          <input
+            className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] outline-none"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
+            placeholder="请先选择项目目录"
+            readOnly
+            value={dir}
+          />
+          <button
+            className="shrink-0 rounded-lg px-3 py-2 text-[12.5px]"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
+            onClick={() => void pick()}
+          >
+            选择目录
+          </button>
+        </div>
+        <div className="mb-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>
+          你要对 AI 说的第一句话（发送时自动附加项目上下文与系统提示词）
+        </div>
+        <textarea
+          className="mb-4 min-h-[110px] w-full resize-none rounded-lg px-3 py-2.5 text-[12.5px] leading-relaxed outline-none"
+          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text)' }}
+          placeholder="例如：帮我看看这个项目的入口文件在哪里…"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            className="rounded-lg px-4 py-2 text-[12.5px]"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
+            onClick={onClose}
+          >
+            取消
+          </button>
+          <button
+            className="rounded-lg px-4 py-2 text-[12.5px] disabled:opacity-40"
+            style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+            disabled={!dir || !text.trim() || busy}
+            onClick={() => {
+              setBusy(true)
+              if (dir) void api.openProject(dir).then(() => onSend(text.trim()))
+            }}
+          >
+            发送
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** 相对时间：刚刚 / N 分 / N 小时 / 昨天 / N 天 / 日期 */
 function relTime(ts: number): string {
   const diff = Date.now() - ts
@@ -124,6 +193,7 @@ export function PureModeShell(): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
+  const [initOpen, setInitOpen] = useState(false)
   const [, setTick] = useState(0)
 
   const filtered = useMemo(
@@ -202,6 +272,14 @@ export function PureModeShell(): React.JSX.Element {
           </span>
           <span className="flex-1 truncate text-left">新建任务</span>
           <span className="shrink-0 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>Ctrl+N</span>
+        </button>
+        <button
+          className="sl flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px]"
+          style={{ color: 'var(--text-dim)' }}
+          onClick={() => setInitOpen(true)}
+        >
+          <span className="shrink-0"><IconFolder size={15} /></span>
+          <span className="flex-1 truncate text-left">初始化项目</span>
         </button>
         <button
           className="sl flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px]"
@@ -304,6 +382,25 @@ export function PureModeShell(): React.JSX.Element {
           </div>
         )}
       </div>
+
+      {/* 初始化项目弹窗（cuckoo 同款：选目录 + 第一句话，发送时附加系统提示词） */}
+      {initOpen && (
+        <InitProjectModal
+          onClose={() => setInitOpen(false)}
+          onSend={async (text) => {
+            setInitOpen(false)
+            // 建会话并发送（sendPrompt 会注入完整系统提示词）
+            const pid = providerId || activeSession?.providerId || providers[0]?.id
+            if (!pid) {
+              useStore.getState().notice('请先选择一个 AI 平台', 'warn')
+              return
+            }
+            if (!activeSession) await useStore.getState().createSession(pid)
+            setPureView('home')
+            await useStore.getState().sendPrompt(text)
+          }}
+        />
+      )}
 
       {/* ③ 底部用户区 */}
       <div className="flex items-center gap-2 border-t px-2.5 py-2" style={{ borderColor: 'var(--border)' }}>
