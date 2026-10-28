@@ -54,20 +54,34 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   const isUser = turn.role === 'user'
   const isSystem = turn.role === 'system'
   if (isSystem) {
-    return <div className="mx-auto max-w-[92%] rounded-xl px-3 py-2 text-center text-[12px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }}>{turn.text}</div>
+    return (
+      <div className="mx-auto max-w-[560px] rounded-lg px-3 py-1.5 text-center text-[11.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-hint)' }}>
+        {turn.text}
+      </div>
+    )
   }
   return (
-    <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
-      <div
-        className={`max-w-[92%] px-4 py-2.5 ${isUser ? 'rounded-2xl rounded-br-md' : 'px-1'}`}
-        style={
-          isUser
-            ? { background: 'var(--bubble-user-bg)', border: '1px solid var(--bubble-user-border)' }
-            : { background: 'transparent', border: 'none', padding: '2px 0' }
-        }
-      >
-        {turn.text ? <TurnBody text={turn.text} /> : <span style={{ color: 'var(--text-dim)' }}>（本轮无文本，仅工具调用）</span>}
-      </div>
+    <div className="flex flex-col gap-2">
+      {isUser ? (
+        // 用户消息：右对齐气泡
+        <div className="flex justify-end">
+          <div
+            className="max-w-[76%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13px] leading-relaxed"
+            style={{ background: 'var(--bubble-user-bg)', border: '1px solid var(--bubble-user-border)', color: 'var(--text)' }}
+          >
+            {turn.text}
+          </div>
+        </div>
+      ) : (
+        // AI 回复：占满宽度，无气泡框（ZCode 式纯文本流）
+        <div className="w-full">
+          {turn.text ? (
+            <TurnBody text={turn.text} />
+          ) : (
+            <span className="text-[12.5px]" style={{ color: 'var(--text-hint)' }}>（本轮无文本，仅工具调用）</span>
+          )}
+        </div>
+      )}
       {turn.toolResults?.map((r) => (
         <ToolCard key={r.callId} result={r} />
       ))}
@@ -147,7 +161,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--bg)' }}>
-      <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-5 py-6">
         {turns.length === 0 && !streamingText && (
           <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 text-center" style={{ color: 'var(--text-hint)' }}>
             <div className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>L</div>
@@ -169,15 +184,15 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           <TurnItem key={t.id} turn={t} />
         ))}
         {streamingText && mode === 'pure' && (
-          <div className="flex flex-col items-start gap-1">
-            <div className="max-w-[92%] px-1 py-2.5">
-              <TurnBody text={streamingText} />
-            </div>
-            <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
+          <div className="flex flex-col gap-1.5">
+            <TurnBody text={streamingText} />
+            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+              <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
               {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}
             </div>
           </div>
         )}
+        </div>
       </div>
 
       {plan && plan.status === 'draft' && (
@@ -220,9 +235,9 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         </div>
       )}
 
-      <div className="relative border-t px-4 py-3" style={{ borderColor: 'var(--border)' }}>
+      <div className="relative px-5 pb-4 pt-2">
         {slashOpen && (
-          <div className="absolute bottom-full left-4 mb-1 w-72 rounded-xl p-1.5" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)' }}>
+          <div className="absolute bottom-full left-4 mb-1 w-72 rounded-xl p-1.5" style={{ background: 'var(--bg-input)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}>
             {SLASH_COMMANDS.map((c) => (
               <button
                 key={c.cmd}
@@ -253,10 +268,13 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div
+          className="mx-auto flex max-w-[760px] items-end gap-2 rounded-2xl px-3 py-2.5 transition-colors"
+          style={{ background: 'var(--bg-input)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}
+        >
           <textarea
-            className="max-h-40 min-h-[42px] flex-1 resize-none rounded-xl px-4 py-2.5 text-[13.5px] outline-none focus:border-[var(--border-strong)]"
-            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text)' }}
+            className="max-h-44 min-h-[28px] flex-1 resize-none bg-transparent px-2 py-1 text-[13.5px] leading-relaxed outline-none"
+            style={{ color: 'var(--text)' }}
             placeholder="输入任务…（/ 唤起指令，Enter 发送，Shift+Enter 换行）"
             value={input}
             onChange={(e) => {
@@ -272,23 +290,28 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           />
           {running ? (
             <button
-              className="h-[42px] rounded-2xl px-4 text-[13px]"
+              title="停止生成"
+              className="flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px]"
               style={{ background: 'var(--danger)', color: 'var(--on-accent)' }}
               onClick={() => void stop('generate')}
             >
-              <span className="flex items-center gap-1.5"><IconStop size={13} /> 停止</span>
+              <IconStop size={12} />
+              停止
             </button>
           ) : (
             <button
               title="发送 (Enter)"
-              className="h-[42px] w-[42px] shrink-0 rounded-full text-[16px] disabled:opacity-40"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-opacity disabled:opacity-30"
               style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
               disabled={!input.trim()}
               onClick={() => void submit()}
             >
-              <span className="flex items-center justify-center"><IconArrowUp size={17} /></span>
+              <IconArrowUp size={16} />
             </button>
           )}
+        </div>
+        <div className="mx-auto mt-1.5 flex max-w-[760px] items-center justify-center text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+          Enter 发送 · Shift+Enter 换行 · / 唤起指令
         </div>
       </div>
     </div>

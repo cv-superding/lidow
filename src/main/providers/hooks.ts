@@ -51,7 +51,7 @@ function deepseekExtract(frame: unknown): { text?: string; think?: string; finis
 
 /** 生成注入主世界的自包含 IIFE 源码 */
 export function buildHookSource(spec: ProviderHookSpec): string {
-  return `(() => {
+  return String.raw`(() => {
   var MARKER = '__lidowHookInstalled__';
   if (window[MARKER]) return;
   window[MARKER] = true;
@@ -246,11 +246,7 @@ export function buildHookSource(spec: ProviderHookSpec): string {
       if (raw.length <= lastLen) return;
       var delta = raw.slice(lastLen);
       lastLen = raw.length;
-      var blocks = delta.split(/
-?
-
-?
-/);
+      var blocks = delta.split(/\r?\n\r?\n/);
       for (var i = 0; i < blocks.length; i++) {
         var parsed = parseData(blocks[i]);
         if (!parsed) continue;
