@@ -151,8 +151,10 @@ export class OverlayManager {
   }
 
   bindSession(sessionId: string, webContentsId: number): void {
+    const same = this.bindings.get(sessionId) === webContentsId
     this.bindings.set(sessionId, webContentsId)
-    Logger.info('overlay', `绑定会话 ${sessionId} → webContents ${webContentsId}`)
+    // 绑定值没变时降低日志噪音（死循环场景每秒会打几十条）
+    if (!same) Logger.info('overlay', `绑定会话 ${sessionId} → webContents ${webContentsId}`)
   }
 
   unbindSession(sessionId: string): void {
@@ -190,6 +192,8 @@ export class OverlayManager {
   /** 会话 → hook 源码（页面导航/重载后需要重新注入，SPA 内部跳转不会丢） */
   private hookSources = new Map<string, string>()
   private hookBoundWc = new Set<number>()
+  /** 已完成注入的 (sessionId, wcId) 组合：重复 bindSession 不再重发 hook（防注入风暴） */
+  private injectedPairs = new Set<string>()
 
   /**
    * 向 webview 主世界注入网络层 hook。
@@ -214,6 +218,9 @@ export class OverlayManager {
       Logger.warn('overlay', 'injectHook: webContents 不存在')
       return false
     }
+    // 同会话同 webview 已注入过 → 不重复注入（死循环场景下会每秒注入几十次）
+    const pairKey = `${sessionId}:${wcId}`
+    if (this.injectedPairs.has(pairKey)) return true
     // 页面每次加载完成后补注（刷新/首次打开都能生效）
     if (!this.hookBoundWc.has(wcId)) {
       this.hookBoundWc.add(wcId)
@@ -223,13 +230,18 @@ export class OverlayManager {
       })
     }
     for (let i = 0; i < 100; i++) {
+      // webview 可能在此期间被销毁/重建（切平台、重挂载）：失效即止，靠 did-finish-load 或下次 configure 重来
+      if (target.isDestroyed()) return false
       if (!target.isLoading()) {
         try {
           await target.executeJavaScript(source, true)
+          this.injectedPairs.add(pairKey)
           Logger.info('overlay', `hook 注入成功 session=${sessionId} try=${i + 1}`)
           return true
         } catch (e) {
-          if (i === 0) Logger.warn('overlay', `hook 注入异常: ${e instanceof Error ? e.message : String(e)}`)
+          const msg = e instanceof Error ? e.message : String(e)
+          if (msg.includes('disposed')) return false
+          if (i === 0) Logger.warn('overlay', `hook 注入异常: ${msg}`)
         }
       }
       await new Promise((r) => setTimeout(r, 200))

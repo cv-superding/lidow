@@ -26,7 +26,9 @@ export type ViewId = 'home' | 'sessions' | 'files' | 'tasks' | 'plugins' | 'memo
 
 /** 统一的项目解析：与 main 的 activeProjectId 对齐（修多项目时取错 projects[0]） */
 export function useProject(s: LidowState): ProjectInfo | null {
-  return s.projects.find((p) => p.id === s.activeProjectId) ?? s.projects[0] ?? null
+  // 只认 activeProjectId；不兜底 projects[0] —— 静默落到别的项目会导致
+  // 会话建错位置（用户视角是"绑不上/网页未连接"），宁可返回 null 走建项目流程。
+  return s.projects.find((p) => p.id === s.activeProjectId) ?? null
 }
 
 interface WebTab {
@@ -295,6 +297,10 @@ export const useStore = create<LidowState>((set, get) => ({
   async bindTabSession(tabId, sessionId, webContentsId) {
     const { tabs } = get()
     const prev = tabs.find((t) => t.id === tabId)
+    // 幂等：同会话同 wcId 已绑定 → 不再做任何事。
+    // 缺了这句，WebTabs 的补绑 effect 会「绑定→更新tab→effect重跑→再绑定」死循环，
+    // 每秒打爆主进程几十次 bindSession + hook 注入（实测应用因此假死）。
+    if (prev && prev.sessionId === sessionId && webContentsId > 0 && prev.wcId === webContentsId) return
     const switched = prev && prev.sessionId && prev.sessionId !== sessionId
     set({ tabs: tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t)) })
     if (webContentsId > 0) {
@@ -309,12 +315,19 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async sendPrompt(text) {
-    const { activeSession } = get()
-    let { activeTabId, tabs } = get()
+    let { activeSession } = get()
+    // 没有活动会话：自动新建（纯净模式直接发送的兜底）
     if (!activeSession) {
-      get().notice('请先新建会话（选择平台）', 'warn')
-      return
+      const pid = get().providers[0]?.id
+      if (!pid) {
+        get().notice('请先选择一个 AI 平台', 'warn')
+        return
+      }
+      await get().createSession(pid)
+      activeSession = get().activeSession
+      if (!activeSession) return
     }
+    let { activeTabId, tabs } = get()
     let tab = tabs.find((t) => t.id === activeTabId)
     // 纯净模式首次发送时可能还没有承载网页：按会话的平台自动打开
     if (!tab) {
@@ -322,9 +335,33 @@ export const useStore = create<LidowState>((set, get) => ({
       ;({ activeTabId, tabs } = get())
       tab = tabs.find((t) => t.id === activeTabId)
     }
-    // 会话与承载网页不一致时重绑（净模式切换会话后直接发送的场景）
+    // 关键兜底：webview 已存在但从未成功绑定（wcId<=0 时 bindTabSession 静默跳过）
+    // → 从 DOM 直接拿 webContentsId 补绑，否则 loop 永远「网页未连接」
+    if (tab && tab.sessionId && (tab.wcId ?? -1) <= 0) {
+      try {
+        const el = document.querySelector('webview') as Electron.WebviewTag | null
+        const wcId = el?.getWebContentsId?.() ?? -1
+        const tabId = tab.id
+        if (wcId > 0) {
+          set({ tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, wcId } : t)) })
+          tab = get().tabs.find((t) => t.id === tabId)
+        }
+      } catch {
+        /* webview 未挂载 */
+      }
+    }
+    // 会话与承载网页不一致时重绑（净模式切换会话后直接发送的场景）。
+    // tab.wcId 可能尚未记录（did-attach 晚于绑定请求）：从 DOM 现取，仍无效才传 -1。
     if (tab && tab.sessionId !== activeSession.id) {
-      await get().bindTabSession(tab.id, activeSession.id, tab.wcId ?? -1)
+      let wcId = tab.wcId ?? -1
+      if (wcId <= 0) {
+        try {
+          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
+        } catch {
+          /* webview 未挂载 */
+        }
+      }
+      await get().bindTabSession(tab.id, activeSession.id, wcId)
     }
     await api.sendPrompt(activeSession.id, text)
   },

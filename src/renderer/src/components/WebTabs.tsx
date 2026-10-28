@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useStore, useProject } from '../store'
+import { useStore } from '../store'
 import { api } from '../api'
 
 export function WebTabs(): React.JSX.Element {
@@ -50,28 +50,33 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
   useEffect(() => {
     const wv = ref.current
     if (!wv || !tab) return
+    let wcId = -1
+    try {
+      wcId = wv.getWebContentsId()
+    } catch {
+      /* 尚未 attach */
+    }
+    const bindNow = async (): Promise<void> => {
+      if (wcId <= 0) return
+      const cur = useStore.getState().tabs.find((t) => t.id === tab.id)
+      if (cur) useStore.getState().setTabWcId(tab.id, wcId)
+      // 只绑定明确指定的会话；没有就不动（由 openProviderTab/createSession 显式驱动）。
+      // 此处自动建会话会与 UI 路径各建一个，两个会话互相踩踏导致绑定错乱。
+      if (tab.sessionId) await useStore.getState().bindTabSession(tab.id, tab.sessionId, wcId)
+    }
     const onAttached = (): void => {
       try {
-        const wcId = wv.getWebContentsId()
-        useStore.getState().setTabWcId(tab.id, wcId)
-        void (async () => {
-          let sid = tab.sessionId
-          if (!sid) {
-            const project = useProject(useStore.getState())
-            if (project) {
-              const s = await api.createSession(project.id, tab.providerId)
-              sid = s.id
-            }
-          }
-          if (sid) await useStore.getState().bindTabSession(tab.id, sid, wcId)
-        })()
+        wcId = wv.getWebContentsId()
       } catch {
-        /* webview 未就绪 */
+        return
       }
+      void bindNow()
     }
     wv.addEventListener('did-attach', onAttached)
+    // 已 attach 但 sessionId 后来才确定（新建会话/切换会话）：主动补绑
+    if (wcId > 0) void bindNow()
     return () => wv.removeEventListener('did-attach', onAttached)
-  }, [tab])
+  }, [tab?.id, tab?.sessionId, tab])
 
   if (!tab) return <div />
   return (
