@@ -63,6 +63,15 @@ interface LidowState {
   /** 纯净模式右侧文件预览面板是否展开（默认收起，避免空白边条） */
   previewOpen: boolean
   setPreviewOpen(open: boolean): void
+  /** 纯净模式侧栏宽度（拖拽分隔线调整，持久化到 localStorage） */
+  sidebarWidth: number
+  setSidebarWidth(w: number): void
+  /** 工作台左栏是否为展开态（悬停展开 / 拖拽后固定） */
+  railPinned: boolean
+  setRailPinned(v: boolean): void
+  /** 纯净模式右侧文件预览宽度（拖拽调整） */
+  previewWidth: number
+  setPreviewWidth(w: number): void
   pureMode: boolean
   /** 纯净模式主区当前面板（home=网页对话；其余为该面板视图），不改变 pureMode */
   pureView: ViewId
@@ -142,6 +151,24 @@ export const useStore = create<LidowState>((set, get) => ({
   view: 'home',
   rightOpen: true,
   previewOpen: false,
+  // 记住上次拖拽的侧栏宽度（localStorage 读不到时用默认 268）
+  sidebarWidth: (() => {
+    try {
+      const raw = Number(window.localStorage.getItem('lidow:sidebarWidth'))
+      return Number.isFinite(raw) && raw >= 200 && raw <= 520 ? raw : 268
+    } catch {
+      return 268
+    }
+  })(),
+  railPinned: false,
+  previewWidth: (() => {
+    try {
+      const raw = Number(window.localStorage.getItem('lidow:previewWidth'))
+      return Number.isFinite(raw) && raw >= 220 && raw <= 640 ? raw : 320
+    } catch {
+      return 320
+    }
+  })(),
   pureMode: false,
   pureView: 'home',
   streamingText: '',
@@ -184,6 +211,27 @@ export const useStore = create<LidowState>((set, get) => ({
   },
   setPreviewOpen(open) {
     set({ previewOpen: open })
+  },
+  setSidebarWidth(w) {
+    const next = Math.min(520, Math.max(200, Math.round(w)))
+    set({ sidebarWidth: next })
+    try {
+      window.localStorage.setItem('lidow:sidebarWidth', String(next))
+    } catch {
+      /* 隐私模式忽略 */
+    }
+  },
+  setRailPinned(v) {
+    set({ railPinned: v })
+  },
+  setPreviewWidth(w) {
+    const next = Math.min(640, Math.max(220, Math.round(w)))
+    set({ previewWidth: next })
+    try {
+      window.localStorage.setItem('lidow:previewWidth', String(next))
+    } catch {
+      /* 隐私模式忽略 */
+    }
   },
   setPureView(v) {
     set({ pureView: v })

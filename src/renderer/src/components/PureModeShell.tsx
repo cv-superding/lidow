@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useStore, useProject } from '../store'
 import { api } from '../api'
 import { InitProjectModal } from './InitProjectModal'
+import { ResizeHandle } from './ResizeHandle'
 import {
   IconPlus,
   IconSearch,
@@ -36,6 +37,8 @@ export function PreviewPanel({ projectId }: { projectId: string }): React.JSX.El
   const selectedFile = useStore((s) => s.selectedFile)
   const open = useStore((s) => s.previewOpen)
   const setPreviewOpen = useStore((s) => s.setPreviewOpen)
+  const previewWidth = useStore((s) => s.previewWidth)
+  const setPreviewWidth = useStore((s) => s.setPreviewWidth)
 
   useEffect(() => {
     if (open) void api.readFileTree(projectId, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
@@ -71,15 +74,25 @@ export function PreviewPanel({ projectId }: { projectId: string }): React.JSX.El
 
   return (
     <div
-      className="flex shrink-0 flex-col border-l"
+      className="relative flex shrink-0 flex-col border-l"
       style={{
-        width: open ? 320 : 0,
+        width: open ? previewWidth : 0,
         overflow: 'hidden',
         borderColor: open ? 'var(--border)' : 'transparent',
         background: 'var(--surface)',
         transition: 'width var(--dur-slow) var(--ease-emph), border-color var(--dur) ease'
       }}
     >
+      {open && (
+        <ResizeHandle
+          width={previewWidth}
+          onResize={setPreviewWidth}
+          min={220}
+          max={640}
+          title="拖动调整预览宽度（双击复位）"
+          side="left"
+        />
+      )}
       {open && (
         <>
           <div className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2.5" style={{ borderColor: 'var(--border)' }}>
@@ -135,6 +148,8 @@ export function PureModeShell(): React.JSX.Element {
   const setPure = useStore((s) => s.setPure)
   const pureView = useStore((s) => s.pureView)
   const previewOpen = useStore((s) => s.previewOpen)
+  const sidebarWidth = useStore((s) => s.sidebarWidth)
+  const setSidebarWidth = useStore((s) => s.setSidebarWidth)
   const setPreviewOpen = useStore((s) => s.setPreviewOpen)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
@@ -196,9 +211,10 @@ export function PureModeShell(): React.JSX.Element {
 
   return (
     <div
-      className="anim-fade flex w-[268px] shrink-0 flex-col border-r"
-      style={{ borderColor: 'var(--border)', background: 'var(--sidebar)' }}
+      className="anim-fade relative flex shrink-0 flex-col border-r"
+      style={{ width: sidebarWidth, borderColor: 'var(--border)', background: 'var(--sidebar)' }}
     >
+      <ResizeHandle width={sidebarWidth} onResize={setSidebarWidth} />
       {/* ① 项目头 */}
       <div className="flex h-11 shrink-0 items-center gap-2 px-3">
         <span
@@ -302,7 +318,7 @@ export function PureModeShell(): React.JSX.Element {
         </div>
       </div>
 
-      <div className="px-2 pb-1.5">
+      <div className="px-1.5 pb-1.5">
         <input
           id="pure-search"
           className="field h-[30px] text-[12px]"
@@ -313,7 +329,7 @@ export function PureModeShell(): React.JSX.Element {
         />
       </div>
 
-      <div className="stable-gutter min-h-0 flex-1 overflow-y-auto py-0.5 pl-1.5 pr-1">
+      <div className="stable-gutter min-h-0 flex-1 overflow-y-auto py-0.5 pl-1.5 pr-1.5">
         {filtered.map((s) => {
           const active = activeSession?.id === s.id
           return (
