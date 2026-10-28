@@ -1,9 +1,10 @@
 import { app, BrowserWindow, dialog, shell, nativeTheme } from 'electron'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join, resolve } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
+import { runTerminal } from '@main/tools/terminal'
 import type { McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
 
@@ -181,6 +182,43 @@ export function registerHandlers(
     const file = join(dir, `${safeName}-${session.id.slice(-6)}.md`)
     writeFileSync(file, md, 'utf-8')
     return file
+  })
+
+  // ---------- 顶栏工具 ----------
+  R('revealPath', async (target: string) => {
+    const p = String(target ?? '')
+    if (!p || !existsSync(p)) return false
+    shell.showItemInFolder(p)
+    return true
+  })
+  R('openExportDir', () => {
+    const project = ctx.activeProject()
+    if (!project) throw new Error('请先打开项目')
+    const dir = join(project.root, '.lidow', 'exports')
+    mkdirSync(dir, { recursive: true })
+    void shell.openPath(dir)
+    return dir
+  })
+  R('terminalCwd', () => ctx.activeProject()?.root ?? process.cwd())
+  R('listTools', () => ctx.tools.all().map((t) => ({ name: t.name, description: t.description })))
+  R('openExternal', async (url: string) => {
+    const u = String(url ?? '')
+    // 只放行 http(s)，避免 file:// 或自定义协议被执行
+    if (!/^https?:\/\//i.test(u)) return false
+    await shell.openExternal(u)
+    return true
+  })
+  R('runTerminal', async (command: string, cwd?: string) => {
+    const project = ctx.activeProject()
+    const root = project?.root ?? process.cwd()
+    // 只允许在项目目录内执行（终端面板不提供越界能力）
+    let workdir = root
+    const raw = String(cwd ?? '')
+    if (raw) {
+      const resolved = isAbsolute(raw) ? resolve(raw) : resolve(root, raw)
+      if (resolved.startsWith(resolve(root))) workdir = resolved
+    }
+    return runTerminal(String(command ?? ''), workdir)
   })
 
   // ---------- 工具 / 文件 ----------

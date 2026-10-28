@@ -265,6 +265,37 @@ export function IconTrash({ size, className }: P): React.JSX.Element {
   )
 }
 
+/** 帮助（圆圈问号） */
+export function IconHelp({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="8" cy="8" r="5.9" />
+      <path d="M6.2 6.1a1.85 1.85 0 1 1 2.6 1.7c-.5.3-.8.7-.8 1.3v.3" />
+      <circle cx="8" cy="11.6" r="0.62" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+/** 侧栏开关：竖向分栏 + 左箭头 */
+export function IconSidebarToggle({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2" y="3" width="12" height="10" rx="1.8" />
+      <path d="M6.2 3v10" />
+      <path d="M11.2 6.4 9.6 8l1.6 1.6" />
+    </svg>
+  )
+}
+
+/** 向下箭头（下拉指示） */
+export function IconChevronDown({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />
+    </svg>
+  )
+}
+
 export const RAIL_ICONS = {
   home: IconHome,
   sessions: IconChat,

@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore, useProject, type ViewId } from '../store'
+import { api } from '../api'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
 import { PureModeShell, PreviewPanel } from './PureModeShell'
+import { TerminalPanel } from './TerminalPanel'
+import { HelpPanel } from './HelpPanel'
 import {
   SessionsView,
   FilesView,
@@ -13,7 +16,19 @@ import {
   AuditView,
   SettingsView
 } from './views'
-import { RAIL_ICONS, IconPure, IconChevronRight, IconFolder } from './icons'
+import {
+  RAIL_ICONS,
+  IconPure,
+  IconChevronRight,
+  IconFolder,
+  IconChevronDown,
+  IconCheck,
+  IconPlus,
+  IconDownload,
+  IconHelp,
+  IconTerminal,
+  IconSidebarToggle
+} from './icons'
 import { WindowControls, DragStrip } from './TitleBar'
 
 const RAIL: { id: ViewId; label: string }[] = [
@@ -43,12 +58,15 @@ export function PanelHeader({ title, children }: { title: string; children?: Rea
 
 export function LeftRail(): React.JSX.Element {
   const { view, setView, pureMode, setPure } = useStore()
+  const railPinned = useStore((s) => s.railPinned)
   const [hovered, setHovered] = useState(false)
+  // 固定展开（顶栏侧栏开关）优先于悬停；两者都没有时保持图标条
+  const expanded = railPinned || hovered
   return (
     <div
       className="flex h-full flex-col border-r"
       style={{
-        width: hovered ? 176 : 52,
+        width: expanded ? 176 : 52,
         borderColor: 'var(--border)',
         background: 'var(--sidebar)',
         transition: 'width var(--dur-slow) var(--ease-emph)',
@@ -67,8 +85,8 @@ export function LeftRail(): React.JSX.Element {
               className="nav-item shrink-0"
               data-active={active}
               style={{
-                paddingLeft: hovered ? 10 : 0,
-                justifyContent: hovered ? 'flex-start' : 'center',
+                paddingLeft: expanded ? 10 : 0,
+                justifyContent: expanded ? 'flex-start' : 'center',
                 height: 34
               }}
               onClick={() => setView(item.id)}
@@ -80,9 +98,9 @@ export function LeftRail(): React.JSX.Element {
               <span
                 className="whitespace-nowrap"
                 style={{
-                  opacity: hovered ? 1 : 0,
-                  width: hovered ? 'auto' : 0,
-                  transition: `opacity ${hovered ? '180ms' : '90ms'} ease`
+                  opacity: expanded ? 1 : 0,
+                  width: expanded ? 'auto' : 0,
+                  transition: `opacity ${expanded ? '180ms' : '90ms'} ease`
                 }}
               >
                 {item.label}
@@ -97,8 +115,8 @@ export function LeftRail(): React.JSX.Element {
         <button
           className="nav-item shrink-0"
           style={{
-            paddingLeft: hovered ? 10 : 0,
-            justifyContent: hovered ? 'flex-start' : 'center',
+            paddingLeft: expanded ? 10 : 0,
+            justifyContent: expanded ? 'flex-start' : 'center',
             height: 34,
             color: pureMode ? 'var(--accent)' : undefined
           }}
@@ -111,9 +129,9 @@ export function LeftRail(): React.JSX.Element {
           <span
             className="whitespace-nowrap"
             style={{
-              opacity: hovered ? 1 : 0,
-              width: hovered ? 'auto' : 0,
-              transition: `opacity ${hovered ? '180ms' : '90ms'} ease`
+              opacity: expanded ? 1 : 0,
+              width: expanded ? 'auto' : 0,
+              transition: `opacity ${expanded ? '180ms' : '90ms'} ease`
             }}
           >
             纯净模式
@@ -125,11 +143,16 @@ export function LeftRail(): React.JSX.Element {
 }
 
 /** 顶栏：品牌 | 项目面包屑 | 运行态 + 窗口控制。整条可拖拽窗口 */
-function TopBar(): React.JSX.Element {
+function TopBar({
+  terminalOpen,
+  setTerminalOpen
+}: {
+  terminalOpen: boolean
+  setTerminalOpen: (v: boolean) => void
+}): React.JSX.Element {
   const view = useStore((s) => s.view)
   const streamingText = useStore((s) => s.streamingText)
   const stop = useStore((s) => s.stop)
-  const project = useProject(useStore())
   const running = streamingText.length > 0
   return (
     <div
@@ -147,39 +170,230 @@ function TopBar(): React.JSX.Element {
         <span className="text-[13px] font-semibold tracking-tight">Lidow</span>
       </div>
 
-      {/* 面包屑 */}
-      <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-3.5">
-        <span style={{ color: 'var(--text-hint)' }}>
-          <IconFolder size={13} />
-        </span>
-        <span className="truncate text-[12.5px]" style={{ color: 'var(--text-dim)' }}>
-          {project?.name ?? '未打开项目'}
-        </span>
-        <IconChevronRight size={11} className="shrink-0 opacity-50" />
+      {/* 项目切换下拉 + 面包屑 */}
+      <div className="flex h-full min-w-0 flex-1 items-center gap-1 px-2">
+        <ProjectSwitcher />
+        <IconChevronRight size={11} className="shrink-0 opacity-40" />
         <span className="truncate text-[12.5px] font-medium">
           {view === 'home' ? '工作台' : RAIL.find((r) => r.id === view)?.label}
         </span>
+        {running && (
+          <span
+            className="ml-2 flex shrink-0 items-center gap-1.5 rounded-full px-2 py-[3px] text-[11px]"
+            style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+          >
+            <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+            运行中
+          </span>
+        )}
       </div>
 
-      {/* 控制区（不可拖拽） */}
-      <div className="flex h-full items-center gap-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
+      {/* 工具区（不可拖拽） */}
+      <div className="flex h-full items-center gap-0.5 pr-1" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {running && (
-          <>
-            <span
-              className="flex items-center gap-1.5 rounded-full px-2 py-[3px] text-[11px]"
-              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-            >
-              <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
-              运行中
-            </span>
-            <button className="btn btn-sm btn-danger" onClick={() => void stop('all')}>
-              停止
-            </button>
-          </>
+          <button className="btn btn-sm btn-danger mr-1" onClick={() => void stop('all')}>
+            停止
+          </button>
         )}
+        <TopActions
+          terminalOpen={terminalOpen}
+          onOpenTerminal={() => setTerminalOpen(!terminalOpen)}
+        />
       </div>
       <WindowControls />
     </div>
+  )
+}
+
+/** 项目切换下拉：列出已打开项目，切换即 openProject */
+function ProjectSwitcher(): React.JSX.Element {
+  const projects = useStore((s) => s.projects)
+  const activeProjectId = useStore((s) => s.activeProjectId)
+  const openProject = useStore((s) => s.openProject)
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const active = projects.find((p) => p.id === activeProjectId)
+
+  // 点外面收起
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button
+        className="flex h-7 max-w-[220px] items-center gap-1.5 rounded-[var(--r-md)] px-2 text-[12.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        style={{ color: 'var(--text-dim)' }}
+        onClick={() => setOpen((v) => !v)}
+        title="切换项目"
+      >
+        <span style={{ color: 'var(--accent)' }}>
+          <IconFolder size={13} />
+        </span>
+        <span className="truncate">{active?.name ?? '未打开项目'}</span>
+        <IconChevronDown size={12} className={`shrink-0 transition-transform duration-[150ms] ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div
+          className="anim-pop absolute left-0 top-[calc(100%+6px)] z-50 w-[280px] overflow-hidden rounded-[var(--r-lg)] p-1"
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          <div className="text-label px-2 py-1.5">已打开项目</div>
+          {projects.length === 0 && (
+            <div className="px-2 py-2 text-[12px]" style={{ color: 'var(--text-hint)' }}>
+              还没有项目
+            </div>
+          )}
+          {projects.map((p) => {
+            const isActive = p.id === activeProjectId
+            return (
+              <button
+                key={p.id}
+                className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                style={{ background: isActive ? 'var(--bg-active)' : 'transparent', color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
+                onClick={() => {
+                  setOpen(false)
+                  if (!isActive) void openProject(p.root)
+                }}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{p.name}</span>
+                  <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                    {p.root}
+                  </span>
+                </span>
+                {isActive && (
+                  <span style={{ color: 'var(--accent)' }}>
+                    <IconCheck size={12} />
+                  </span>
+                )}
+              </button>
+            )
+          })}
+          <div className="divider-soft my-1" />
+          <button
+            className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+            style={{ color: 'var(--text-dim)' }}
+            onClick={() => {
+              setOpen(false)
+              void api.pickDirectory().then((dir) => dir && void openProject(dir))
+            }}
+          >
+            <IconPlus size={12} /> 打开其他目录…
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 顶栏右侧功能按钮：导出 / 帮助 / 终端 / 侧栏开关（对齐 ZCode 顶栏） */
+function TopActions({
+  terminalOpen,
+  onOpenTerminal
+}: {
+  terminalOpen: boolean
+  onOpenTerminal: () => void
+}): React.JSX.Element {
+  const activeSession = useStore((s) => s.activeSession)
+  const railPinned = useStore((s) => s.railPinned)
+  const setRailPinned = useStore((s) => s.setRailPinned)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const exportRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!exportOpen) return
+    const onDown = (e: MouseEvent): void => {
+      if (exportRef.current && !exportRef.current.contains(e.target as Node)) setExportOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [exportOpen])
+
+  const exportMd = async (): Promise<void> => {
+    if (!activeSession) {
+      useStore.getState().notice('当前没有会话可导出', 'warn')
+      return
+    }
+    try {
+      const file = await api.exportSession(activeSession.id)
+      useStore.getState().notice(`已导出：${file}`)
+      await api.revealPath(file)
+    } catch (e) {
+      useStore.getState().notice(`导出失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+  }
+
+  const iconCls = 'btn btn-ghost btn-icon'
+
+  return (
+    <>
+      {/* 导出 */}
+      <div ref={exportRef} className="relative">
+        <button className={iconCls} title="导出会话" onClick={() => setExportOpen((v) => !v)}>
+          <IconDownload size={15} />
+        </button>
+        {exportOpen && (
+          <div
+            className="anim-pop absolute right-0 top-[calc(100%+6px)] z-50 w-[196px] overflow-hidden rounded-[var(--r-lg)] p-1"
+            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          >
+            <button
+              className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => {
+                setExportOpen(false)
+                void exportMd()
+              }}
+            >
+              <IconDownload size={12} /> 导出当前会话为 Markdown
+            </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-hover)]"
+              onClick={() => {
+                setExportOpen(false)
+                void api.openExportDir().catch(() => useStore.getState().notice('请先打开项目', 'warn'))
+              }}
+            >
+              <IconFolder size={12} /> 打开导出目录
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 帮助 */}
+      <button className={iconCls} title="帮助" onClick={() => setHelpOpen(true)}>
+        <IconHelp size={15} />
+      </button>
+
+      {/* 终端 */}
+      <button
+        className={iconCls}
+        title="终端 (Ctrl `)"
+        style={{ color: terminalOpen ? 'var(--accent)' : undefined }}
+        onClick={onOpenTerminal}
+      >
+        <IconTerminal size={15} />
+      </button>
+
+      {/* 侧栏开关 */}
+      <button
+        className={iconCls}
+        title={railPinned ? '收起侧栏' : '固定展开侧栏'}
+        style={{ color: railPinned ? 'var(--accent)' : undefined }}
+        onClick={() => setRailPinned(!railPinned)}
+      >
+        <IconSidebarToggle size={15} />
+      </button>
+
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
+    </>
   )
 }
 
@@ -231,9 +445,22 @@ export function AppShell(): React.JSX.Element {
   const pureView = useStore((s) => s.pureView)
   const notices = useStore((s) => s.notices)
   const confirmRequest = useStore((s) => s.confirmRequest)
+  const [terminalOpen, setTerminalOpen] = useState(false)
 
   useEffect(() => {
     void useStore.getState().boot()
+  }, [])
+
+  // 终端快捷键：Ctrl ` 开合
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.ctrlKey && e.key === '`') {
+        e.preventDefault()
+        setTerminalOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
   }, [])
 
   if (!booted) {
@@ -261,7 +488,7 @@ export function AppShell(): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
-      {pureMode ? <DragStrip /> : <TopBar />}
+      {pureMode ? <DragStrip /> : <TopBar terminalOpen={terminalOpen} setTerminalOpen={setTerminalOpen} />}
 
       <div className="flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}
@@ -301,6 +528,13 @@ export function AppShell(): React.JSX.Element {
         {/* 纯净模式文件预览（仅对话主区） */}
         {pureMode && pureView === 'home' && <PurePreview />}
       </div>
+
+      {/* 内置终端：底部抽屉，与主区上下分栏 */}
+      {terminalOpen && (
+        <div className="shrink-0 border-t" style={{ borderColor: 'var(--border)', height: 260 }}>
+          <TerminalPanel onClose={() => setTerminalOpen(false)} />
+        </div>
+      )}
 
       {confirmRequest && <ConfirmOverlay />}
 

@@ -101,6 +101,20 @@ export interface LidowApi {
   // 会话导出
   exportSession(sessionId: string): Promise<string>
 
+  // 顶栏工具
+  /** 在系统文件管理器中打开路径（项目根/导出目录） */
+  revealPath(path: string): Promise<boolean>
+  /** 打开导出目录并返回路径 */
+  openExportDir(): Promise<string>
+  /** 内置终端：执行一条命令（独立于 AI，用户手动运行），返回输出 */
+  runTerminal(command: string, cwd?: string): Promise<{ output: string; exitCode: number | null; timedOut: boolean }>
+  /** 内置终端默认工作目录（当前项目根） */
+  terminalCwd(): Promise<string>
+  /** 已注册工具清单（内置 + MCP + 插件），供帮助面板展示 */
+  listTools(): Promise<{ name: string; description: string }[]>
+  /** 用系统浏览器打开外部链接 */
+  openExternal(url: string): Promise<boolean>
+
   // 审计
   listAudit(sessionId?: string, limit?: number): Promise<AuditEntry[]>
   revertAudit(entryId: string): Promise<boolean>
