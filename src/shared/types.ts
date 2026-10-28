@@ -247,6 +247,37 @@ export interface AppSettings {
   /** 自动压缩阈值（字符数） */
   compactThreshold: number
   autoCompact: boolean
+  /** 看门狗：SSE 流静默超过该毫秒数判定卡住，自动发「请继续」催 AI */
+  watchdog: {
+    enabled: boolean
+    /** 静默阈值（毫秒） */
+    idleMs: number
+    /** 最大催次数；负数=不限 */
+    maxRetries: number
+    /** 催继续用的提示词 */
+    prompt: string
+  }
+  /** 失败自动重试 */
+  retry: {
+    enabled: boolean
+    /** 首次重试延迟（毫秒），逐次翻倍 */
+    delayMinMs: number
+    /** 延迟上限（毫秒） */
+    delayMaxMs: number
+    /** 普通失败最大重试次数；负数=不限 */
+    maxRetries: number
+    /** 429 限流专用等待（毫秒）与次数 */
+    delay429Ms: number
+    maxRetries429: number
+    /** 重试时发回给 AI 的提示词 */
+    prompt: string
+  }
+  /** 上下文耗尽后自动续接：把摘要带到新会话继续 */
+  autoContinue: {
+    enabled: boolean
+    /** 续接时附加的交接提示词 */
+    handoffPrompt: string
+  }
   globalHotkeys: Record<string, string>
   securityMod: {
     enabled: boolean

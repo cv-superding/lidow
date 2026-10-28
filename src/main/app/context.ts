@@ -39,6 +39,27 @@ const DEFAULT_SETTINGS: AppSettings = {
   sandboxTimeoutMs: 60_000,
   outputBufferLimit: 1024 * 1024,
   compactThreshold: 60_000,
+  watchdog: {
+    enabled: true,
+    idleMs: 90_000,
+    maxRetries: 3,
+    prompt: '请继续'
+  },
+  retry: {
+    enabled: true,
+    delayMinMs: 4000,
+    delayMaxMs: 10_000,
+    maxRetries: 10,
+    delay429Ms: 120_000,
+    maxRetries429: 40,
+    prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
+  },
+  autoContinue: {
+    enabled: true,
+    handoffPrompt:
+      '【上下文交接】以上内容来自上一轮会话的压缩摘要，并非完整上下文，可能丢失细节。' +
+      '请先读取项目文件核实关键结论，再继续推进未完成的任务。'
+  },
   autoCompact: true,
   globalHotkeys: HotkeyManager.defaults(),
   securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
@@ -180,10 +201,7 @@ export class AppContext {
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
       interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
       emit: (event) => this.emit(event),
-      settings: () => ({
-        autoCompact: this.settings.get().autoCompact,
-        compactThreshold: this.settings.get().compactThreshold
-      }),
+      settings: () => this.settings.get(),
       securityMod: () => {
         const m = this.settings.get().securityMod
         return {
@@ -196,7 +214,15 @@ export class AppContext {
         }
       },
       captureMemory: (content) => this.memory.add(content.slice(0, 40), content, ['标记'], 'marker'),
-      systemPromptFor: (sessionId) => this.systemPromptFor(sessionId)
+      systemPromptFor: (sessionId) => this.systemPromptFor(sessionId),
+      // 自动续接：新会话需要自己的网页绑定。这里只做主进程侧绑定，
+      // 前端会通过 session-updated 事件跟上（切到新会话视图）。
+      rebindToSession: async (sessionId: string) => {
+        const prev = this.lastSessionId
+        if (prev) this.overlay.unbindSession(prev)
+        this.lastSessionId = sessionId
+        this.configureOverlay(sessionId)
+      }
     })
 
     this.hotkeys = new HotkeyManager(() => this.settings.get().globalHotkeys)

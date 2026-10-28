@@ -815,11 +815,121 @@ export function SettingsView(): React.JSX.Element {
               />
               <span style={{ color: 'var(--text-hint)' }}>秒</span>
             </label>
-            <label className="flex shrink-0 items-center gap-2 whitespace-nowrap text-[12.5px]">
-              <input type="checkbox" checked={s.autoCompact} onChange={(e) => patch({ autoCompact: e.target.checked })} />
-              自动压缩上下文
-            </label>
           </div>
+        </SettingGroup>
+
+        {/* 对话韧性：看门狗 / 自动重试 / 上下文压缩 / 自动继续 */}
+        <SettingGroup
+          title="对话韧性"
+          desc="AI 卡住或出错时自动恢复：催继续、重试、压缩上下文、跨会话续接。"
+        >
+          <ToggleRow
+            label="看门狗（自动催继续）"
+            desc="SSE 流长时间无数据说明 AI 卡住，自动发提示词让它接着写"
+            checked={s.watchdog.enabled}
+            onChange={(v) => patch({ watchdog: { ...s.watchdog, enabled: v } })}
+          />
+          {s.watchdog.enabled && (
+            <div className="mb-3 ml-[44px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
+              <label className="flex items-center gap-1.5">
+                静默超过
+                <input
+                  className="field w-16 text-center tabular-nums"
+                  type="number"
+                  value={Math.round(s.watchdog.idleMs / 1000)}
+                  onChange={(e) => patch({ watchdog: { ...s.watchdog, idleMs: Number(e.target.value) * 1000 } })}
+                />
+                秒
+              </label>
+              <label className="flex items-center gap-1.5">
+                最多催
+                <input
+                  className="field w-14 text-center tabular-nums"
+                  type="number"
+                  value={s.watchdog.maxRetries}
+                  onChange={(e) => patch({ watchdog: { ...s.watchdog, maxRetries: Number(e.target.value) } })}
+                />
+                次
+              </label>
+              <label className="flex flex-1 items-center gap-1.5">
+                提示词
+                <input
+                  className="field flex-1"
+                  value={s.watchdog.prompt}
+                  onChange={(e) => patch({ watchdog: { ...s.watchdog, prompt: e.target.value } })}
+                />
+              </label>
+            </div>
+          )}
+
+          <ToggleRow
+            label="失败自动重试"
+            desc="回复中断或平台限流时按退避策略自动重发；429 用更长的等待"
+            checked={s.retry.enabled}
+            onChange={(v) => patch({ retry: { ...s.retry, enabled: v } })}
+          />
+          {s.retry.enabled && (
+            <div className="mb-3 ml-[44px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
+              <label className="flex items-center gap-1.5">
+                首次延迟
+                <input
+                  className="field w-16 text-center tabular-nums"
+                  type="number"
+                  value={Math.round(s.retry.delayMinMs / 1000)}
+                  onChange={(e) => patch({ retry: { ...s.retry, delayMinMs: Number(e.target.value) * 1000 } })}
+                />
+                秒
+              </label>
+              <label className="flex items-center gap-1.5">
+                最多重试
+                <input
+                  className="field w-14 text-center tabular-nums"
+                  type="number"
+                  value={s.retry.maxRetries}
+                  onChange={(e) => patch({ retry: { ...s.retry, maxRetries: Number(e.target.value) } })}
+                />
+                次
+              </label>
+              <label className="flex items-center gap-1.5">
+                429 等待
+                <input
+                  className="field w-16 text-center tabular-nums"
+                  type="number"
+                  value={Math.round(s.retry.delay429Ms / 1000)}
+                  onChange={(e) => patch({ retry: { ...s.retry, delay429Ms: Number(e.target.value) * 1000 } })}
+                />
+                秒
+              </label>
+            </div>
+          )}
+
+          <ToggleRow
+            label="自动压缩上下文"
+            desc="会话变长时让 AI 生成可交接的摘要，替换掉早期原文"
+            checked={s.autoCompact}
+            onChange={(v) => patch({ autoCompact: v })}
+          />
+          {s.autoCompact && (
+            <div className="mb-3 ml-[44px] flex items-center gap-1.5 text-[12px]">
+              <label className="flex items-center gap-1.5">
+                触发阈值
+                <input
+                  className="field w-20 text-center tabular-nums"
+                  type="number"
+                  value={s.compactThreshold}
+                  onChange={(e) => patch({ compactThreshold: Number(e.target.value) })}
+                />
+                字符
+              </label>
+            </div>
+          )}
+
+          <ToggleRow
+            label="上下文耗尽自动继续"
+            desc="平台提示上下文用完时，压缩当前会话并自动开新会话携带摘要继续"
+            checked={s.autoContinue.enabled}
+            onChange={(v) => patch({ autoContinue: { ...s.autoContinue, enabled: v } })}
+          />
         </SettingGroup>
 
         {/* 平台与账号 */}

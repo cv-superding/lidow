@@ -137,6 +137,17 @@ export const useStore = create<LidowState>((set, get) => ({
     outputBufferLimit: 1048576,
     compactThreshold: 60000,
     autoCompact: true,
+    watchdog: { enabled: true, idleMs: 90000, maxRetries: 3, prompt: '请继续' },
+    retry: {
+      enabled: true,
+      delayMinMs: 4000,
+      delayMaxMs: 10000,
+      maxRetries: 10,
+      delay429Ms: 120000,
+      maxRetries429: 40,
+      prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
+    },
+    autoContinue: { enabled: true, handoffPrompt: '' },
     globalHotkeys: {},
     securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
     sync: {}
