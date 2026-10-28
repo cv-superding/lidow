@@ -1,12 +1,93 @@
-import { useMemo, useState } from 'react'
-import { useStore } from '../store'
+import { useEffect, useMemo, useState } from 'react'
+import { useStore, useProject } from '../store'
 import { api } from '../api'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
 
+/** 相对时间：刚刚 / N 分 / N 小时 / 昨天 / N 天 / 日期 */
+function relTime(ts: number): string {
+  const diff = Date.now() - ts
+  const m = Math.floor(diff / 60000)
+  if (m < 1) return '刚刚'
+  if (m < 60) return `${m}分`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}小时`
+  const d = Math.floor(h / 24)
+  if (d === 1) return '昨天'
+  if (d < 7) return `${d}天`
+  return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
+/** 右侧文件预览面板：文件树 + 内容预览（可折叠，ZCode 式） */
+function PreviewPanel({ projectId }: { projectId: string }): React.JSX.Element {
+  const fileTree = useStore((s) => s.fileTree)
+  const selectedFile = useStore((s) => s.selectedFile)
+  const [open, setOpen] = useState(false)
+
+  useEffect(() => {
+    void api.readFileTree(projectId, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
+  }, [projectId])
+
+  const load = (p: string): void => {
+    void api.readFileContent(projectId, p).then((content) => useStore.setState({ selectedFile: { path: p, content } }))
+  }
+
+  const renderNodes = (items: typeof fileTree, depth: number): React.JSX.Element[] =>
+    items.map((n) => (
+      <div key={n.path}>
+        <button
+          className="sl w-full truncate rounded-lg py-1.5 pr-2 text-left text-[12px]"
+          style={{
+            paddingLeft: 8 + depth * 14,
+            color: n.type === 'dir' ? 'var(--text)' : 'var(--text-dim)',
+            background: selectedFile?.path === n.path ? 'var(--bg-hover)' : 'transparent'
+          }}
+          onClick={() => n.type === 'file' && load(n.path)}
+        >
+          {n.type === 'dir' ? '▸ 📁' : '·'} {n.name}
+        </button>
+        {n.children && renderNodes(n.children, depth + 1)}
+      </div>
+    ))
+
+  return (
+    <div
+      className="flex shrink-0 flex-col border-l transition-panel"
+      style={{ width: open ? 300 : 44, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
+    >
+      <button
+        title={open ? '收起预览面板' : '展开文件预览'}
+        className="flex h-11 items-center justify-center border-b text-[13px]"
+        style={{ borderColor: 'var(--border)' }}
+        onClick={() => setOpen(!open)}
+      >
+        {open ? '»' : '«'}
+      </button>
+      {open && (
+        <div className="anim-fade flex min-h-0 flex-1 flex-col">
+          <div className="max-h-[38%] min-h-0 overflow-y-auto px-2 py-2">
+            {renderNodes(fileTree, 0)}
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto border-t px-3 py-2.5" style={{ borderColor: 'var(--border)' }}>
+            {selectedFile ? (
+              <>
+                <div className="mb-1.5 truncate font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>{selectedFile.path}</div>
+                <pre className="whitespace-pre-wrap font-mono text-[11.5px] leading-relaxed">{selectedFile.content}</pre>
+              </>
+            ) : (
+              <div className="text-[11.5px]" style={{ color: 'var(--text-dim)' }}>点击上方文件预览</div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * 净模式（Pure Mode）：ZCode 级纯对话体验。
- * 左侧会话列表（搜索/新建/切换/删除/重命名）+ 会话窗口工具栏（打开文件夹/导出/压缩/停止），
+ * 左侧会话列表（搜索/新建/切换/删除/重命名/相对时间）+ 中间会话窗口
+ * （工具栏：打开文件夹/导出/压缩/停止）+ 右侧文件预览面板（可折叠）。
  * webview 承载层隐藏但保持存活，会话驱动与普通模式完全一致。
  */
 export function PureModeShell(): React.JSX.Element {
@@ -14,19 +95,25 @@ export function PureModeShell(): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const providers = useStore((s) => s.providers)
   const streamingText = useStore((s) => s.streamingText)
-  // 响应式解析当前项目（净模式中切换项目时标题与打开目录同步更新）
-  const project = useStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? s.projects[0] ?? null)
+  const project = useProject(useStore())
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
   const [renaming, setRenaming] = useState(false)
   const [renameText, setRenameText] = useState('')
+  const [, setTick] = useState(0)
 
   const filtered = useMemo(
     () => sessions.filter((s) => s.title.toLowerCase().includes(query.toLowerCase())),
     [sessions, query]
   )
   const running = streamingText.length > 0
+
+  // 每分钟刷新一次，让「N 分前」等相对时间保持新鲜
+  useEffect(() => {
+    const t = window.setInterval(() => setTick((v) => v + 1), 60000)
+    return () => window.clearInterval(t)
+  }, [])
 
   const switchSession = async (id: string): Promise<void> => {
     await useStore.getState().openSession(id)
@@ -67,9 +154,11 @@ export function PureModeShell(): React.JSX.Element {
 
       {/* 左侧会话列表 */}
       {sidebarOpen ? (
-        <div className="anim-fade flex w-[264px] shrink-0 flex-col border-r" style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
+        <div className="anim-fade flex w-[272px] shrink-0 flex-col border-r" style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
           <div className="flex items-center gap-2 px-3.5 pb-2 pt-3.5">
-            <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold">{project?.name ?? '未打开项目'}</span>
+            <span className="min-w-0 flex-1 truncate text-[13.5px] font-semibold">
+              {project?.name ?? project?.root.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? '未打开项目'}
+            </span>
             <button
               title="在资源管理器中打开项目文件夹"
               className="rounded-lg px-2 py-1 text-[13px]"
@@ -121,7 +210,7 @@ export function PureModeShell(): React.JSX.Element {
             {filtered.map((s) => (
               <div
                 key={s.id}
-                className="group flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-panel"
+                className="sl group flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-2 text-[12.5px] transition-panel"
                 style={{
                   background: activeSession?.id === s.id ? 'var(--bg-hover)' : 'transparent',
                   color: activeSession?.id === s.id ? 'var(--text)' : 'var(--text-dim)'
@@ -130,6 +219,7 @@ export function PureModeShell(): React.JSX.Element {
               >
                 <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: s.compactedTurns > 0 ? 'var(--accent)' : 'var(--border)' }} />
                 <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                <span className="shrink-0 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>{relTime(s.updatedAt)}</span>
                 <button
                   title="删除会话"
                   className="hidden shrink-0 text-[11px] group-hover:block"
@@ -228,6 +318,9 @@ export function PureModeShell(): React.JSX.Element {
           <ChatPanel />
         </div>
       </div>
+
+      {/* 右侧文件预览面板 */}
+      {project && <PreviewPanel projectId={project.id} />}
     </div>
   )
 }

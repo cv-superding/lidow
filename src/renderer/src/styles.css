@@ -5,14 +5,20 @@
   --accent: #5b8cff;
 
   /* 动效令牌：统一缓动与时长 */
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  /* M3 对齐缓动令牌 */
+  --ease: cubic-bezier(0.2, 0, 0, 1);              /* standard */
+  --ease-emph: cubic-bezier(0.05, 0.7, 0.1, 1);    /* 入场减速 */
+  --ease-accel: cubic-bezier(0.3, 0, 1, 1);        /* 退出加速 */
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-fast: 160ms;
+  --dur-fast: 150ms;
   --dur: 240ms;
   --dur-slow: 300ms;
+  /* 状态层（State Layers）：hover 8% / active 12% 前景色叠层 */
+  --state-hover: rgba(15, 18, 25, 0.06);
+  --state-active: rgba(15, 18, 25, 0.12);
 
   --bg: #f6f7f9;
-  --bg-panel: #ffffff;
+  --bg-panel: #fdfaf4;
   --bg-elevated: #ffffff;
   --bg-hover: rgba(15, 18, 25, 0.05);
   --border: rgba(15, 18, 25, 0.08);
@@ -22,14 +28,16 @@
 }
 
 :root.dark {
-  --bg: #101014;
-  --bg-panel: #17171c;
-  --bg-elevated: #1e1e24;
-  --bg-hover: rgba(255, 255, 255, 0.06);
-  --border: rgba(255, 255, 255, 0.08);
-  --text: #e7e9ee;
-  --text-dim: #9aa1ad;
-  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --bg: #1c1f26;
+  --bg-panel: #23262e;
+  --bg-elevated: #2a2e38;
+  --bg-hover: rgba(255, 255, 255, 0.07);
+  --border: rgba(255, 255, 255, 0.09);
+  --text: #e4e7ec;
+  --text-dim: #98a0ad;
+  --shadow: 0 1px 3px rgba(10, 12, 16, 0.35), 0 8px 24px rgba(10, 12, 16, 0.3);
+  --state-hover: rgba(255, 255, 255, 0.08);
+  --state-active: rgba(255, 255, 255, 0.14);
 }
 
 /* 主题三：Midnight 深空蓝（低饱和蓝调暗色） */
@@ -42,11 +50,13 @@
   --text: #dde6f5;
   --text-dim: #8a97b5;
   --shadow: 0 1px 3px rgba(4, 8, 24, 0.5), 0 8px 24px rgba(4, 8, 24, 0.45);
+  --state-hover: rgba(150, 180, 255, 0.1);
+  --state-active: rgba(150, 180, 255, 0.16);
 }
 
 /* 主题四：Warm 暖沙纸感（低饱和暖调浅色） */
 :root.warm {
-  --bg: #faf6ef;
+  --bg: #f6f1e7;
   --bg-panel: #fffdf8;
   --bg-elevated: #ffffff;
   --bg-hover: rgba(120, 90, 40, 0.06);
@@ -54,6 +64,8 @@
   --text: #3d3529;
   --text-dim: #8d8271;
   --shadow: 0 1px 3px rgba(90, 70, 40, 0.08), 0 8px 24px rgba(90, 70, 40, 0.08);
+  --state-hover: rgba(120, 90, 40, 0.08);
+  --state-active: rgba(120, 90, 40, 0.14);
 }
 
 html,
@@ -86,8 +98,8 @@ body {
     opacity 0.2s ease;
 }
 
-/* ---------- 动效体系 ---------- */
-/* 入场：视图/页面切换淡入上浮 */
+/* ---------- 动效体系（M3 对齐） ---------- */
+/* 入场：减速曲线快速进入、减速停靠 */
 @keyframes fadeUp {
   from {
     opacity: 0;
@@ -98,7 +110,6 @@ body {
     transform: none;
   }
 }
-/* 弹层：确认卡/计划卡弹出 */
 @keyframes popIn {
   from {
     opacity: 0;
@@ -109,7 +120,6 @@ body {
     transform: scale(1);
   }
 }
-/* 通知：右侧滑入 */
 @keyframes toastIn {
   from {
     opacity: 0;
@@ -120,7 +130,6 @@ body {
     transform: none;
   }
 }
-/* 标签页/列表项进入 */
 @keyframes tabIn {
   from {
     opacity: 0;
@@ -131,7 +140,6 @@ body {
     transform: none;
   }
 }
-/* webview 容器淡入 */
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -140,7 +148,6 @@ body {
     opacity: 1;
   }
 }
-/* 呼吸点（连接/运行状态） */
 @keyframes breathe {
   0%,
   100% {
@@ -152,16 +159,16 @@ body {
 }
 
 .anim-view {
-  animation: fadeUp var(--dur) var(--ease) both;
+  animation: fadeUp var(--dur) var(--ease-emph) both;
 }
 .anim-pop {
-  animation: popIn var(--dur-fast) var(--ease) both;
+  animation: popIn var(--dur-fast) var(--ease-emph) both;
 }
 .anim-toast {
-  animation: toastIn var(--dur) var(--ease) both;
+  animation: toastIn var(--dur) var(--ease-emph) both;
 }
 .anim-tab {
-  animation: tabIn var(--dur-fast) var(--ease) both;
+  animation: tabIn var(--dur-fast) var(--ease-emph) both;
 }
 .anim-fade {
   animation: fadeIn var(--dur) ease both;
@@ -170,20 +177,53 @@ body {
   animation: breathe 1.6s var(--ease-in-out) infinite;
 }
 
-/* 悬停抬升：卡片类通用 */
+/* ---------- 状态层（State Layers） ----------
+   交互元素悬停时叠加浅色前景层（视觉上即"浅色方框"），
+   ::after 不干扰元素自身背景，透明度过渡 150ms。 */
+button,
+.sl,
+select,
+[role='button'] {
+  position: relative;
+  cursor: pointer;
+}
+input,
+textarea {
+  cursor: text;
+}
+button::after,
+.sl::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--state-hover);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+button:hover::after,
+.sl:hover::after {
+  opacity: 1;
+}
+button:active::after,
+.sl:active::after {
+  background: var(--state-active);
+}
+
+/* 独立卡片：状态层 + 轻抬升 + 阴影增强（仅此语义使用） */
 .hover-lift {
   transition:
     transform var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) ease,
     border-color var(--dur-fast) ease;
 }
 .hover-lift:hover {
-  transform: translateY(-2px);
+  transform: translateY(-1px);
   box-shadow: var(--shadow);
 }
 
-/* 控件默认过渡（按钮/输入/下拉的全局微动效） */
+/* 控件基础过渡 */
 button,
 input,
 select,
@@ -199,8 +239,12 @@ button:active {
   transform: scale(0.98);
 }
 
-/* 说明：不跟随系统"减弱动态效果"钳制——桌面应用的动效是产品设计的一部分；
-   仅长循环呼吸点在其偏好下降频，其余动画保持 */
+/* 键盘焦点可见性 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
 
 ::-webkit-scrollbar {
   width: 8px;

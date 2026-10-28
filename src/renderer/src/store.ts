@@ -98,6 +98,7 @@ interface LidowState {
   stop(level: 'generate' | 'tool' | 'auto-loop' | 'all'): Promise<void>
   answerConfirm(ok: boolean): Promise<void>
   notice(message: string, level?: 'info' | 'warn' | 'error'): void
+  scheduleNoticeRemoval(ts: number): void
   refreshAll(): Promise<void>
   handleEvent(e: LidowEvent): void
 }
@@ -153,7 +154,7 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async boot() {
     const state = await api.getAppState()
-    set({ booted: true, version: state.version, settings: state.settings, projects: state.projects, activeProjectId: state.activeProjectId })
+    set({ booted: true, version: state.version, settings: state.settings, pureMode: state.settings.pureMode, projects: state.projects, activeProjectId: state.activeProjectId })
     get().applyTheme(state.settings)
     api.onEvent((e) => get().handleEvent(e))
     if (state.projects.length > 0) {
@@ -301,8 +302,17 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   notice(message, level = 'info') {
-    set({ notices: [...get().notices.slice(-20), { level, message, ts: Date.now() }] })
+    const ts = Date.now()
+    set({ notices: [...get().notices.slice(-20), { level, message, ts }] })
+    get().scheduleNoticeRemoval(ts)
   },
+  // 通知 4.5s 后自动退场（以 ts 为幂等 id）
+  scheduleNoticeRemoval(ts: number) {
+    window.setTimeout(() => {
+      set((s) => ({ notices: s.notices.filter((n) => n.ts !== ts) }))
+    }, 4500)
+  },
+
 
   async refreshAll() {
     const s = get()
@@ -345,9 +355,12 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'plan-proposed':
         set({ plan: e.plan })
         break
-      case 'notice':
-        set({ notices: [...s.notices.slice(-20), { level: e.level, message: e.message, ts: Date.now() }] })
+      case 'notice': {
+        const ts = Date.now()
+        set({ notices: [...s.notices.slice(-20), { level: e.level, message: e.message, ts }] })
+        get().scheduleNoticeRemoval(ts)
         break
+      }
       default:
         break
     }

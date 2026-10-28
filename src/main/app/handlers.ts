@@ -1,10 +1,17 @@
-import { app, dialog, shell } from 'electron'
+import { app, dialog, shell, nativeTheme } from 'electron'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
 import type { McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
+
+
+/** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
+function applyNativeTheme(theme: unknown): void {
+  const t = theme === 'system' ? 'system' : theme === 'light' ? 'light' : 'dark'
+  if (nativeTheme.themeSource !== t) nativeTheme.themeSource = t
+}
 
 /** 全量 IPC 方法注册：方法名 = LidowApi 契约方法名（renderer Proxy 按 name 调用） */
 export function registerHandlers(
@@ -13,6 +20,7 @@ export function registerHandlers(
 ): void {
   const R = register
 
+  applyNativeTheme(ctx.settings.get().theme)
   // ---------- 应用 ----------
   R('getAppState', () => ({
     projects: ctx.projects,
@@ -24,13 +32,18 @@ export function registerHandlers(
     const patch = args[0] as Record<string, unknown>
     const next = ctx.settings.set(patch as never)
     ctx.hotkeys.applyAll()
+    applyNativeTheme(next.theme)
     return next
   })
   R('pickDirectory', async () => {
     const res = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     return res.canceled ? null : res.filePaths[0] ?? null
   })
-  R('openProject', (root: string) => ctx.openProject(String(root)))
+  R('openProject', (root: string) => {
+    const r = String(root ?? '')
+    if (!r || r === 'undefined' || !r.match(/^[A-Za-z]:[/\\]/)) throw new Error('无效的项目路径: ' + r)
+    return ctx.openProject(r)
+  })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
   R('quit', () => app.quit())
 
