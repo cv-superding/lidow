@@ -15,6 +15,10 @@ interface Channel {
   netError?: string
   /** 思考过程缓冲（来自 SSE reasoning 帧） */
   thinkBuf?: string
+  /** 网络层收到的权威完整文本（DOM 兜底前先等它） */
+  netText?: string
+  /** DOM stream-end 兜底 resolve 定时器 */
+  domFallbackTimer?: NodeJS.Timeout
   /** did-finish-load 重注入监听是否已绑定 */
   hookBound?: boolean
 }
@@ -70,13 +74,22 @@ export class OverlayManager {
         for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
         break
       }
-      case 'stream-end':
+      case 'stream-end': {
+        // DOM 抓的是渲染后的 markdown 气泡：DeepSeek 分段渲染会截断尾部代码块。
+        // 网络层（net-response）才是权威文本；DOM end 延迟 3s 兜底 resolve，
+        // 期间 net-response 到达则覆盖（见 net-response 分支的 domFallbackTimer 清理）。
         ch.streamBuf = payload.text
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
-        for (const r of ch.replyResolvers) r(payload.text)
-        ch.replyResolvers.clear()
+        if (ch.replyResolvers.size === 0) break
+        if (ch.domFallbackTimer) clearTimeout(ch.domFallbackTimer)
+        ch.domFallbackTimer = setTimeout(() => {
+          ch.domFallbackTimer = undefined
+          for (const r of ch.replyResolvers) r(ch.netText?.length ? ch.netText : payload.text)
+          ch.replyResolvers.clear()
+        }, 12000)
         break
+      }
       case 'send-result':
         for (const r of ch.sendResolvers) r(payload.ok, payload.error)
         ch.sendResolvers.clear()
@@ -108,7 +121,12 @@ export class OverlayManager {
           ch.netError = payload.text
           break
         }
-        // finished：以网络层文本为准结束本轮
+        // finished：以网络层文本为准结束本轮（覆盖 DOM 兜底）
+        ch.netText = payload.text
+        if (ch.domFallbackTimer) {
+          clearTimeout(ch.domFallbackTimer)
+          ch.domFallbackTimer = undefined
+        }
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
         for (const r of ch.replyResolvers) r(payload.text)

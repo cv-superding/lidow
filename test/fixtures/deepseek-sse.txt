@@ -1,0 +1,72 @@
+event: ready
+data: {"request_message_id":5,"response_message_id":6,"model_type":"default"}
+
+event: update_session
+data: {"updated_at":1793186311.0932548}
+
+data: {"v":{"response":{"message_id":6,"parent_id":5,"model":"","role":"ASSISTANT","thinking_enabled":false,"ban_edit":false,"ban_regenerate":false,"status":"WIP","incomplete_message":null,"accumulated_token_usage":2048,"feedback":null,"inserted_at":1793186311.0816429,"search_enabled":true,"fragments":[{"id":2,"type":"RESPONSE","content":"```","references":[],"stage_id":1}],"conversation_mode":"DEFAULT","has_pending_fragment":false,"auto_continue":false,"search_triggered":false,"extra_search_providers":[]}}}
+
+data: {"p":"response/fragments/-1/content","o":"APPEND","v":"lid"}
+
+data: {"v":"ow"}
+
+data: {"v":"\n"}
+
+data: {"v":"{\""}
+
+data: {"v":"tool"}
+
+data: {"v":"\":"}
+
+data: {"v":" \""}
+
+data: {"v":"write"}
+
+data: {"v":"\","}
+
+data: {"v":" \""}
+
+data: {"v":"input"}
+
+data: {"v":"\":"}
+
+data: {"v":" {\""}
+
+data: {"v":"path"}
+
+data: {"v":"\":"}
+
+data: {"v":" \""}
+
+data: {"v":"hello"}
+
+data: {"v":".txt"}
+
+data: {"v":"\","}
+
+data: {"v":" \""}
+
+data: {"v":"content"}
+
+data: {"v":"\":"}
+
+data: {"v":" \""}
+
+data: {"v":"OK"}
+
+data: {"v":"\""}
+
+data: {"v":"}}\n"}
+
+data: {"v":"```"}
+
+data: {"p":"response","o":"BATCH","v":[{"p":"accumulated_token_usage","v":4061},{"p":"quasi_status","v":"FINISHED"}]}
+
+data: {"p":"response/status","o":"SET","v":"FINISHED"}
+
+event: update_session
+data: {"updated_at":1793186311.2163}
+
+event: close
+data: {"click_behavior":"none","auto_resume":false}
+

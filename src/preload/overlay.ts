@@ -162,9 +162,28 @@ function lastBubbleText(): string {
   const container = findFirst(adapter?.messages ?? [])
   // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
   const bubble = findLast(adapter?.bubble ?? [])
-  if (bubble) return (bubble as HTMLElement).innerText ?? ''
-  if (!container) return ''
-  return (container as HTMLElement).innerText ?? ''
+  if (!bubble) {
+    if (!container) return ''
+    return (container as HTMLElement).innerText ?? ''
+  }
+  // markdown 渲染会把 ``` 围栏转成代码块 DOM：遍历时把代码块重包围栏，
+  // 否则解析器看不到 ```lidow ... ``` 边界（工具块永远解析失败）
+  const el = bubble as HTMLElement
+  const clone = el.cloneNode(true) as HTMLElement
+  clone.querySelectorAll('pre, code[class*="language"], [class*="code-block"]').forEach((codeEl) => {
+    const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
+    const text = codeEl.textContent ?? ''
+    const wrap = document.createElement('div')
+    wrap.textContent = '\n```' + lang + '\n' + text + '\n```\n'
+    codeEl.replaceWith(wrap)
+  })
+  // 移除 UI 按钮文字污染（复制/下载等）
+  clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
+  let text = clone.innerText ?? ''
+  // 补未闭合围栏：奇数个 ``` 说明尾部代码块未渲染完/被截
+  const fences = (text.match(/```/g) ?? []).length
+  if (fences % 2 === 1) text += '\n```'
+  return text
 }
 
 function isStreaming(): boolean {

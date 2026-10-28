@@ -35,10 +35,21 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
                 </code>
               )
             }
-            const html = match ? hljs.highlight(raw, { language: match[1]!, ignoreIllegals: true }).value : raw
+            // lidow/tool 是工具调用块的语言名，highlight.js 不认识；未知语言一律按纯文本渲染，
+            // 否则 hljs.highlight 抛 Unknown language，整棵 React 树被卸载成白屏
+            const lang = match?.[1]
+            const known = !!lang && hljs.getLanguage(lang)
+            let html = ''
+            if (known) {
+              try {
+                html = hljs.highlight(raw, { language: lang, ignoreIllegals: true }).value
+              } catch {
+                html = ''
+              }
+            }
             return (
               <pre className="my-2 overflow-auto rounded-xl p-3 text-[12.5px]" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
-                {match ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{children}</code>}
+                {html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{children}</code>}
               </pre>
             )
           }

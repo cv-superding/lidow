@@ -60,6 +60,30 @@ function deepseekExtract(frame: unknown): ExtractResult | null {
     return null
   }
 
+  // 快照帧：{v:{response:{fragments:[{type,content}...]}}} —— 回复首段内容在这里
+  // （cuckoo 的 snapshotFragments；只在首个片段时消费，这里靠 finished 前的快照天然幂等：
+  //   DeepSeek 只在流开始时发一次全量 fragments，之后走 APPEND 增量）
+  if (p === undefined && v && typeof v === 'object') {
+    const resp = (v as Record<string, unknown>).response as Record<string, unknown> | undefined
+    if (resp && typeof resp === 'object') {
+      const frags = resp.fragments
+      if (Array.isArray(frags) && frags.length > 0) {
+        const merged: ExtractResult = {}
+        for (const frag of frags) {
+          const fr = frag as { type?: string; content?: string; text?: string }
+          const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
+          if (!content) continue
+          if (String(fr?.type ?? '').toUpperCase() === 'THINK') merged.think = (merged.think ?? '') + content
+          else merged.text = (merged.text ?? '') + content
+        }
+        if (typeof resp.accumulated_token_usage === 'number') {
+          // token 信息由 hook 主循环统一捕获，这里只标记存在
+        }
+        return Object.keys(merged).length > 0 ? merged : null
+      }
+    }
+  }
+
   // fragments APPEND：{ p: '<path>/fragments', o: 'APPEND', v: [{type, content}...] }
   if (p && p.endsWith('/fragments') && f.o === 'APPEND' && Array.isArray(v)) {
     const merged: ExtractResult = {}
@@ -107,7 +131,7 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     return {
       push: function (text) {
         buffer += text;
-        var parts = buffer.split(/\\r?\\n\\r?\\n/);
+        var parts = buffer.split(/\r?\n\r?\n/);
         buffer = parts.pop() || '';
         return parts;
       },
@@ -122,11 +146,11 @@ export function buildHookSource(spec: ProviderHookSpec): string {
   function parseData(block) {
     if (!block || !block.trim()) return null;
     var data = null;
-    var lines = block.split(/\\r\\n|\\r|\\n/);
+    var lines = block.split(/\r\n|\r|\n/);
     for (var i = 0; i < lines.length; i++) {
       if (lines[i].indexOf('data:') === 0) {
         var d = lines[i].slice(5).trim();
-        data = data == null ? d : data + '\\n' + d;
+        data = data == null ? d : data + '\n' + d;
       }
     }
     if (data == null) return null;
@@ -253,7 +277,10 @@ export function buildHookSource(spec: ProviderHookSpec): string {
   var xhrInfo = new WeakMap();
   XMLHttpRequest.prototype.open = function (m, u) {
     try {
-      xhrInfo.set(this, { url: u, method: m });
+      var isC = isCompletion(u, m);
+      xhrInfo.set(this, { url: u, method: m, isCompletion: isC });
+      this.__lidowIsCompletion = isC;
+      this.__lidowUrl = String(u);
       if (isStopStream(u, m)) userStopped = true;
     } catch (e) {}
     return origOpen.apply(this, arguments);
@@ -261,7 +288,9 @@ export function buildHookSource(spec: ProviderHookSpec): string {
   XMLHttpRequest.prototype.send = function () {
     var xhr = this;
     var info = xhrInfo.get(xhr);
-    if (!(info && isCompletion(info.url, info.method))) return origSend.apply(this, arguments);
+    // 双通道判定：WeakMap + 实例属性，任一命中即视为 completion
+    var isC = (info && info.isCompletion === true) || xhr.__lidowIsCompletion === true;
+    if (!isC) return origSend.apply(this, arguments);
     userStopped = false;
     // DeepSeek 用 XHR 流式（responseType 可能是 text 或 stream）：
     // progress 事件不可靠，改用 readystatechange + 轮询增量读取。
@@ -269,7 +298,24 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     var acc = { text: '', think: '', finished: false, incomplete: false, dispatched: false };
     var timer = null;
 
-    function readDelta() {
+    var frameDecoder = (function () {
+      var buffer = '';
+      return {
+        push: function (text) {
+          buffer += text;
+          var parts = buffer.split(/\r?\n\r?\n/);
+          buffer = parts.pop() || '';
+          return parts;
+        },
+        finish: function () {
+          var rest = buffer ? [buffer] : [];
+          buffer = '';
+          return rest;
+        }
+      };
+    })();
+
+    function consumeChunk() {
       if (acc.dispatched) return;
       var raw = '';
       try {
@@ -280,7 +326,7 @@ export function buildHookSource(spec: ProviderHookSpec): string {
       if (raw.length <= lastLen) return;
       var delta = raw.slice(lastLen);
       lastLen = raw.length;
-      var blocks = delta.split(/\r?\n\r?\n/);
+      var blocks = frameDecoder.push(delta);
       for (var i = 0; i < blocks.length; i++) {
         var parsed = parseData(blocks[i]);
         if (!parsed) continue;
@@ -306,13 +352,43 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     }
 
     xhr.addEventListener('readystatechange', function () {
-      if (xhr.readyState === 3) readDelta();      // LOADING：开始有数据
-      else if (xhr.readyState === 4) { readDelta(); finish('done'); }
+      if (xhr.readyState === 3) consumeChunk();
+      else if (xhr.readyState === 4) {
+        consumeChunk();
+        var rest = frameDecoder.finish();
+        for (var i = 0; i < rest.length; i++) {
+          var parsed = parseData(rest[i]);
+          if (!parsed) continue;
+          var r = null;
+          try { r = extractFn(parsed); } catch (e) { r = null; }
+          if (!r) continue;
+          if (typeof r.text === 'string' && r.text) acc.text += r.text;
+          if (typeof r.think === 'string' && r.think) acc.think += r.think;
+          if (r.finished) acc.finished = true;
+          if (r.incomplete) acc.incomplete = true;
+        }
+        finish('done');
+      }
     });
-    xhr.addEventListener('load', function () { readDelta(); finish('load'); });
+    xhr.addEventListener('load', function () {
+      consumeChunk();
+      var rest2 = frameDecoder.finish();
+      for (var i2 = 0; i2 < rest2.length; i2++) {
+        var parsed2 = parseData(rest2[i2]);
+        if (!parsed2) continue;
+        var r2 = null;
+        try { r2 = extractFn(parsed2); } catch (e) { r2 = null; }
+        if (!r2) continue;
+        if (typeof r2.text === 'string' && r2.text) acc.text += r2.text;
+        if (typeof r2.think === 'string' && r2.think) acc.think += r2.think;
+        if (r2.finished) acc.finished = true;
+        if (r2.incomplete) acc.incomplete = true;
+      }
+      finish('load');
+    });
     xhr.addEventListener('error', function () { finish('error'); });
     // 兜底轮询：某些环境 readystatechange 不逐块触发
-    timer = setInterval(readDelta, 120);
+    timer = setInterval(consumeChunk, 120);
 
     return origSend.apply(this, arguments);
   };

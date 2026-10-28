@@ -370,9 +370,10 @@ export const useStore = create<LidowState>((set, get) => ({
         /* webview 未挂载 */
       }
     }
-    // 会话与承载网页不一致时重绑（净模式切换会话后直接发送的场景）。
-    // tab.wcId 可能尚未记录（did-attach 晚于绑定请求）：从 DOM 现取，仍无效才传 -1。
-    if (tab && tab.sessionId !== activeSession.id) {
+    // 发送前无条件确保绑定（bindSession 幂等，重复调用无害）。
+    // 此前的条件分支（sessionId 不一致才绑）有竞态：首次创建/快速切换时
+    // 状态看似一致但主进程 bindings 里没有 → loop 报「网页未连接」。
+    if (tab) {
       let wcId = tab.wcId ?? -1
       if (wcId <= 0) {
         try {
@@ -381,7 +382,19 @@ export const useStore = create<LidowState>((set, get) => ({
           /* webview 未挂载 */
         }
       }
-      await get().bindTabSession(tab.id, activeSession.id, wcId)
+      // 等待 webview attach（最长 10s）：纯净模式首次发送常早于页面加载
+      for (let i = 0; wcId <= 0 && i < 66; i++) {
+        await new Promise((r) => setTimeout(r, 150))
+        try {
+          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
+        } catch {
+          wcId = -1
+        }
+      }
+      if (wcId > 0) {
+        set({ tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, wcId, sessionId: activeSession.id } : t)) })
+        await api.bindSession(activeSession.id, wcId)
+      }
     }
     await api.sendPrompt(activeSession.id, text)
   },
