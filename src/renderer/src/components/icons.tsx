@@ -215,6 +215,56 @@ export function IconFolderOpen({ size, className }: P): React.JSX.Element {
   )
 }
 
+/** 思考 / 灵感：四角星 */
+export function IconSpark({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M8 2.5 9.4 6.6 13.5 8 9.4 9.4 8 13.5 6.6 9.4 2.5 8 6.6 6.6 8 2.5Z" />
+    </svg>
+  )
+}
+
+/** 终端命令 */
+export function IconTerminal({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2" y="3" width="12" height="10" rx="1.6" />
+      <path d="M4.8 6.4 6.6 8l-1.8 1.6M8.4 9.9h2.8" />
+    </svg>
+  )
+}
+
+/** 更多操作（三点） */
+export function IconMore({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="3.6" cy="8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="8" cy="8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="12.4" cy="8" r="0.9" fill="currentColor" stroke="none" />
+    </svg>
+  )
+}
+
+/** 刷新 */
+export function IconRefresh({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M13 8a5 5 0 1 1-1.6-3.7" />
+      <path d="M13 2.8V5h-2.2" />
+    </svg>
+  )
+}
+
+/** 下载 / 导出 */
+export function IconTrash({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M2.8 4.5h10.4M6 4.5V3.2a.7.7 0 0 1 .7-.7h2.6a.7.7 0 0 1 .7.7v1.3" />
+      <path d="M4.2 4.5 4.9 13a.8.8 0 0 0 .8.7h4.6a.8.8 0 0 0 .8-.7l.7-8.5" />
+    </svg>
+  )
+}
+
 export const RAIL_ICONS = {
   home: IconHome,
   sessions: IconChat,

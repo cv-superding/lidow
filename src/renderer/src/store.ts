@@ -60,6 +60,9 @@ interface LidowState {
   activeTabId: string | null
   view: ViewId
   rightOpen: boolean
+  /** 纯净模式右侧文件预览面板是否展开（默认收起，避免空白边条） */
+  previewOpen: boolean
+  setPreviewOpen(open: boolean): void
   pureMode: boolean
   /** 纯净模式主区当前面板（home=网页对话；其余为该面板视图），不改变 pureMode */
   pureView: ViewId
@@ -138,6 +141,7 @@ export const useStore = create<LidowState>((set, get) => ({
   activeTabId: null,
   view: 'home',
   rightOpen: true,
+  previewOpen: false,
   pureMode: false,
   pureView: 'home',
   streamingText: '',
@@ -178,6 +182,9 @@ export const useStore = create<LidowState>((set, get) => ({
   toggleRight() {
     set({ rightOpen: !get().rightOpen })
   },
+  setPreviewOpen(open) {
+    set({ previewOpen: open })
+  },
   setPureView(v) {
     set({ pureView: v })
   },
@@ -196,15 +203,22 @@ export const useStore = create<LidowState>((set, get) => ({
 
   applyTheme(s) {
     const root = document.documentElement
+    // 旧版 warm（暖沙米黄）已废弃：历史配置自动迁移到 graphite，避免继续看到发黄的界面
+    const raw = s.theme === ('warm' as string) ? 'graphite' : s.theme
     const theme =
-      s.theme === 'system'
+      raw === 'system'
         ? window.matchMedia('(prefers-color-scheme: dark)').matches
           ? 'dark'
           : 'light'
-        : s.theme
-    root.classList.remove('dark', 'light', 'midnight', 'warm')
+        : raw
+    root.classList.remove('dark', 'light', 'midnight', 'graphite', 'warm')
     root.classList.add(theme)
-    root.style.setProperty('--accent', s.accent)
+    // 旧版默认荧光绿（#8dff4f）与新设计系统冲突：用户没主动改过的话，
+    // 会一直把品牌色覆盖成刺眼的绿。仅对该历史默认值回落，自定义色保持不动。
+    const legacyAccents = new Set(['#8dff4f', '#59d915', '#b8860b'])
+    const accent = legacyAccents.has(s.accent?.toLowerCase?.() ?? '') ? '#4f6bed' : s.accent
+    root.style.setProperty('--accent', accent)
+    root.style.setProperty('--accent-hover', `color-mix(in srgb, ${accent} 86%, black)`)
   },
 
   async openProject(root) {

@@ -11,23 +11,25 @@ export function WindowControls(): React.JSX.Element {
   useEffect(() => {
     void api.windowIsMaximized().then(setMaximized)
   }, [])
-  const cls = 'flex h-10 w-11 items-center justify-center transition-colors hover:bg-[var(--bg-hover)]'
+  const cls =
+    'group flex h-full w-[46px] items-center justify-center transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
+  const iconColor = { color: 'var(--text-hint)' } as const
   return (
     <div className="flex h-full items-stretch" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
-      <button className={cls} style={{ color: 'var(--text-dim)' }} title="最小化" onClick={() => api.windowMinimize()}>
+      <button className={cls} style={iconColor} title="最小化" onClick={() => api.windowMinimize()}>
         <IconMinimize />
       </button>
       <button
         className={cls}
-        style={{ color: 'var(--text-dim)' }}
+        style={iconColor}
         title={maximized ? '向下还原' : '最大化'}
         onClick={() => void api.windowToggleMaximize().then(setMaximized)}
       >
         {maximized ? <IconRestore /> : <IconMaximize />}
       </button>
       <button
-        className="flex h-10 w-11 items-center justify-center transition-colors hover:bg-[var(--danger)] hover:text-black"
-        style={{ color: 'var(--text-dim)' }}
+        className="flex h-full w-[46px] items-center justify-center transition-colors duration-[130ms] hover:bg-[var(--danger)] hover:text-white"
+        style={iconColor}
         title="关闭"
         onClick={() => api.windowClose()}
       >
@@ -41,8 +43,8 @@ export function WindowControls(): React.JSX.Element {
 export function DragStrip(): React.JSX.Element {
   return (
     <div
-      className="flex h-10 shrink-0 items-center justify-end border-b"
-      style={{ borderColor: 'var(--border)', background: 'var(--bg-header)', WebkitAppRegion: 'drag' } as React.CSSProperties}
+      className="flex h-9 shrink-0 items-center justify-end border-b"
+      style={{ borderColor: 'var(--border)', background: 'var(--sidebar)', WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <WindowControls />
     </div>

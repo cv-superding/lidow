@@ -8,7 +8,7 @@ import { useStore } from '../store'
 import { api } from '../api'
 import { ToolCard } from './ToolCard'
 import type { ChatTurn } from '@shared/types'
-import { IconArrowUp, IconStop, IconChevronRight } from './icons'
+import { IconArrowUp, IconStop, IconChevronRight, IconSpark, IconCheck } from './icons'
 
 const SLASH_COMMANDS = [
   { cmd: '/compact', desc: '手动压缩上下文' },
@@ -17,9 +17,39 @@ const SLASH_COMMANDS = [
   { cmd: '/memory', desc: '让 AI 记住当前要点' }
 ]
 
+/** 与主进程 parser 同款：识别 lidow 工具块围栏 */
+const FENCE_RE = /```(?:lidow|tool)(?:\w*)\s*\n[\s\S]*?```/g
+
+/** 空态快捷起手式：点一下把提示词填进输入框 */
+const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
+  {
+    title: '了解这个项目',
+    desc: '扫描目录结构与依赖，给出一份项目说明',
+    prompt: '先读一下这个项目的结构和关键配置，然后给我一份简洁的项目说明：技术栈、入口文件、主要模块。'
+  },
+  {
+    title: '创建文件',
+    desc: '用 write 工具在工作目录里写一个新文件',
+    prompt: '用 write 工具在当前项目根目录创建 hello.txt，内容为：Hello from Lidow'
+  },
+  {
+    title: '查找代码',
+    desc: '在整个项目里搜索符号或关键字',
+    prompt: '用 grep 工具搜索项目里所有 TODO 注释，按文件分组列出。'
+  },
+  {
+    title: '跑一次构建',
+    desc: '执行 build 并分析失败原因',
+    prompt: '执行项目的构建命令，如果失败请分析报错原因并给出修复方案。'
+  }
+]
+
 function TurnBody({ text }: { text: string }): React.JSX.Element {
+  // 工具调用块由下方 ToolCard 可视化表达，正文里不再重复展示原始 JSON
+  const cleaned = text.replace(FENCE_RE, '').trim()
+  if (!cleaned) return <></>
   return (
-    <div className="markdown-body text-[13.5px] leading-relaxed">
+    <div className="markdown-body">
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
@@ -29,14 +59,10 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
             const raw = String(children)
             const isBlock = match || raw.includes('\n')
             if (!isBlock) {
-              return (
-                <code className="rounded px-1 py-0.5 text-[12.5px]" style={{ background: 'var(--bg-hover)' }} {...props}>
-                  {children}
-                </code>
-              )
+              return <code {...props}>{children}</code>
             }
-            // lidow/tool 是工具调用块的语言名，highlight.js 不认识；未知语言一律按纯文本渲染，
-            // 否则 hljs.highlight 抛 Unknown language，整棵 React 树被卸载成白屏
+            // lidow/tool 是工具块语言名，highlight.js 不认识；未知语言一律按纯文本渲染，
+            // 否则 hljs.highlight 抛 Unknown language，整棵 React 树会被卸载成白屏
             const lang = match?.[1]
             const known = !!lang && hljs.getLanguage(lang)
             let html = ''
@@ -48,20 +74,20 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
               }
             }
             return (
-              <pre className="my-2 overflow-auto rounded-xl p-3 text-[12.5px]" style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border)' }}>
+              <pre>
                 {html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{children}</code>}
               </pre>
             )
           }
         }}
       >
-        {text}
+        {cleaned}
       </ReactMarkdown>
     </div>
   )
 }
 
-/** ZCode 式可折叠思考过程块：流式时自动展开，完成后默认收起 */
+/** 可折叠思考过程块：流式时自动展开，完成后收起 */
 function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(streaming)
   useEffect(() => {
@@ -69,21 +95,25 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
   }, [streaming])
   if (!text) return <></>
   return (
-    <div className="overflow-hidden rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
+    <div className="overflow-hidden rounded-[var(--r-lg)]" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px]"
-        style={{ color: 'var(--text-hint)' }}
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        style={{ color: 'var(--text-dim)' }}
         onClick={() => setOpen(!open)}
       >
-        <span className="flex items-center gap-1.5" style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
-          {streaming ? <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} /> : <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--border-strong)' }} />}
-          {streaming ? '思考中…' : '思考过程'}
+        <span style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
+          <IconSpark size={13} />
         </span>
+        <span className="font-medium">{streaming ? '思考中' : '思考过程'}</span>
+        {streaming && <span className="anim-breathe h-1 w-1 rounded-full" style={{ background: 'var(--accent)' }} />}
         <span className="flex-1" />
-        <IconChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+        <IconChevronRight size={12} className={`transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`} />
       </button>
       {open && (
-        <div className="max-h-72 overflow-y-auto border-t px-3.5 py-2.5 text-[12px] leading-relaxed whitespace-pre-wrap" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
+        <div
+          className="max-h-72 overflow-y-auto border-t px-3.5 py-3 text-[12px] leading-[1.7] whitespace-pre-wrap"
+          style={{ borderColor: 'var(--border-soft)', color: 'var(--text-dim)', background: 'var(--surface-sunken)' }}
+        >
           {text}
         </div>
       )}
@@ -96,32 +126,33 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   const isSystem = turn.role === 'system'
   if (isSystem) {
     return (
-      <div className="mx-auto max-w-[560px] rounded-lg px-3 py-1.5 text-center text-[11.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-hint)' }}>
-        {turn.text}
+      <div className="flex justify-center">
+        <span className="badge" style={{ height: 'auto', padding: '4px 10px', fontSize: 11 }}>
+          {turn.text}
+        </span>
+      </div>
+    )
+  }
+  if (isUser) {
+    return (
+      <div className="flex justify-end">
+        <div
+          className="max-w-[78%] rounded-[var(--r-xl)] rounded-br-[6px] px-3.5 py-2.5 text-[13px] leading-[1.62]"
+          style={{ background: 'var(--bubble-user-bg)', color: 'var(--text)' }}
+        >
+          <div className="whitespace-pre-wrap">{turn.text}</div>
+        </div>
       </div>
     )
   }
   return (
     <div className="flex flex-col gap-2">
-      {isUser ? (
-        // 用户消息：右对齐气泡
-        <div className="flex justify-end">
-          <div
-            className="max-w-[76%] rounded-2xl rounded-br-md px-3.5 py-2 text-[13px] leading-relaxed"
-            style={{ background: 'var(--bubble-user-bg)', border: '1px solid var(--bubble-user-border)', color: 'var(--text)' }}
-          >
-            {turn.text}
-          </div>
-        </div>
+      {turn.text ? (
+        <TurnBody text={turn.text} />
       ) : (
-        // AI 回复：占满宽度，无气泡框（ZCode 式纯文本流）
-        <div className="w-full">
-          {turn.text ? (
-            <TurnBody text={turn.text} />
-          ) : (
-            <span className="text-[12.5px]" style={{ color: 'var(--text-hint)' }}>（本轮无文本，仅工具调用）</span>
-          )}
-        </div>
+        <span className="text-[12px] italic" style={{ color: 'var(--text-hint)' }}>
+          （本轮仅工具调用，无文本）
+        </span>
       )}
       {turn.toolResults?.map((r) => (
         <ToolCard key={r.callId} result={r} />
@@ -143,6 +174,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const quickCmds = useStore((s) => s.quickCmds)
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
+  const [slashIndex, setSlashIndex] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const rafRef = useRef<number | null>(null)
 
@@ -154,7 +186,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   }, [])
 
   const allTurns = useMemo(() => activeSession?.turns ?? [], [activeSession])
-  // workbench 模式只显示发生过工具调用的轮次——网页里已经有完整对话，这里不重复
+  // workbench 模式只显示发生过工具调用的轮次——网页里已有完整对话，这里不重复
   const turns = useMemo(
     () => (mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns),
     [allTurns, mode]
@@ -189,7 +221,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       if (providerId) await useStore.getState().createSession(providerId)
       return
     }
-    // 没有活动会话时自动新建（纯净模式下直接打字发送的常见路径）
     if (!session) {
       const providerId = useStore.getState().providers[0]?.id
       if (!providerId) {
@@ -223,163 +254,281 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     await sendPrompt(text)
   }
 
+  const slashItems = useMemo(
+    () => [
+      ...SLASH_COMMANDS.map((c) => ({ key: c.cmd, trigger: c.cmd, label: c.desc, template: c.cmd })),
+      ...quickCmds
+        .filter((q) => q.enabled)
+        .map((q) => ({ key: `q_${q.id}`, trigger: `/${q.trigger}`, label: q.name, template: q.template }))
+    ],
+    [quickCmds]
+  )
+
+  const empty = turns.length === 0 && !streamingText
+
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--bg)' }}>
+      {/* 会话头 */}
+      <div
+        className="flex h-11 shrink-0 items-center gap-2 border-b px-4"
+        style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+      >
+        <span className="truncate text-[12.5px] font-medium">{activeSession?.title ?? '新会话'}</span>
+        {activeSession && (
+          <span className="badge badge-accent">{activeSession.providerId}</span>
+        )}
+        <span className="flex-1" />
+        {running && (
+          <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+            {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中'}
+          </span>
+        )}
+      </div>
+
+      {/* 消息区 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[760px] flex-col gap-5 px-5 py-6">
-        {turns.length === 0 && !streamingText && (
-          <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 text-center" style={{ color: 'var(--text-hint)' }}>
-            <div className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>L</div>
-            {mode === 'workbench' ? (
-              <>
-                <div className="text-[12.5px]">Agent 活动面板</div>
-                <div className="text-[11.5px] leading-relaxed">
-                  这里只显示本地工具调用、文件改动与需要你确认的操作。
-                  <br />
-                  对话内容看左侧网页，不重复显示。
+        <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-6 py-7">
+          {empty && (
+            <div className="flex min-h-[420px] flex-col items-center justify-center gap-6 text-center">
+              <div className="flex flex-col items-center gap-3">
+                <span
+                  className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[19px] font-bold"
+                  style={{
+                    background: 'linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 62%, #8b5cf6))',
+                    color: 'var(--on-accent)',
+                    boxShadow: '0 6px 20px color-mix(in srgb, var(--accent) 28%, transparent)'
+                  }}
+                >
+                  L
+                </span>
+                {mode === 'workbench' ? (
+                  <>
+                    <div className="text-[15px] font-semibold">Agent 活动面板</div>
+                    <div className="max-w-[400px] text-[12.5px] leading-[1.75]" style={{ color: 'var(--text-dim)' }}>
+                      这里只显示本地工具调用、文件改动与需要确认的操作。
+                      <br />
+                      对话内容看左侧网页，不重复显示。
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-[15px] font-semibold">
+                      {activeSession ? '开始你的第一个任务' : '新建一个任务开始'}
+                    </div>
+                    <div className="max-w-[400px] text-[12.5px] leading-[1.75]" style={{ color: 'var(--text-dim)' }}>
+                      网页中的 AI 会调用本地工具读写文件、执行命令，
+                      <br />
+                      结果实时回传到这个面板。
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* 快捷起手式 */}
+              {mode === 'pure' && (
+                <div className="grid w-full max-w-[560px] grid-cols-2 gap-2">
+                  {QUICK_STARTS.map((q) => (
+                    <button
+                      key={q.title}
+                      className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
+                      onClick={() => {
+                        setInput(q.prompt)
+                        document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
+                      }}
+                    >
+                      <span className="text-[12px] font-medium">{q.title}</span>
+                      <span className="line-clamp-2 text-[11px] leading-[1.55]" style={{ color: 'var(--text-hint)' }}>
+                        {q.desc}
+                      </span>
+                    </button>
+                  ))}
                 </div>
-              </>
-            ) : (
-              <div className="text-[12.5px]">开始你的第一个任务 — 网页中的 AI 将驱动本地工具</div>
-            )}
-          </div>
-        )}
-        {turns.map((t) => (
-          <TurnItem key={t.id} turn={t} />
-        ))}
-        {thinkingText && mode === 'pure' && streamingText && (
-          <ThinkingBlock text={thinkingText} streaming />
-        )}
-        {streamingText && mode === 'pure' && (
-          <div className="flex flex-col gap-1.5">
-            {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI（每 80ms 一次） */}
-            <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed">{streamingText}</div>
-            <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
-              <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
-              {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}
+              )}
             </div>
-          </div>
-        )}
+          )}
+
+          {turns.map((t) => (
+            <TurnItem key={t.id} turn={t} />
+          ))}
+
+          {thinkingText && mode === 'pure' && streamingText && <ThinkingBlock text={thinkingText} streaming />}
+
+          {streamingText && mode === 'pure' && (
+            <div className="flex flex-col gap-2">
+              {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI */}
+              <div className="whitespace-pre-wrap text-[13.5px] leading-[1.68]" style={{ color: 'var(--text-body)' }}>
+                {streamingText}
+              </div>
+              <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+                {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
+      {/* 计划确认 */}
       {plan && plan.status === 'draft' && (
-        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)' }}>
-          <div className="mb-2 text-[13px] font-semibold">📋 任务计划待确认：{plan.goal}</div>
-          <div className="space-y-1.5">
-            {plan.items.map((it, i) => (
-              <div key={it.id} className="flex items-start gap-2 text-[12.5px]">
-                <span style={{ color: 'var(--text-dim)' }}>{i + 1}.</span>
-                <div>
-                  <div>{it.title}</div>
-                  {it.detail && <div style={{ color: 'var(--text-dim)' }}>{it.detail}</div>}
+        <div className="mx-auto mb-2 w-full max-w-[780px] px-6">
+          <div className="anim-pop card p-3.5">
+            <div className="mb-2.5 flex items-center gap-2">
+              <span className="badge badge-accent">计划待确认</span>
+              <span className="truncate text-[12.5px] font-medium">{plan.goal}</span>
+            </div>
+            <div className="mb-3 space-y-1.5">
+              {plan.items.map((it, i) => (
+                <div key={it.id} className="flex items-start gap-2.5 text-[12.5px]">
+                  <span
+                    className="mt-[3px] flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[9.5px] font-semibold tabular-nums"
+                    style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }}
+                  >
+                    {i + 1}
+                  </span>
+                  <div className="min-w-0">
+                    <div>{it.title}</div>
+                    {it.detail && (
+                      <div className="text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                        {it.detail}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-2 flex gap-2">
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} onClick={() => void api.confirmPlan(plan.id, true)}>
-              确认执行
-            </button>
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.confirmPlan(plan.id, false)}>
-              放弃
-            </button>
-          </div>
-        </div>
-      )}
-
-      {confirmRequest && (
-        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: 'rgba(255, 75, 117, 0.08)', border: '1px solid rgba(255, 75, 117, 0.35)' }}>
-          <div className="mb-2 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>⚠️ 危险操作确认</div>
-          <div className="text-[12.5px]" style={{ color: 'var(--text-dim)' }}>{confirmRequest.reason}</div>
-          <div className="mt-2 flex gap-2">
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--danger)', color: 'var(--on-accent)' }} onClick={() => void answerConfirm(true)}>
-              允许
-            </button>
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void answerConfirm(false)}>
-              拒绝
-            </button>
-          </div>
-        </div>
-      )}
-
-      <div className="relative px-5 pb-4 pt-2">
-        {slashOpen && (
-          <div className="absolute bottom-full left-4 mb-1 w-72 rounded-xl p-1.5" style={{ background: 'var(--bg-input)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}>
-            {SLASH_COMMANDS.map((c) => (
-              <button
-                key={c.cmd}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] hover:opacity-80"
-                style={{ background: 'transparent' }}
-                onClick={() => {
-                  setInput(c.cmd)
-                  setSlashOpen(false)
-                }}
-              >
-                <span className="font-mono" style={{ color: 'var(--accent)' }}>{c.cmd}</span>
-                <span style={{ color: 'var(--text-dim)' }}>{c.desc}</span>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2">
+              <button className="btn btn-sm btn-outline" onClick={() => void api.confirmPlan(plan.id, false)}>
+                放弃
               </button>
-            ))}
-            {quickCmds.filter((q) => q.enabled).map((q) => (
+              <button className="btn btn-sm btn-primary" onClick={() => void api.confirmPlan(plan.id, true)}>
+                <IconCheck size={12} /> 确认执行
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 危险操作确认（内联版） */}
+      {confirmRequest && (
+        <div className="mx-auto mb-2 w-full max-w-[780px] px-6">
+          <div
+            className="anim-pop rounded-[var(--r-lg)] p-3"
+            style={{ background: 'var(--danger-soft)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)' }}
+          >
+            <div className="mb-1 text-[12.5px] font-semibold" style={{ color: 'var(--danger)' }}>
+              危险操作确认
+            </div>
+            <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-body)' }}>
+              {confirmRequest.reason}
+            </div>
+            <div className="mt-2.5 flex justify-end gap-2">
+              <button className="btn btn-sm btn-outline" onClick={() => void answerConfirm(false)}>
+                拒绝
+              </button>
+              <button className="btn btn-sm btn-danger" onClick={() => void answerConfirm(true)}>
+                允许
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 输入区 */}
+      <div className="relative shrink-0 px-6 pb-4 pt-1">
+        {slashOpen && (
+          <div
+            className="anim-pop absolute bottom-full left-6 mb-1.5 w-[320px] overflow-hidden rounded-[var(--r-lg)] p-1"
+            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          >
+            <div className="text-label px-2 py-1.5">指令</div>
+            {slashItems.map((c, i) => (
               <button
-                key={q.id}
-                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px]"
+                key={c.key}
+                className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms]"
+                style={{ background: i === slashIndex ? 'var(--bg-active)' : 'transparent' }}
+                onMouseEnter={() => setSlashIndex(i)}
                 onClick={() => {
-                  // {{input}} 占位：无内容时替换为空串，用户可续填；有占位则保留待编辑
-                  setInput(q.template.includes('{{input}}') ? q.template : `${q.template} `)
+                  setInput(c.template.includes('{{input}}') ? c.template : `${c.template} `)
                   setSlashOpen(false)
                 }}
               >
-                <span className="font-mono" style={{ color: 'var(--accent)' }}>/{q.trigger}</span>
-                <span style={{ color: 'var(--text-dim)' }}>{q.name}</span>
+                <span className="font-mono text-[11.5px]" style={{ color: 'var(--accent)' }}>
+                  {c.trigger}
+                </span>
+                <span className="truncate" style={{ color: 'var(--text-dim)' }}>
+                  {c.label}
+                </span>
               </button>
             ))}
           </div>
         )}
+
         <div
-          className="mx-auto flex max-w-[760px] items-end gap-2 rounded-2xl px-3 py-2.5 transition-colors"
-          style={{ background: 'var(--bg-input)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}
+          className="mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[130ms]"
+          style={{
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border-strong)',
+            boxShadow: 'var(--shadow)'
+          }}
         >
           <textarea
-            className="max-h-44 min-h-[28px] flex-1 resize-none bg-transparent px-2 py-1 text-[13.5px] leading-relaxed outline-none"
+            className="max-h-44 min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 text-[13.5px] leading-[1.6] outline-none"
             style={{ color: 'var(--text)' }}
-            placeholder="输入任务…（/ 唤起指令，Enter 发送，Shift+Enter 换行）"
+            placeholder="输入任务…  Enter 发送，Shift+Enter 换行"
             value={input}
             onChange={(e) => {
               setInput(e.target.value)
-              setSlashOpen(e.target.value === '/')
+              setSlashOpen(e.target.value.startsWith('/') && !e.target.value.includes(' '))
+              setSlashIndex(0)
             }}
             onKeyDown={(e) => {
+              if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                e.preventDefault()
+                const n = slashItems.length
+                setSlashIndex((i) => (e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n))
+                return
+              }
+              if (slashOpen && e.key === 'Enter') {
+                e.preventDefault()
+                const item = slashItems[slashIndex]
+                if (item) {
+                  setInput(item.template.includes('{{input}}') ? item.template : `${item.template} `)
+                  setSlashOpen(false)
+                }
+                return
+              }
+              if (e.key === 'Escape') {
+                setSlashOpen(false)
+                return
+              }
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 void submit()
               }
             }}
           />
-          {running ? (
-            <button
-              title="停止生成"
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-full px-3 text-[12px]"
-              style={{ background: 'var(--danger)', color: 'var(--on-accent)' }}
-              onClick={() => void stop('generate')}
-            >
-              <IconStop size={12} />
-              停止
-            </button>
-          ) : (
-            <button
-              title="发送 (Enter)"
-              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-opacity disabled:opacity-30"
-              style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
-              disabled={!input.trim()}
-              onClick={() => void submit()}
-            >
-              <IconArrowUp size={16} />
-            </button>
-          )}
-        </div>
-        <div className="mx-auto mt-1.5 flex max-w-[760px] items-center justify-center text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-          Enter 发送 · Shift+Enter 换行 · / 唤起指令
+          <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
+            <span className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+              / 唤起指令
+            </span>
+            <span className="flex-1" />
+            {running ? (
+              <button className="btn btn-sm btn-danger" onClick={() => void stop('generate')}>
+                <IconStop size={11} /> 停止生成
+              </button>
+            ) : (
+              <button
+                title="发送 (Enter)"
+                className="flex h-7 w-7 items-center justify-center rounded-full transition-all duration-[130ms] disabled:opacity-30"
+                style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+                disabled={!input.trim()}
+                onClick={() => void submit()}
+              >
+                <IconArrowUp size={15} />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

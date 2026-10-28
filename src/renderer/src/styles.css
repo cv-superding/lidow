@@ -1,128 +1,214 @@
 @import 'tailwindcss';
 
-/* Lidow 设计令牌：低饱和、轻阴影、大圆角；深浅双主题 + 自定义主色 */
+/* ============================================================================
+   Lidow 设计系统 v2 —— 中性灰基底 + 单一主色点缀 + 明确层级
+   参考 Open WebUI / Chatbox 的成熟做法：
+   · 底色只用中性灰阶（不带色相），避免"发黄发脏"
+   · 主色只用于交互态与强调，不铺大面积
+   · 三层表面：app(底) → surface(卡片/面板) → raised(浮层/输入)
+   · 字号/字重成体系：11/12/13/15/20，字重 400/500/600
+   ========================================================================== */
+
 :root {
-  --accent: #5b8cff;
+  /* ---- 品牌主色（可被设置覆盖）---- */
+  --accent: #4f6bed;
+  --accent-hover: #3f59d4;
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
+  --accent-ring: color-mix(in srgb, var(--accent) 40%, transparent);
+  --on-accent: #ffffff;
 
-  /* 动效令牌：统一缓动与时长 */
-  /* M3 对齐缓动令牌 */
-  --ease: cubic-bezier(0.2, 0, 0, 1);              /* standard */
-  --ease-emph: cubic-bezier(0.05, 0.7, 0.1, 1);    /* 入场减速 */
-  --ease-accel: cubic-bezier(0.3, 0, 1, 1);        /* 退出加速 */
+  /* ---- 动效令牌 ---- */
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emph: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --ease-accel: cubic-bezier(0.3, 0, 1, 1);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --dur-fast: 150ms;
-  --dur: 240ms;
-  --dur-slow: 300ms;
-  /* 状态层（State Layers）：hover 8% / active 12% 前景色叠层 */
-  --state-hover: rgba(15, 18, 25, 0.06);
-  --state-active: rgba(15, 18, 25, 0.12);
-  --accent-hover: #59d915;
-  --on-accent: #0a0a0a;
-  --bg-header: var(--bg-panel);
-  --bg-content: var(--bg-panel);
-  --bg-input: var(--bg-panel);
-  --border-strong: var(--border);
-  --text-hint: var(--text-dim);
-  --bubble-user-bg: rgba(141, 255, 79, 0.1);
-  --bubble-user-border: rgba(141, 255, 79, 0.4);
-  --success: #41cb66;
-  --danger: #ff4b75;
-  --warning: #ffd54b;
-  --info: #6ac8ff;
+  --dur-fast: 130ms;
+  --dur: 200ms;
+  --dur-slow: 280ms;
 
-  --bg: #f6f7f9;
-  --bg-panel: #fdfaf4;
-  --bg-elevated: #ffffff;
-  --bg-hover: rgba(15, 18, 25, 0.05);
-  --border: rgba(15, 18, 25, 0.08);
-  --text: #1a1d23;
+  /* ---- 圆角体系 ---- */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 14px;
+  --r-2xl: 18px;
+
+  /* ---- 语义色 ---- */
+  --success: #16a34a;
+  --danger: #dc2626;
+  --warning: #d97706;
+  --info: #0284c7;
+  --success-soft: color-mix(in srgb, var(--success) 12%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 10%, transparent);
+  --warning-soft: color-mix(in srgb, var(--warning) 12%, transparent);
+}
+
+/* ---------------- 浅色：纯中性灰 ---------------- */
+:root,
+:root.light {
+  color-scheme: light;
+
+  --bg: #f7f8fa; /* 应用底 */
+  --surface: #ffffff; /* 卡片 / 面板 */
+  --surface-raised: #ffffff; /* 浮层 / 输入框 */
+  --surface-sunken: #f1f3f6; /* 内嵌区（代码块底、列表选中） */
+  --sidebar: #fbfbfc;
+
+  --bg-panel: var(--surface);
+  --bg-elevated: var(--surface-raised);
+  --bg-header: var(--surface);
+  --bg-content: var(--bg);
+  --bg-input: var(--surface-sunken);
+  --bg-hover: rgba(15, 23, 42, 0.045);
+  --bg-active: rgba(15, 23, 42, 0.075);
+
+  --border: #e5e7eb;
+  --border-soft: #eef0f3;
+  --border-strong: #d4d8de;
+
+  --text: #111827;
+  --text-body: #374151;
   --text-dim: #6b7280;
-  --shadow: 0 1px 3px rgba(15, 18, 25, 0.06), 0 8px 24px rgba(15, 18, 25, 0.06);
+  --text-hint: #9ca3af;
+
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 4px 12px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 4px 8px rgba(16, 24, 40, 0.06), 0 16px 40px rgba(16, 24, 40, 0.1);
+
+  --state-hover: var(--bg-hover);
+  --state-active: var(--bg-active);
+  --bubble-user-bg: var(--accent-soft);
+  --bubble-user-border: transparent;
 }
 
+/* ---------------- 深色：中性炭灰（非纯黑，护眼） ---------------- */
 :root.dark {
-  --accent: #8dff4f;
-  --accent-hover: #59d915;
-  --on-accent: #0a0a0a;
-  --bg: #09090b;
-  --bg-panel: #101013;
-  --bg-elevated: #18181b;
-  --bg-header: #18181b;
-  --bg-content: #18181b;
-  --bg-input: #18181b;
-  --bg-hover: #27272a;
-  --border: #27272a;
-  --border-strong: #3f3f46;
-  --text: #f4f4f5;
-  --text-dim: #babac1;
-  --text-hint: #71717a;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.4);
-  --state-hover: rgba(255, 255, 255, 0.07);
-  --state-active: rgba(255, 255, 255, 0.13);
-  --bubble-user-bg: rgba(141, 255, 79, 0.1);
-  --bubble-user-border: rgba(141, 255, 79, 0.4);
-  --success: #41cb66;
-  --danger: #ff4b75;
-  --warning: #ffd54b;
-  --info: #6ac8ff;
+  color-scheme: dark;
+
+  --bg: #0f1115;
+  --surface: #16191f;
+  --surface-raised: #1c2027;
+  --surface-sunken: #101318;
+  --sidebar: #12151a;
+
+  --bg-panel: var(--surface);
+  --bg-elevated: var(--surface-raised);
+  --bg-header: var(--surface);
+  --bg-content: var(--bg);
+  --bg-input: var(--surface-sunken);
+  --bg-hover: rgba(255, 255, 255, 0.055);
+  --bg-active: rgba(255, 255, 255, 0.09);
+
+  --border: #262b33;
+  --border-soft: #1e2229;
+  --border-strong: #353b45;
+
+  --text: #f1f3f5;
+  --text-body: #d3d8de;
+  --text-dim: #9aa1ad;
+  --text-hint: #6c7381;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.4), 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  --state-hover: var(--bg-hover);
+  --state-active: var(--bg-active);
+  --bubble-user-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --bubble-user-border: transparent;
+
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
+  --success-soft: color-mix(in srgb, var(--success) 18%, transparent);
+  --danger-soft: color-mix(in srgb, var(--danger) 16%, transparent);
+  --warning-soft: color-mix(in srgb, var(--warning) 16%, transparent);
 }
 
-/* 主题三：Midnight 深空蓝（低饱和蓝调暗色） */
+/* ---------------- 深空蓝 ---------------- */
 :root.midnight {
-  --accent: #6ac8ff;
-  --accent-hover: #8fd8ff;
-  --on-accent: #06121c;
-  --bg: #0a0e1a;
-  --bg-panel: #101627;
-  --bg-elevated: #161e33;
-  --bg-header: #131a2e;
-  --bg-content: #131a2e;
-  --bg-input: #161e33;
-  --bg-hover: #1f2a45;
-  --border: #1f2a45;
-  --border-strong: #2d3b5e;
-  --text: #dde6f5;
-  --text-dim: #8a97b5;
-  --text-hint: #5f6c8c;
-  --shadow: 0 2px 8px rgba(4, 8, 24, 0.5), 0 8px 28px rgba(4, 8, 24, 0.45);
-  --state-hover: rgba(150, 180, 255, 0.1);
-  --state-active: rgba(150, 180, 255, 0.16);
-  --bubble-user-bg: rgba(106, 200, 255, 0.1);
-  --bubble-user-border: rgba(106, 200, 255, 0.4);
-  --success: #41cb66;
-  --danger: #ff4b75;
-  --warning: #ffd54b;
-  --info: #6ac8ff;
+  color-scheme: dark;
+
+  --accent: #5b9cf8;
+  --accent-hover: #7cb0ff;
+  --on-accent: #08121f;
+
+  --bg: #0b0f1a;
+  --surface: #121828;
+  --surface-raised: #182034;
+  --surface-sunken: #0d1220;
+  --sidebar: #0e1320;
+
+  --bg-panel: var(--surface);
+  --bg-elevated: var(--surface-raised);
+  --bg-header: var(--surface);
+  --bg-content: var(--bg);
+  --bg-input: var(--surface-sunken);
+  --bg-hover: rgba(140, 175, 255, 0.07);
+  --bg-active: rgba(140, 175, 255, 0.12);
+
+  --border: #1f2940;
+  --border-soft: #182035;
+  --border-strong: #2d3a55;
+
+  --text: #e8eefb;
+  --text-body: #c3cee2;
+  --text-dim: #8b9ab5;
+  --text-hint: #5f6d87;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.45), 0 4px 12px rgba(0, 0, 0, 0.32);
+  --shadow-lg: 0 4px 8px rgba(0, 0, 0, 0.45), 0 16px 40px rgba(0, 0, 0, 0.55);
+
+  --state-hover: var(--bg-hover);
+  --state-active: var(--bg-active);
+  --bubble-user-bg: color-mix(in srgb, var(--accent) 16%, transparent);
+  --bubble-user-border: transparent;
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
-/* 主题四：Warm 暖沙纸感（低饱和暖调浅色） */
-:root.warm {
-  --accent: #b8860b;
-  --accent-hover: #d9a418;
-  --on-accent: #1c1400;
-  --bg: #f6f1e7;
-  --bg-panel: #fdfaf4;
-  --bg-elevated: #ffffff;
-  --bg-header: #f0e9db;
-  --bg-content: #ebe4d4;
-  --bg-input: #faf6ed;
-  --bg-hover: #e3d9c4;
-  --border: #e3d9c4;
-  --border-strong: #d2c5a8;
-  --text: #2d2a24;
-  --text-dim: #6b6353;
-  --text-hint: #948b77;
-  --shadow: 0 2px 8px rgba(90, 70, 40, 0.1), 0 8px 28px rgba(90, 70, 40, 0.12);
-  --state-hover: rgba(120, 90, 40, 0.08);
-  --state-active: rgba(120, 90, 40, 0.14);
-  --bubble-user-bg: rgba(184, 134, 11, 0.1);
-  --bubble-user-border: rgba(184, 134, 11, 0.35);
-  --success: #167230;
-  --danger: #d02533;
-  --warning: #946300;
-  --info: #2265cf;
+/* ---------------- 石墨灰：冷调中性浅色（替代旧暖沙，去除发黄感） ---------------- */
+:root.graphite {
+  color-scheme: light;
+
+  --accent: #4f6bed;
+  --accent-hover: #3f59d4;
+  --on-accent: #ffffff;
+
+  --bg: #fbfbfd;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #f3f4f7;
+  --sidebar: #f7f8fa;
+
+  --bg-panel: var(--surface);
+  --bg-elevated: var(--surface-raised);
+  --bg-header: var(--surface);
+  --bg-content: var(--bg);
+  --bg-input: var(--surface-sunken);
+  --bg-hover: rgba(15, 23, 42, 0.055);
+  --bg-active: rgba(15, 23, 42, 0.09);
+
+  --border: #dcdfe5;
+  --border-soft: #e8eaee;
+  --border-strong: #c6cbd4;
+
+  --text: #0f172a;
+  --text-body: #334155;
+  --text-dim: #64748b;
+  --text-hint: #94a3b8;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow: 0 1px 3px rgba(15, 23, 42, 0.07), 0 4px 12px rgba(15, 23, 42, 0.05);
+  --shadow-lg: 0 4px 8px rgba(15, 23, 42, 0.07), 0 16px 40px rgba(15, 23, 42, 0.11);
+
+  --state-hover: var(--bg-hover);
+  --state-active: var(--bg-active);
+  --bubble-user-bg: var(--accent-soft);
+  --bubble-user-border: transparent;
 }
 
+/* ============================================================================
+   基础
+   ========================================================================== */
 html,
 body,
 #root {
@@ -135,30 +221,299 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family:
+    'Inter',
+    'Segoe UI Variable',
     'Segoe UI',
     system-ui,
     -apple-system,
     'PingFang SC',
     'Microsoft YaHei',
     sans-serif;
-  font-size: 14px;
+  font-size: 13px;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-/* 统一动效：面板切换 200-300ms 自然缓动 */
+/* 字号体系 */
+.text-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.text-body {
+  font-size: 13px;
+  line-height: 1.62;
+}
+.text-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+.text-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-hint);
+}
+
+/* ============================================================================
+   组件规范
+   ========================================================================== */
+
+/* ---- 按钮 ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-body);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease),
+    opacity var(--dur-fast) var(--ease);
+}
+.btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.btn:active {
+  background: var(--bg-active);
+}
+.btn:disabled {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: transparent;
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+  color: var(--on-accent);
+}
+.btn-primary:active {
+  background: var(--accent-hover);
+  filter: brightness(0.95);
+}
+
+.btn-outline {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-body);
+}
+.btn-outline:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-strong);
+}
+
+.btn-ghost {
+  color: var(--text-dim);
+}
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.btn-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--danger);
+}
+
+.btn-sm {
+  height: 26px;
+  padding: 0 9px;
+  font-size: 11.5px;
+  border-radius: var(--r-sm);
+}
+.btn-icon {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+}
+.btn-icon.btn-sm {
+  width: 26px;
+  height: 26px;
+}
+
+/* ---- 输入 ---- */
+.field {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 12.5px;
+  outline: none;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+.field::placeholder {
+  color: var(--text-hint);
+}
+.field:hover {
+  border-color: var(--border-strong);
+}
+.field:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+textarea.field {
+  height: auto;
+  padding: 8px 10px;
+  line-height: 1.6;
+  resize: none;
+}
+
+/* ---- 卡片 ---- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-sm);
+}
+.card-interactive {
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+.card-interactive:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow);
+  transform: translateY(-1px);
+}
+
+/* ---- 侧栏导航项 ---- */
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  transition:
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+.nav-item:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.nav-item[data-active='true'] {
+  background: var(--bg-active);
+  color: var(--text);
+  font-weight: 500;
+}
+.nav-item[data-active='true']::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 15px;
+  width: 2px;
+  border-radius: 0 2px 2px 0;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+
+/* ---- 分隔线 ---- */
+.divider {
+  height: 1px;
+  background: var(--border);
+}
+.divider-soft {
+  height: 1px;
+  background: var(--border-soft);
+}
+
+/* ---- 徽标 / 标签 ---- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 500;
+  background: var(--bg-hover);
+  color: var(--text-dim);
+}
+.badge-accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.badge-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.badge-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---- 滚动条 ---- */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-hint) 35%, transparent);
+  border-radius: 6px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-dim) 55%, transparent);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ---- 焦点可见性 ---- */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-sm);
+}
+
+/* ============================================================================
+   动效
+   ========================================================================== */
 .transition-panel {
   transition:
-    width 0.25s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
-    opacity 0.2s ease;
+    width var(--dur-slow) var(--ease-emph),
+    transform var(--dur-slow) var(--ease-emph),
+    opacity var(--dur) ease;
 }
 
-/* ---------- 动效体系（M3 对齐） ---------- */
-/* 入场：减速曲线快速进入、减速停靠 */
 @keyframes fadeUp {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(6px);
   }
   to {
     opacity: 1;
@@ -168,7 +523,7 @@ body {
 @keyframes popIn {
   from {
     opacity: 0;
-    transform: scale(0.96);
+    transform: scale(0.97);
   }
   to {
     opacity: 1;
@@ -178,17 +533,7 @@ body {
 @keyframes toastIn {
   from {
     opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-@keyframes tabIn {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -209,7 +554,17 @@ body {
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.4;
+  }
+}
+@keyframes slideDown {
+  from {
+    opacity: 0;
+    max-height: 0;
+  }
+  to {
+    opacity: 1;
+    max-height: 1400px;
   }
 }
 
@@ -222,97 +577,155 @@ body {
 .anim-toast {
   animation: toastIn var(--dur) var(--ease-emph) both;
 }
-.anim-tab {
-  animation: tabIn var(--dur-fast) var(--ease-emph) both;
-}
 .anim-fade {
   animation: fadeIn var(--dur) ease both;
 }
 .anim-breathe {
-  animation: breathe 1.6s var(--ease-in-out) infinite;
+  animation: breathe 1.8s var(--ease-in-out) infinite;
+}
+.anim-expand {
+  animation: slideDown var(--dur) var(--ease-emph) both;
+  overflow: hidden;
 }
 
-/* ---------- 状态层（State Layers） ----------
-   交互元素悬停时叠加浅色前景层（视觉上即"浅色方框"），
-   ::after 不干扰元素自身背景，透明度过渡 150ms。 */
-button,
-.sl,
-select,
-[role='button'] {
-  position: relative;
-  cursor: pointer;
-}
-input,
-textarea {
-  cursor: text;
-}
-button::after,
-.sl::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  background: var(--state-hover);
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease);
-  pointer-events: none;
-}
-button:hover::after,
-.sl:hover::after {
-  opacity: 1;
-}
-button:active::after,
-.sl:active::after {
-  background: var(--state-active);
-}
-
-/* 独立卡片：状态层 + 轻抬升 + 阴影增强（仅此语义使用） */
+/* hover 抬升（仅卡片） */
 .hover-lift {
   transition:
     transform var(--dur-fast) var(--ease),
     box-shadow var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) ease;
+    border-color var(--dur-fast) var(--ease);
 }
 .hover-lift:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow);
+  border-color: var(--border-strong);
 }
 
-/* 控件基础过渡 */
-button,
-input,
-select,
-textarea {
-  transition:
-    background-color var(--dur-fast) ease,
-    color var(--dur-fast) ease,
-    border-color var(--dur-fast) ease,
-    opacity var(--dur-fast) ease;
-}
-/* 注意：不要用 :active { transform: scale() } —— mousedown 时按钮缩小会移动命中区域，
-   mouseup 落点跑到按钮外，浏览器按 drag 处理，onClick 永不触发（实测导致按钮"点不动"）。 */
-button:active {
-  filter: brightness(0.94);
-}
+/* 注意：不要用 :active { transform: scale() } —— mousedown 缩小会移动命中区域，
+   mouseup 落点跑到按钮外，浏览器按 drag 处理，onClick 永不触发。 */
 
-/* 键盘焦点可见性 */
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 8px;
+/* ============================================================================
+   Markdown 正文
+   ========================================================================== */
+.markdown-body {
+  color: var(--text-body);
+  font-size: 13.5px;
+  line-height: 1.68;
+  word-break: break-word;
 }
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+.markdown-body > *:first-child {
+  margin-top: 0;
 }
-::-webkit-scrollbar-thumb {
+.markdown-body > *:last-child {
+  margin-bottom: 0;
+}
+.markdown-body p {
+  margin: 0.55em 0;
+}
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4 {
+  margin: 1.1em 0 0.5em;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+.markdown-body h1 {
+  font-size: 18px;
+}
+.markdown-body h2 {
+  font-size: 16px;
+}
+.markdown-body h3 {
+  font-size: 14.5px;
+}
+.markdown-body h4 {
+  font-size: 13.5px;
+}
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.35em;
+}
+.markdown-body li {
+  margin: 0.22em 0;
+}
+.markdown-body li::marker {
+  color: var(--text-hint);
+}
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--accent-ring);
+}
+.markdown-body a:hover {
+  border-bottom-color: var(--accent);
+}
+.markdown-body blockquote {
+  margin: 0.7em 0;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 2.5px solid var(--border-strong);
+  color: var(--text-dim);
+}
+.markdown-body hr {
+  margin: 1.2em 0;
+  border: 0;
+  height: 1px;
   background: var(--border);
+}
+.markdown-body strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.markdown-body table {
+  width: 100%;
+  margin: 0.8em 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+.markdown-body th {
+  background: var(--surface-sunken);
+  font-weight: 600;
+  text-align: left;
+  color: var(--text);
+}
+.markdown-body th,
+.markdown-body td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.markdown-body tr:last-child td {
+  border-bottom: 0;
+}
+.markdown-body :not(pre) > code {
+  padding: 0.12em 0.38em;
   border-radius: 4px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-soft);
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 0.9em;
+  color: var(--text);
 }
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-dim);
+.markdown-body pre {
+  margin: 0.75em 0;
+  padding: 11px 13px;
+  border-radius: var(--r-lg);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  overflow: auto;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
+.markdown-body pre code {
+  font-family: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-body);
+  background: none;
+  border: 0;
+  padding: 0;
 }

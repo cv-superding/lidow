@@ -1,68 +1,129 @@
 import { useState } from 'react'
 import type { ToolResult } from '@shared/types'
+import { IconChevronRight, IconTerminal, IconCheck, IconClose, IconFile } from './icons'
 
 /** 可视化工具卡片：diff / 终端 / 表格 / 文件列表 / 文本 */
 export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element {
-  const [open, setOpen] = useState(result.ok)
+  const [open, setOpen] = useState(!result.ok)
   const display = result.display
-  const icon = result.ok ? '✓' : '✗'
-  const color = result.ok ? '#4caf7d' : '#e06c6c'
 
   return (
-    <div className="hover-lift w-[92%] overflow-hidden rounded-2xl" style={{ background: 'var(--bg-panel)', border: `1px solid ${result.ok ? 'var(--border)' : '#7a3b3b'}` }}>
+    <div
+      className="overflow-hidden rounded-[var(--r-lg)] transition-colors duration-[130ms]"
+      style={{
+        background: 'var(--surface)',
+        border: `1px solid ${result.ok ? 'var(--border)' : 'color-mix(in srgb, var(--danger) 32%, transparent)'}`
+      }}
+    >
       <button
-        className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[12.5px]"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
         onClick={() => setOpen(!open)}
       >
-        <span style={{ color }} className="font-bold">{icon}</span>
-        <span className="font-mono" style={{ color: 'var(--accent)' }}>{result.name}</span>
-        <span style={{ color: 'var(--text-dim)' }}>{result.durationMs}ms</span>
-        {display && <span className="rounded-md px-1.5 py-0.5 text-[10.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }}>{display.kind}</span>}
-        <span className="ml-auto" style={{ color: 'var(--text-dim)' }}>{open ? '▾' : '▸'}</span>
+        <span
+          className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full"
+          style={{
+            background: result.ok ? 'var(--success-soft)' : 'var(--danger-soft)',
+            color: result.ok ? 'var(--success)' : 'var(--danger)'
+          }}
+        >
+          {result.ok ? <IconCheck size={11} /> : <IconClose size={10} />}
+        </span>
+        <span className="font-mono text-[12px] font-medium" style={{ color: 'var(--text)' }}>
+          {result.name}
+        </span>
+        {display && <span className="badge">{display.kind}</span>}
+        <span className="flex-1" />
+        <span className="text-[10.5px] tabular-nums" style={{ color: 'var(--text-hint)' }}>
+          {result.durationMs}ms
+        </span>
+        <IconChevronRight
+          size={12}
+          className={`shrink-0 transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`}
+        />
       </button>
 
       {open && (
-        <div className="anim-tab border-t px-3.5 py-2.5 text-[12.5px]" style={{ borderColor: 'var(--border)' }}>
-          {result.error && <div className="mb-2" style={{ color: '#e06c6c' }}>{result.error}</div>}
+        <div className="anim-fade border-t px-3 py-2.5" style={{ borderColor: 'var(--border-soft)' }}>
+          {result.error && (
+            <div
+              className="mb-2 rounded-[var(--r-sm)] px-2.5 py-2 font-mono text-[11.5px] leading-relaxed"
+              style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+            >
+              {result.error}
+            </div>
+          )}
+
           {display?.kind === 'diff' && <DiffView patch={display.patch} />}
+
           {display?.kind === 'terminal' && (
             <div>
-              <div className="mb-1.5 font-mono text-[11.5px]" style={{ color: 'var(--text-dim)' }}>$ {display.cmd}</div>
-              <pre className="max-h-64 overflow-auto rounded-xl p-2.5 font-mono text-[11.5px] leading-relaxed" style={{ background: '#0d0d11', color: '#c8ccd4' }}>
-                {display.output}
+              <div className="mb-1.5 flex items-center gap-1.5 font-mono text-[11px]" style={{ color: 'var(--text-dim)' }}>
+                <IconTerminal size={11} />
+                {display.cmd}
+              </div>
+              <pre
+                className="max-h-64 overflow-auto rounded-[var(--r-md)] px-3 py-2.5 font-mono text-[11.5px] leading-[1.6]"
+                style={{ background: 'var(--surface-sunken)', color: 'var(--text-body)', border: '1px solid var(--border-soft)' }}
+              >
+                {display.output || '（无输出）'}
               </pre>
             </div>
           )}
+
           {display?.kind === 'table' && (
-            <table className="w-full text-left text-[12px]">
-              <thead>
-                <tr>
-                  {display.columns.map((c) => (
-                    <th key={c} className="border-b px-2 py-1" style={{ borderColor: 'var(--border)' }}>{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {display.rows.slice(0, 50).map((row, i) => (
-                  <tr key={i}>
-                    {row.map((cell, j) => (
-                      <td key={j} className="border-b px-2 py-1" style={{ borderColor: 'var(--border)' }}>{cell}</td>
+            <div className="overflow-auto rounded-[var(--r-md)]" style={{ border: '1px solid var(--border)' }}>
+              <table className="w-full text-left text-[12px]">
+                <thead>
+                  <tr style={{ background: 'var(--surface-sunken)' }}>
+                    {display.columns.map((c) => (
+                      <th
+                        key={c}
+                        className="border-b px-2.5 py-1.5 font-medium"
+                        style={{ borderColor: 'var(--border)', color: 'var(--text)' }}
+                      >
+                        {c}
+                      </th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {display?.kind === 'files' && (
-            <div className="max-h-56 space-y-0.5 overflow-auto font-mono text-[11.5px]">
-              {display.files.map((f) => (
-                <div key={f}>{f}</div>
-              ))}
-              {display.truncated && <div style={{ color: 'var(--text-dim)' }}>…已截断</div>}
+                </thead>
+                <tbody>
+                  {display.rows.slice(0, 50).map((row, i) => (
+                    <tr key={i}>
+                      {row.map((cell, j) => (
+                        <td
+                          key={j}
+                          className="border-b px-2.5 py-1.5"
+                          style={{ borderColor: 'var(--border-soft)', color: 'var(--text-body)' }}
+                        >
+                          {cell}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+
+          {display?.kind === 'files' && (
+            <div className="max-h-56 space-y-0.5 overflow-auto font-mono text-[11.5px]" style={{ color: 'var(--text-body)' }}>
+              {display.files.map((f) => (
+                <div key={f} className="flex items-center gap-1.5">
+                  <span style={{ color: 'var(--text-hint)' }}>
+                    <IconFile size={11} />
+                  </span>
+                  {f}
+                </div>
+              ))}
+              {display.truncated && <div style={{ color: 'var(--text-hint)' }}>…已截断</div>}
+            </div>
+          )}
+
           {(!display || display.kind === 'text') && (
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+            <pre
+              className="max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-[1.6]"
+              style={{ color: 'var(--text-dim)' }}
+            >
               {result.output || '（无输出）'}
             </pre>
           )}
@@ -75,12 +136,26 @@ export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element 
 function DiffView({ patch }: { patch: string }): React.JSX.Element {
   const lines = patch.split('\n')
   return (
-    <div className="overflow-auto rounded-xl font-mono text-[11.5px] leading-relaxed" style={{ background: 'var(--bg-elevated)' }}>
+    <div
+      className="overflow-auto rounded-[var(--r-md)] font-mono text-[11.5px] leading-[1.6]"
+      style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-soft)' }}
+    >
       {lines.map((line, i) => {
-        const bg = line.startsWith('+') ? 'rgba(76,175,125,.12)' : line.startsWith('-') ? 'rgba(224,108,108,.12)' : 'transparent'
-        const fg = line.startsWith('+') ? '#6fce9c' : line.startsWith('-') ? '#e08a8a' : 'var(--text-dim)'
+        const add = line.startsWith('+')
+        const del = line.startsWith('-')
         return (
-          <div key={i} style={{ background: bg, color: fg }} className="whitespace-pre px-3 py-px">
+          <div
+            key={i}
+            className="whitespace-pre px-3 py-px"
+            style={{
+              background: add
+                ? 'color-mix(in srgb, var(--success) 12%, transparent)'
+                : del
+                  ? 'color-mix(in srgb, var(--danger) 12%, transparent)'
+                  : 'transparent',
+              color: add ? 'var(--success)' : del ? 'var(--danger)' : 'var(--text-dim)'
+            }}
+          >
             {line || ' '}
           </div>
         )

@@ -9,9 +9,9 @@ import type { McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } fro
 
 /** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
 function applyNativeTheme(theme: unknown): void {
-  // 四主题映射：light/warm 是浅色系，dark/midnight 是深色系，system 跟随系统。
-  // 之前只判断 'light'，导致 warm 落到 dark 分支 → 网页变纯黑而 UI 是暖白。
-  const LIGHT_THEMES = new Set(['light', 'warm'])
+  // 主题映射：light/graphite 是浅色系，dark/midnight 是深色系，system 跟随系统。
+  // 旧版 warm（暖沙）已废弃并迁移为 graphite。
+  const LIGHT_THEMES = new Set(['light', 'graphite', 'warm'])
   const DARK_THEMES = new Set(['dark', 'midnight'])
   const key = String(theme ?? 'dark')
   const t = key === 'system' ? 'system' : LIGHT_THEMES.has(key) ? 'light' : DARK_THEMES.has(key) ? 'dark' : 'dark'

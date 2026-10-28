@@ -29,8 +29,8 @@ import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
 import { HOOKS, buildHookSource } from '@main/providers/hooks'
 
 const DEFAULT_SETTINGS: AppSettings = {
-  theme: 'dark',
-  accent: '#8dff4f',
+  theme: 'graphite',
+  accent: '#4f6bed',
   language: 'zh-CN',
   pureMode: false,
   dangerConfirm: true,
