@@ -4,7 +4,7 @@ import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
 import { PureModeShell, PreviewPanel } from './PureModeShell'
 import { SessionsView, FilesView, TasksView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
-import { RAIL_ICONS, IconPure, IconChevronRight, IconChat } from './icons'
+import { RAIL_ICONS, IconPure, IconChevronRight } from './icons'
 import { WindowControls, DragStrip } from './TitleBar'
 
 const RAIL: { id: ViewId; label: string }[] = [
@@ -88,7 +88,7 @@ export function LeftRail(): React.JSX.Element {
 
 /** thinkrail 三段式顶栏：品牌 | 面包屑 | 状态 + 窗口控制。整条可拖拽窗口 */
 function TopBar(): React.JSX.Element {
-  const { view, streamingText, stop, rightOpen, toggleRight } = useStore()
+  const { view, streamingText, stop } = useStore()
   const project = useProject(useStore())
   const running = streamingText.length > 0
   return (
@@ -121,30 +121,50 @@ function TopBar(): React.JSX.Element {
       <div className="flex h-full items-center gap-1.5 pl-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {running && (
           <button className="rounded-md px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--danger)', color: 'var(--on-accent)' }} onClick={() => void stop('all')}>
-            全部停止
+            停止
           </button>
         )}
-        {view === 'home' && (
-          <button
-            className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px]"
-            style={{ background: rightOpen ? 'var(--bg-hover)' : 'transparent', color: rightOpen ? 'var(--text)' : 'var(--text-hint)' }}
-            title="显示/隐藏对话面板"
-            onClick={toggleRight}
-          >
-            <IconChat size={13} />
-            对话面板
-          </button>
-        )}
-        <span className="flex items-center gap-1.5 pl-1 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
-          <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
-          就绪
-        </span>
       </div>
       <WindowControls />
     </div>
   )
 }
 
+
+
+/** 工作台首页引导：告诉用户正确路径（纯净模式对话），避免在网页里直接打字绕过 Agent */
+function HomeGuide(): React.JSX.Element {
+  const { setPure, projects } = useStore()
+  const hasProject = projects.length > 0
+  return (
+    <div className="flex h-full items-center justify-center px-8">
+      <div className="flex max-w-[520px] flex-col items-center gap-5 text-center">
+        <span
+          className="flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold"
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+        >
+          L
+        </span>
+        <div className="text-[17px] font-semibold">从纯净模式开始</div>
+        <div className="flex flex-col gap-2 text-[13px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+          <span>
+            1. 点左下角「<b style={{ color: 'var(--text)' }}>纯净模式</b>」进入对话界面
+          </span>
+          <span>2. 在那里的输入框发任务 —— Lidow 会自动告诉 AI 你的项目、目录和工具</span>
+          <span>3. AI 驱动本地工具干活，你在对话里看到思考过程和执行结果</span>
+          {!hasProject && <span style={{ color: 'var(--warning)' }}>还没有项目：先在「文件」视图打开一个文件夹</span>}
+        </div>
+        <button
+          className="rounded-xl px-6 py-2.5 text-[13px] font-medium"
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)' }}
+          onClick={() => setPure(true)}
+        >
+          进入纯净模式 →
+        </button>
+      </div>
+    </div>
+  )
+}
 
 /** 纯净模式右侧文件预览（无项目时不渲染） */
 function PurePreview(): React.JSX.Element | null {
@@ -190,7 +210,7 @@ function ConfirmOverlay(): React.JSX.Element {
 }
 
 export function AppShell(): React.JSX.Element {
-  const { booted, view, rightOpen, pureMode, pureView, notices, toggleRight, confirmRequest } = useStore()
+  const { booted, view, pureMode, pureView, notices, confirmRequest } = useStore()
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -249,27 +269,8 @@ export function AppShell(): React.JSX.Element {
           )}
         </div>
 
-        {/* Agent 活动面板（仅工作台 home 视图） */}
-        {!pureMode && view === 'home' && rightOpen && (
-          <div
-            className="transition-panel flex shrink-0 flex-col border-l"
-            style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
-          >
-            <PanelHeader title="Agent 活动">
-              <button
-                className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
-                style={{ color: 'var(--text-hint)' }}
-                title="收起面板"
-                onClick={toggleRight}
-              >
-                <IconChevronRight size={13} className="rotate-180" />
-              </button>
-            </PanelHeader>
-            <div className="min-h-0 flex-1">
-              <ChatPanel mode="workbench" />
-            </div>
-          </div>
-        )}
+        {/* 工作台 home：纯净模式引导（对话只在纯净模式，网页只是后台承载） */}
+        {!pureMode && view === 'home' && <HomeGuide />} 
 
         {/* 纯净模式文件预览（仅对话主区） */}
         {pureMode && pureView === 'home' && <PurePreview />}
