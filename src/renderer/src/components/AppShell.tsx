@@ -132,26 +132,6 @@ function TopBar(): React.JSX.Element {
 
 
 
-/** 工作台首页：极简欢迎（平台卡片是主体，见 WebTabs 的 HomeEmpty） */
-function HomeGuide(): React.JSX.Element {
-  return (
-    <div className="flex h-full items-center justify-center px-8">
-      <div className="flex max-w-[480px] flex-col items-center gap-4 text-center">
-        <span
-          className="flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold"
-          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
-        >
-          L
-        </span>
-        <div className="text-[17px] font-semibold">Lidow</div>
-        <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-          零 Token 成本的内嵌网页版 AI Agent — 选择左侧平台开始
-        </div>
-      </div>
-    </div>
-  )
-}
-
 /** 纯净模式右侧文件预览（无项目时不渲染） */
 function PurePreview(): React.JSX.Element | null {
   const project = useProject(useStore())
@@ -229,7 +209,7 @@ export function AppShell(): React.JSX.Element {
           {/* webview 必须保持在视口内：离屏定位会触发 document.hidden=true，
               Chromium 节流隐藏页面 → React 不响应输入/点击（实测消息发不出去）。
               纯净模式时它仍在原位，被上层的原生对话遮罩盖住（视觉不可见但页面可见）。 */}
-          <div className={view === 'home' ? 'h-full' : 'hidden'} style={{ position: 'relative', zIndex: 0 }}>
+          <div className="h-full" style={{ position: 'relative', zIndex: 0 }}>
             <WebTabs />
           </div>
 
@@ -255,8 +235,7 @@ export function AppShell(): React.JSX.Element {
           )}
         </div>
 
-        {/* 工作台 home：纯净模式引导（对话只在纯净模式，网页只是后台承载） */}
-        {!pureMode && view === 'home' && <HomeGuide />} 
+
 
         {/* 纯净模式文件预览（仅对话主区） */}
         {pureMode && pureView === 'home' && <PurePreview />}
