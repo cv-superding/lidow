@@ -26,23 +26,57 @@ export interface ProviderHookSpec {
 }
 
 /** DeepSeek 补齐帧：p/v 增量补丁 + response/fragments 结构 */
-function deepseekExtract(frame: unknown): { text?: string; think?: string; finished?: boolean; incomplete?: boolean } | null {
+interface ExtractResult {
+  text?: string
+  think?: string
+  finished?: boolean
+  incomplete?: boolean
+}
+
+/** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
+function deepseekExtract(frame: unknown): ExtractResult | null {
   const f = frame as Record<string, unknown>
   if (!f || typeof f !== 'object') return null
   const p = typeof f.p === 'string' ? f.p : undefined
   const v = f.v
+
+  // BATCH 批量帧：{ o: 'BATCH', v: [子帧...] } → 逐个提取后合并
+  if (f.o === 'BATCH' && Array.isArray(v)) {
+    const merged: ExtractResult = {}
+    for (const sub of v) {
+      const r = deepseekExtract(sub)
+      if (!r) continue
+      if (r.text) merged.text = (merged.text ?? '') + r.text
+      if (r.think) merged.think = (merged.think ?? '') + r.think
+      if (r.finished) merged.finished = true
+      if (r.incomplete) merged.incomplete = true
+    }
+    return Object.keys(merged).length > 0 ? merged : null
+  }
+
   if (p === 'response/status' || p === 'quasi_status') {
     if (v === 'FINISHED') return { finished: true }
     if (v === 'INCOMPLETE') return { incomplete: true }
     return null
   }
+
+  // fragments APPEND：{ p: '<path>/fragments', o: 'APPEND', v: [{type, content}...] }
+  if (p && p.endsWith('/fragments') && f.o === 'APPEND' && Array.isArray(v)) {
+    const merged: ExtractResult = {}
+    for (const frag of v) {
+      const fr = frag as { type?: string; content?: string; text?: string }
+      const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
+      if (!content) continue
+      if (String(fr?.type ?? '').toUpperCase() === 'THINK') merged.think = (merged.think ?? '') + content
+      else merged.text = (merged.text ?? '') + content
+    }
+    return Object.keys(merged).length > 0 ? merged : null
+  }
+
   // 文本增量补丁：p 形如 response/fragments/-1/content
   if (p && typeof v === 'string') {
     if (/reasoning_content|thinking_content$/.test(p)) return { think: v }
-    if (/(content|text|markdown|delta)$/.test(p)) {
-      // THINK 片段（推理过程）单独归入 think，避免与正文混在一起
-      return { text: v }
-    }
+    if (/(content|text|markdown|delta)$/.test(p)) return { text: v }
   }
   // 顶层 {v: string} 帧
   if (p === undefined && typeof v === 'string') return { text: v }

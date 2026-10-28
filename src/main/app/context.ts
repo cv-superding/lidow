@@ -209,6 +209,9 @@ export class AppContext {
     this.hotkeys.registerAction('toggle-pure', () => this.emit({ type: 'notice', sessionId: '', level: 'info', message: 'action:toggle-pure' }))
     this.hotkeys.applyAll()
 
+    this.overlay.setThinkChunkHandler((sessionId, think) => {
+      this.emit({ type: 'think-chunk', sessionId, think })
+    })
     this.overlay.setFloatActionHandler((sessionId, action) => {
       if (action === 'open-panel') {
         // 悬浮球左键单击 → 展开对话面板并把窗口提到前台（回归修复：此前无该分支，点击无任何反应）

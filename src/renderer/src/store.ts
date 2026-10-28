@@ -65,6 +65,8 @@ interface LidowState {
   pureView: ViewId
   streamingText: string
   streamingTps: number
+  /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
+  thinkingText: string
   confirmRequest: { callId: string; reason: string } | null
   plan: TaskPlan | null
   notices: { level: string; message: string; ts: number }[]
@@ -140,6 +142,7 @@ export const useStore = create<LidowState>((set, get) => ({
   pureView: 'home',
   streamingText: '',
   streamingTps: 0,
+  thinkingText: '',
   confirmRequest: null,
   plan: null,
   notices: [],
@@ -226,6 +229,7 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async createSession(providerId) {
     const project = useProject(get())
+    console.log('[lidow-diag] createSession provider=' + providerId + ' project=' + (project?.id ?? 'NULL'))
     if (!project) return
     const s = await api.createSession(project.id, providerId)
     // 关键：新建后必须把新会话设为 activeSession，
@@ -251,6 +255,7 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async openProviderTab(providerId, sessionId) {
     const { providers, tabs } = get()
+    console.log('[lidow-diag] openProviderTab provider=' + providerId + ' session=' + (sessionId ?? 'none') + ' tabs=' + tabs.length)
     const provider = providers.find((p) => p.id === providerId)
     if (!provider) return
     const existing = tabs.find((t) => t.providerId === providerId)
@@ -282,6 +287,21 @@ export const useStore = create<LidowState>((set, get) => ({
       loggedIn: false
     }
     set({ tabs: [...tabs, tab], activeTabId: tab.id })
+    // 首次创建：webview 尚未渲染/attach，等 wcId 就绪后绑定。
+    // （did-attach 时机早于 React effect 的话 bindNow 会拿不到 id 而放弃，
+    //   此轮询是唯一保障——缺了它首次会话永远绑不上。）
+    if (sessionId) {
+      let wcId = -1
+      for (let i = 0; wcId <= 0 && i < 60; i++) {
+        await new Promise((r) => setTimeout(r, 150))
+        try {
+          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
+        } catch {
+          wcId = -1
+        }
+      }
+      if (wcId > 0) await get().bindTabSession(tab.id, sessionId, wcId)
+    }
   },
 
   closeTab(id) {
@@ -295,6 +315,7 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async bindTabSession(tabId, sessionId, webContentsId) {
+    console.log('[lidow-diag] bindTabSession tab=' + tabId + ' session=' + sessionId + ' wc=' + webContentsId)
     const { tabs } = get()
     const prev = tabs.find((t) => t.id === tabId)
     // 幂等：同会话同 wcId 已绑定 → 不再做任何事。
@@ -416,6 +437,10 @@ export const useStore = create<LidowState>((set, get) => ({
           if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
         })
         void s.refreshSessions()
+          set({ thinkingText: '' })
+        break
+      case 'think-chunk':
+        set({ thinkingText: e.think })
         break
       case 'turn-chunk':
         set({ streamingText: e.text, streamingTps: e.tps ?? 0 })

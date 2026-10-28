@@ -8,7 +8,7 @@ import { useStore } from '../store'
 import { api } from '../api'
 import { ToolCard } from './ToolCard'
 import type { ChatTurn } from '@shared/types'
-import { IconArrowUp, IconStop } from './icons'
+import { IconArrowUp, IconStop, IconChevronRight } from './icons'
 
 const SLASH_COMMANDS = [
   { cmd: '/compact', desc: '手动压缩上下文' },
@@ -46,6 +46,36 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
       >
         {text}
       </ReactMarkdown>
+    </div>
+  )
+}
+
+/** ZCode 式可折叠思考过程块：流式时自动展开，完成后默认收起 */
+function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }): React.JSX.Element {
+  const [open, setOpen] = useState(streaming)
+  useEffect(() => {
+    if (streaming) setOpen(true)
+  }, [streaming])
+  if (!text) return <></>
+  return (
+    <div className="overflow-hidden rounded-xl border" style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px]"
+        style={{ color: 'var(--text-hint)' }}
+        onClick={() => setOpen(!open)}
+      >
+        <span className="flex items-center gap-1.5" style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
+          {streaming ? <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} /> : <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--border-strong)' }} />}
+          {streaming ? '思考中…' : '思考过程'}
+        </span>
+        <span className="flex-1" />
+        <IconChevronRight size={12} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
+      </button>
+      {open && (
+        <div className="max-h-72 overflow-y-auto border-t px-3.5 py-2.5 text-[12px] leading-relaxed whitespace-pre-wrap" style={{ borderColor: 'var(--border)', color: 'var(--text-dim)' }}>
+          {text}
+        </div>
+      )}
     </div>
   )
 }
@@ -90,10 +120,11 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
 }
 
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
-  const { activeSession, streamingText, streamingTps, sendPrompt, stop, confirmRequest, answerConfirm, plan, quickCmds } = useStore()
+  const { activeSession, streamingText, streamingTps, thinkingText, sendPrompt, stop, confirmRequest, answerConfirm, plan, quickCmds } = useStore()
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const rafRef = useRef<number | null>(null)
 
   // DSH 插件经 uiInput.set 下发的输入框内容
   useEffect(() => {
@@ -110,8 +141,21 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   )
   const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
 
+  // 滚屏跟随：rAF 节流 + 用户上翻时不抢滚动条
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
+    if (!scrollRef.current) return
+    if (rafRef.current) return
+    rafRef.current = requestAnimationFrame(() => {
+      rafRef.current = null
+      const el = scrollRef.current
+      if (!el) return
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+      if (nearBottom) el.scrollTo({ top: el.scrollHeight })
+    })
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+    }
   }, [turns.length, streamingText])
 
   const submit = async (): Promise<void> => {
@@ -183,9 +227,13 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         {turns.map((t) => (
           <TurnItem key={t.id} turn={t} />
         ))}
+        {thinkingText && mode === 'pure' && streamingText && (
+          <ThinkingBlock text={thinkingText} streaming />
+        )}
         {streamingText && mode === 'pure' && (
           <div className="flex flex-col gap-1.5">
-            <TurnBody text={streamingText} />
+            {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI（每 80ms 一次） */}
+            <div className="whitespace-pre-wrap text-[13.5px] leading-relaxed">{streamingText}</div>
             <div className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
               <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
               {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}

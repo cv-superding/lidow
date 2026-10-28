@@ -13,6 +13,8 @@ interface Channel {
   sendResolvers: Set<(ok: boolean, err?: string) => void>
   /** 网络层上报的错误原因（供 loop 判断是否重试） */
   netError?: string
+  /** 思考过程缓冲（来自 SSE reasoning 帧） */
+  thinkBuf?: string
   /** did-finish-load 重注入监听是否已绑定 */
   hookBound?: boolean
 }
@@ -26,6 +28,8 @@ export class OverlayManager {
   private channels = new Map<number, Channel>()
   private bindings = new Map<string, number>()
   private onFloatAction?: (sessionId: string, action: string) => void
+  /** 思考过程增量回调（供 renderer 折叠块显示） */
+  private onThinkChunk?: (sessionId: string, think: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
 
@@ -81,7 +85,13 @@ export class OverlayManager {
       case 'net-stream': {
         // 主世界 SSE 增量：直接把完整文本交给等待方（比 DOM 轮询更准更快）
         ch.streamBuf = payload.text
+        ch.thinkBuf = payload.think ?? ''
         for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
+        // 思考过程流式上报（纯净模式折叠块显示）
+        if (payload.think) {
+          const sessionId = this.sessionOfWebContents(sender.id)
+          if (sessionId) this.onThinkChunk?.(sessionId, payload.think)
+        }
         break
       }
       case 'net-response': {
@@ -148,6 +158,10 @@ export class OverlayManager {
 
   private targetOf(ch: Channel): WebContents | undefined {
     return webContents.fromId(ch.webContentsId)
+  }
+
+  setThinkChunkHandler(fn: (sessionId: string, think: string) => void): void {
+    this.onThinkChunk = fn
   }
 
   bindSession(sessionId: string, webContentsId: number): void {

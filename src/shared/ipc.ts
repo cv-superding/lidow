@@ -145,6 +145,7 @@ export type LidowEvent =
   | { type: 'ui-input'; sessionId: string; text: string }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'ui-panel'; panel: 'chat' | 'web'; open: boolean }
+  | { type: 'think-chunk'; sessionId: string; think: string }
   | { type: 'ui-toggle-pure' }
 
 export const IPC_INVOKE_PREFIX = 'lidow:'
