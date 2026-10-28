@@ -103,7 +103,11 @@ function fillVerified(el: Element, text: string): boolean {
 }
 
 function pressEnter(el: Element): void {
-  const opts: KeyboardEventInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }
+  ;(el as HTMLElement).focus?.()
+  const opts: KeyboardEventInit = {
+    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
+    bubbles: true, cancelable: true, isComposing: false
+  }
   el.dispatchEvent(new KeyboardEvent('keydown', opts))
   el.dispatchEvent(new KeyboardEvent('keypress', opts))
   el.dispatchEvent(new KeyboardEvent('keyup', opts))
@@ -251,27 +255,33 @@ async function doSend(text: string): Promise<void> {
       if (!filled) await new Promise((r) => setTimeout(r, 200))
     }
     if (!input || !filled) throw new Error('输入框填入失败（选择器可能过期或页面未就绪）')
-    await new Promise((r) => setTimeout(r, 120))
+    // 等待 React 状态稳定后再发送（cuckoo 做法：随机 2-4s；这里取 1.2s 折中）
+    await new Promise((r) => setTimeout(r, 1200))
 
-    // 发送：优先真实点击按钮；按钮未就绪时最多等 3s，仍无则 Enter 兜底——
-    // 只执行一次发送动作，杜绝重复发送（回归修复：此前 Enter 会被触发 3 次）
+    // 发送动作只执行一次：
+    //   1) 精确点击发送按钮（过滤掉错误的 svg 包装元素——按钮必须可见且未禁用）
+    //   2) 失败则 Enter 兜底（需要先 focus 输入框 + isComposing:false）
     let sent = false
-    for (let i = 0; i < 10 && !sent; i++) {
-      const sendBtn = findFirst(adapter.send, (el) => {
+    let sendBtn: Element | null = null
+    for (let i = 0; i < 8 && !sendBtn; i++) {
+      sendBtn = findFirst(adapter.send, (el) => {
+        const r = (el as HTMLElement).getBoundingClientRect()
+        if (r.width <= 0 || r.height <= 0) return false
+        if ((el as HTMLElement).getAttribute('aria-disabled') === 'true') return false
         const b = el as HTMLButtonElement
-        return !(b instanceof HTMLButtonElement && b.disabled) && (el as HTMLElement).getAttribute('aria-disabled') !== 'true'
+        return !(b instanceof HTMLButtonElement && b.disabled)
       })
-      if (sendBtn) {
-        click(sendBtn)
-        sent = true
-      } else if (i >= 9) {
-        pressEnter(input)
-        sent = true
-      } else {
-        await new Promise((r) => setTimeout(r, 300))
-      }
+      if (!sendBtn) await new Promise((r) => setTimeout(r, 250))
     }
-    if (!sent) throw new Error('发送动作未能完成（按钮持续未就绪）')
+    if (sendBtn) {
+      click(sendBtn)
+      sent = true
+    } else {
+      // Enter 兜底：focus + 完整键序（cuckoo 做法）
+      pressEnter(input)
+      sent = true
+    }
+    if (!sent) throw new Error('发送动作未能完成')
     send({ type: 'send-result', ok: true })
     streaming = false
     everFlag = false

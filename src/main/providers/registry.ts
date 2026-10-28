@@ -40,14 +40,15 @@ const DEEPSEEK: ProviderDescriptor = {
     // DeepSeek 用 <div role="button" class="ds-button ds-button--primary ..."> 而非 <button>，
     // 因此必须匹配 div[role=button]；旧选择器只能命中 <button> 元素 → 发送永远点不到。
     send: [
+      // DeepSeek：圆形主色按钮（div[role=button]，无 <button> 元素）
       'div[role="button"].ds-button--primary.ds-button--circle',
       'div[role="button"].ds-button--primary.ds-button--filled',
       'div[role="button"][class*="ds-button--primary"]',
       'button[type="submit"]',
       'button[aria-label*="send" i]',
       'button[aria-label*="发送"]',
-      '[data-testid="send-button"]',
-      'button:has(> svg)'
+      '[data-testid="send-button"]'
+      // 注意：不要再加 button:has(>svg) 之类宽匹配——会命中顶部工具栏图标，点错
     ],
     messages: ['div.ds-markdown', 'div[class*="ds-markdown"]', 'main'],
     bubble: [

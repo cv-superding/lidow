@@ -220,29 +220,23 @@ export function AppShell(): React.JSX.Element {
         <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
           {/* WebTabs 单点挂载：只在工作台 home 视图可见；
               纯净模式下仅作为隐藏的对话承载器（AI 网页在后台跑，前端渲染原生对话） */}
-          {/* 用离屏定位而非 display:none —— display:none 会让 webview 停止布局甚至丢状态 */}
-          <div
-            className="h-full"
-            style={
-              !pureMode && view === 'home'
-                ? undefined
-                : { position: 'fixed', left: -99999, top: 0, width: 1280, height: 800, pointerEvents: 'none' }
-            }
-            aria-hidden={pureMode || view !== 'home'}
-          >
+          {/* webview 必须保持在视口内：离屏定位会触发 document.hidden=true，
+              Chromium 节流隐藏页面 → React 不响应输入/点击（实测消息发不出去）。
+              纯净模式时它仍在原位，被上层的原生对话遮罩盖住（视觉不可见但页面可见）。 */}
+          <div className={view === 'home' ? 'h-full' : 'hidden'} style={{ position: 'relative', zIndex: 0 }}>
             <WebTabs />
           </div>
 
-          {/* 纯净模式对话主区：原生渲染 Lidow 会话记录 + 原生输入框（不显示网页） */}
+          {/* 纯净模式对话主区：不透明原生层，盖住底层 webview（z-index 高于 webview 层） */}
           {pureMode && pureView === 'home' && (
-            <div className="h-full">
+            <div className="absolute inset-0 z-10" style={{ background: 'var(--bg)' }}>
               <ChatPanel mode="pure" />
             </div>
           )}
 
           {/* 管理视图：同一容器内切换 */}
           {showManager && (
-            <div className="absolute inset-0 overflow-auto" style={{ background: 'var(--bg)' }}>
+            <div className="absolute inset-0 z-10 overflow-auto" style={{ background: 'var(--bg)' }}>
               {activeView === 'sessions' && <SessionsView />}
               {activeView === 'files' && <FilesView />}
               {activeView === 'tasks' && <TasksView />}
