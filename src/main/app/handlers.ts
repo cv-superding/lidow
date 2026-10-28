@@ -88,6 +88,9 @@ export function registerHandlers(
   R('stop', (level: StopLevel) => {
     ctx.stopAll((level ?? 'all') as StopLevel)
   })
+  R('newChat', (sessionId: string) => {
+    ctx.overlay.sendCmd(String(sessionId), { kind: 'new-chat' })
+  })
   R('confirmTool', (callId: string, approved: boolean) => {
     ctx.resolveConfirm(String(callId), Boolean(approved))
   })

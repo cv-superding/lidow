@@ -171,6 +171,13 @@ export const useStore = create<LidowState>((set, get) => ({
   setPure(on) {
     set({ pureMode: on })
     void api.setPureMode(on)
+    // 净模式进入时确保活动会话有后台 webview 承载（对话驱动依赖页面）
+    if (on) {
+      const s = get()
+      const session = s.activeSession ?? null
+      const providerId = session?.providerId ?? s.providers[0]?.id
+      if (providerId) void s.openProviderTab(providerId, session?.id)
+    }
   },
 
   applyTheme(s) {
@@ -250,8 +257,14 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async bindTabSession(tabId, sessionId, webContentsId) {
     const { tabs } = get()
+    const prev = tabs.find((t) => t.id === tabId)
+    const switched = prev && prev.sessionId && prev.sessionId !== sessionId
     set({ tabs: tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t)) })
-    if (webContentsId > 0) await api.bindSession(sessionId, webContentsId)
+    if (webContentsId > 0) {
+      await api.bindSession(sessionId, webContentsId)
+      // 会话切换 = 换一个网页会话承载：重置页面到新对话（净模式切换会话的关键）
+      if (switched) void api.newChat(sessionId)
+    }
   },
 
   setTabWcId(tabId, wcId) {
@@ -262,8 +275,9 @@ export const useStore = create<LidowState>((set, get) => ({
     const { activeSession, activeTabId, tabs } = get()
     if (!activeSession) return
     const tab = tabs.find((t) => t.id === activeTabId)
-    if (tab && !tab.sessionId) {
-      await get().bindTabSession(tab.id, activeSession.id, -1)
+    // 会话与承载网页不一致时重绑（净模式切换会话后直接发送的场景）
+    if (tab && tab.sessionId !== activeSession.id) {
+      await get().bindTabSession(tab.id, activeSession.id, tab.wcId ?? -1)
     }
     await api.sendPrompt(activeSession.id, text)
   },

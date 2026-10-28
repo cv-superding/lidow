@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useStore, type ViewId } from '../store'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
+import { PureModeShell } from './PureModeShell'
 import { SessionsView, FilesView, TasksView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
 
 const RAIL: { id: ViewId; icon: string; label: string }[] = [
@@ -79,18 +80,7 @@ export function AppShell(): React.JSX.Element {
   }
 
   if (pureMode) {
-    return (
-      <div className="relative h-full">
-        <ChatPanel />
-        <button
-          className="absolute right-3 top-3 z-10 rounded-lg px-2.5 py-1 text-[11.5px]"
-          style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-dim)' }}
-          onClick={() => void useStore.getState().setPure(false)}
-        >
-          退出纯净模式
-        </button>
-      </div>
-    )
+    return <PureModeShell />
   }
 
   const running = streamingText.length > 0

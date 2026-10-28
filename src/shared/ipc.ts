@@ -51,6 +51,7 @@ export interface LidowApi {
 
   // Agent 循环
   sendPrompt(sessionId: string, text: string): Promise<void>
+  newChat(sessionId: string): Promise<void>
   stop(level: StopLevel): Promise<void>
   confirmTool(callId: string, approved: boolean, rememberChoice?: boolean): Promise<void>
   confirmPlan(planId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]): Promise<void>
