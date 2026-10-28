@@ -1,11 +1,11 @@
 {
   "name": "lidow",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Lidow — 零 Token 成本内嵌网页版 AI Agent 桌面端",
   "main": "./out/main/index.js",
   "type": "commonjs",
   "author": "Lidow Contributors",
-  "homepage": "https://github.com/lidow-ai/lidow",
+  "homepage": "https://github.com/cv-superding/lidow",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "electron-vite dev",

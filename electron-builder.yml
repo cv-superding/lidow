@@ -45,5 +45,5 @@ electronDownload:
 
 publish:
   provider: github
-  owner: lidow-ai
+  owner: cv-superding
   repo: lidow
