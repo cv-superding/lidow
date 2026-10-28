@@ -21,6 +21,13 @@ function registerHandler(name: string, fn: IpcHandler): void {
   handlers.set(name, fn)
 }
 
+/**
+ * 固定 userData 目录名：开发模式（npx electron）默认用 "Electron" 作应用名，
+ * 打包版用 productName "Lidow"，两者数据目录不同 → 登录态互不相通
+ * （表现为"刚登录过又要重新登录"）。这里在 app ready 前锁定同名目录。
+ */
+app.setPath('userData', join(app.getPath('appData'), 'Lidow'))
+
 const ctx = new AppContext()
 
 function createWindow(): BrowserWindow {
