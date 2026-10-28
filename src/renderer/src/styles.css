@@ -32,6 +32,30 @@
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
+/* 主题三：Midnight 深空蓝（低饱和蓝调暗色） */
+:root.midnight {
+  --bg: #0a0e1a;
+  --bg-panel: #101627;
+  --bg-elevated: #161e33;
+  --bg-hover: rgba(150, 180, 255, 0.08);
+  --border: rgba(150, 180, 255, 0.14);
+  --text: #dde6f5;
+  --text-dim: #8a97b5;
+  --shadow: 0 1px 3px rgba(4, 8, 24, 0.5), 0 8px 24px rgba(4, 8, 24, 0.45);
+}
+
+/* 主题四：Warm 暖沙纸感（低饱和暖调浅色） */
+:root.warm {
+  --bg: #faf6ef;
+  --bg-panel: #fffdf8;
+  --bg-elevated: #ffffff;
+  --bg-hover: rgba(120, 90, 40, 0.06);
+  --border: rgba(120, 90, 40, 0.14);
+  --text: #3d3529;
+  --text-dim: #8d8271;
+  --shadow: 0 1px 3px rgba(90, 70, 40, 0.08), 0 8px 24px rgba(90, 70, 40, 0.08);
+}
+
 html,
 body,
 #root {

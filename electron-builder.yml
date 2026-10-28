@@ -25,6 +25,7 @@ win:
   target:
     - nsis
     - portable
+  icon: build/icon.png
 
 nsis:
   oneClick: false
@@ -37,6 +38,7 @@ portable:
 mac:
   target: dmg
   category: public.app-category.developer-tools
+  icon: build/icon.png
 
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

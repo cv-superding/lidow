@@ -182,7 +182,14 @@ export const useStore = create<LidowState>((set, get) => ({
 
   applyTheme(s) {
     const root = document.documentElement
-    root.classList.toggle('dark', s.theme === 'dark')
+    const theme =
+      s.theme === 'system'
+        ? window.matchMedia('(prefers-color-scheme: dark)').matches
+          ? 'dark'
+          : 'light'
+        : s.theme
+    root.classList.remove('dark', 'light', 'midnight', 'warm')
+    root.classList.add(theme)
     root.style.setProperty('--accent', s.accent)
   },
 

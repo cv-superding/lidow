@@ -231,7 +231,7 @@ export interface McpToolInfo {
 
 // ---------- 应用 ----------
 
-export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeMode = 'light' | 'dark' | 'midnight' | 'warm' | 'system'
 export type StopLevel = 'generate' | 'tool' | 'auto-loop' | 'all'
 
 export interface AppSettings {

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
-import type { TaskItem } from '@shared/types'
+import type { AppSettings, TaskItem } from '@shared/types'
 
 function Page({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }): React.JSX.Element {
   return (
@@ -398,12 +398,36 @@ export function SettingsView(): React.JSX.Element {
           <div className="mb-3 text-[13px] font-semibold">外观</div>
           <div className="flex items-center gap-3 text-[12.5px]">
             主题
-            <select className="rounded-lg px-2 py-1" style={{ background: 'var(--bg-hover)' }} value={s.theme} onChange={(e) => patch({ theme: e.target.value as 'dark' | 'light' | 'system' })}>
+            <select className="rounded-lg px-2 py-1" style={{ background: 'var(--bg-hover)' }} value={s.theme} onChange={(e) => patch({ theme: e.target.value as AppSettings['theme'] })}>
               <option value="dark">深色</option>
               <option value="light">浅色</option>
+              <option value="midnight">深空（Midnight）</option>
+              <option value="warm">暖沙（Warm）</option>
+              <option value="system">跟随系统</option>
             </select>
             主色
             <input type="color" value={s.accent} onChange={(e) => patch({ accent: e.target.value })} className="h-7 w-10 rounded" />
+          </div>
+          <div className="mt-2 flex gap-2">
+            {([
+              { id: 'dark', bg: '#17171c', panel: '#101014', label: '深色' },
+              { id: 'light', bg: '#f6f7f9', panel: '#ffffff', label: '浅色' },
+              { id: 'midnight', bg: '#101627', panel: '#0a0e1a', label: '深空' },
+              { id: 'warm', bg: '#fffdf8', panel: '#faf6ef', label: '暖沙' }
+            ] as const).map((t) => (
+              <button
+                key={t.id}
+                className="hover-lift rounded-xl p-1.5 text-left"
+                style={{ border: s.theme === t.id ? '2px solid var(--accent)' : '1px solid var(--border)', background: 'var(--bg-panel)' }}
+                onClick={() => patch({ theme: t.id })}
+              >
+                <div className="flex gap-1">
+                  <span className="h-6 w-6 rounded-md" style={{ background: t.panel, border: '1px solid var(--border)' }} />
+                  <span className="h-6 w-6 rounded-md" style={{ background: t.bg, border: '1px solid var(--border)' }} />
+                </div>
+                <div className="mt-1 px-0.5 text-[10.5px]" style={{ color: 'var(--text-dim)' }}>{t.label}</div>
+              </button>
+            ))}
           </div>
         </div>
 
