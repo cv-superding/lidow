@@ -31,7 +31,7 @@ function Page({
           <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto px-6 py-5">
+      <div className="stable-gutter flex-1 overflow-y-auto px-6 py-5">
         <div className="mx-auto max-w-[860px]">{children}</div>
       </div>
     </div>

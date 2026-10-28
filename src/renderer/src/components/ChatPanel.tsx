@@ -287,7 +287,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       </div>
 
       {/* 消息区 */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="stable-gutter flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-6 py-7">
           {empty && (
             <div className="flex min-h-[420px] flex-col items-center justify-center gap-6 text-center">

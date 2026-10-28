@@ -191,7 +191,8 @@ export function PureModeShell(): React.JSX.Element {
     )
   }
 
-  const navBtn = 'sl flex h-8 w-full items-center gap-2.5 rounded-[var(--r-md)] px-2.5 text-[12.5px]'
+  const navBtn =
+    'flex h-8 w-full items-center gap-2.5 rounded-[var(--r-md)] px-2.5 text-[12.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
 
   return (
     <div
@@ -312,7 +313,7 @@ export function PureModeShell(): React.JSX.Element {
         />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+      <div className="stable-gutter min-h-0 flex-1 overflow-y-auto py-0.5 pl-1.5 pr-1">
         {filtered.map((s) => {
           const active = activeSession?.id === s.id
           return (
@@ -337,23 +338,27 @@ export function PureModeShell(): React.JSX.Element {
                 style={{ background: active ? 'var(--accent)' : 'var(--border-strong)' }}
               />
               <span className="min-w-0 flex-1 truncate">{s.title}</span>
-              <span
-                className="shrink-0 text-[10px] tabular-nums group-hover:hidden"
-                style={{ color: 'var(--text-hint)' }}
-              >
-                {relTime(s.updatedAt)}
+              {/* 时间与删除按钮占同一格：用透明度切换而不是 display 切换，
+                  否则 hover 时右侧宽度变化会让标题重新截断（视觉上"整行跳一下"） */}
+              <span className="relative flex h-4 w-[34px] shrink-0 items-center justify-end">
+                <span
+                  className="absolute right-0 text-[10px] tabular-nums transition-opacity duration-[130ms] group-hover:opacity-0"
+                  style={{ color: 'var(--text-hint)' }}
+                >
+                  {relTime(s.updatedAt)}
+                </span>
+                <button
+                  title="删除会话"
+                  className="absolute right-0 flex items-center justify-center rounded p-0.5 opacity-0 transition-opacity duration-[130ms] hover:bg-[var(--bg-active)] group-hover:opacity-100"
+                  style={{ color: 'var(--danger)' }}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void deleteSession(s.id)
+                  }}
+                >
+                  <IconClose size={11} />
+                </button>
               </span>
-              <button
-                title="删除会话"
-                className="hidden shrink-0 items-center justify-center rounded p-0.5 group-hover:flex group-hover:hover:bg-[var(--bg-active)]"
-                style={{ color: 'var(--danger)' }}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void deleteSession(s.id)
-                }}
-              >
-                <IconClose size={11} />
-              </button>
             </div>
           )
         })}
