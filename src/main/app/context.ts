@@ -96,6 +96,10 @@ export class AppContext {
     })
     this.projects = this.projectStore.get().projects
     for (const p of this.projects) this.projectDirs.set(p.id, p.root)
+    // 启动时对全部已知项目补跑脚手架（幂等）：旧项目也能获得 .lidow/skills 等目录
+    for (const p of this.projects) {
+      if (p.root && p.root !== 'undefined') this.initProjectScaffold(p.root)
+    }
 
     this.memory = new MemoryStore(userData)
     this.audit = new AuditLedger(userData)
