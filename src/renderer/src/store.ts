@@ -229,7 +229,6 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async createSession(providerId) {
     const project = useProject(get())
-    console.log('[lidow-diag] createSession provider=' + providerId + ' project=' + (project?.id ?? 'NULL'))
     if (!project) return
     const s = await api.createSession(project.id, providerId)
     // 关键：新建后必须把新会话设为 activeSession，
@@ -255,7 +254,6 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async openProviderTab(providerId, sessionId) {
     const { providers, tabs } = get()
-    console.log('[lidow-diag] openProviderTab provider=' + providerId + ' session=' + (sessionId ?? 'none') + ' tabs=' + tabs.length)
     const provider = providers.find((p) => p.id === providerId)
     if (!provider) return
     const existing = tabs.find((t) => t.providerId === providerId)
@@ -315,7 +313,6 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async bindTabSession(tabId, sessionId, webContentsId) {
-    console.log('[lidow-diag] bindTabSession tab=' + tabId + ' session=' + sessionId + ' wc=' + webContentsId)
     const { tabs } = get()
     const prev = tabs.find((t) => t.id === tabId)
     // 幂等：同会话同 wcId 已绑定 → 不再做任何事。
@@ -332,6 +329,8 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   setTabWcId(tabId, wcId) {
+    const cur = get().tabs.find((t) => t.id === tabId)
+    if (!cur || cur.wcId === wcId) return
     set({ tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, wcId } : t)) })
   },
 

@@ -58,11 +58,15 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
     }
     const bindNow = async (): Promise<void> => {
       if (wcId <= 0) return
-      const cur = useStore.getState().tabs.find((t) => t.id === tab.id)
-      if (cur) useStore.getState().setTabWcId(tab.id, wcId)
-      // 只绑定明确指定的会话；没有就不动（由 openProviderTab/createSession 显式驱动）。
-      // 此处自动建会话会与 UI 路径各建一个，两个会话互相踩踏导致绑定错乱。
-      if (tab.sessionId) await useStore.getState().bindTabSession(tab.id, tab.sessionId, wcId)
+      const st = useStore.getState()
+      const cur = st.tabs.find((t) => t.id === tab.id)
+      if (!cur) return
+      // 只在有变化时写 store：无条件 setTabWcId 会 new出新 tab 对象 →
+      // effect 依赖 tab 再跑 → 无限循环（点会话行即卡死的根因）
+      if (cur.wcId !== wcId) st.setTabWcId(tab.id, wcId)
+      if (tab.sessionId && (cur.sessionId !== tab.sessionId || cur.wcId !== wcId)) {
+        await st.bindTabSession(tab.id, tab.sessionId, wcId)
+      }
     }
     const onAttached = (): void => {
       try {
@@ -76,7 +80,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
     // 已 attach 但 sessionId 后来才确定（新建会话/切换会话）：主动补绑
     if (wcId > 0) void bindNow()
     return () => wv.removeEventListener('did-attach', onAttached)
-  }, [tab?.id, tab?.sessionId, tab])
+  }, [tab?.id, tab?.sessionId])
 
   if (!tab) return <div />
   return (
