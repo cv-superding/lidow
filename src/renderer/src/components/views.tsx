@@ -5,7 +5,7 @@ import type { TaskItem } from '@shared/types'
 
 function Page({ title, children, actions }: { title: string; children: React.ReactNode; actions?: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="flex h-full flex-col">
+    <div className="anim-view flex h-full flex-col">
       <div className="flex items-center gap-3 px-5 pb-3 pt-4">
         <span className="text-[15px] font-semibold">{title}</span>
         <div className="ml-auto flex items-center gap-2">{actions}</div>
@@ -34,7 +34,7 @@ export function SessionsView(): React.JSX.Element {
       {sessions.length === 0 && <div style={dim}>暂无会话 — 到工作台选择平台开始</div>}
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
         {sessions.map((s) => (
-          <div key={s.id} className="rounded-2xl p-3.5 transition-panel hover:scale-[1.01]" style={card}>
+          <div key={s.id} className="hover-lift anim-tab rounded-2xl p-3.5" style={card}>
             <button className="w-full text-left" onClick={() => void openSession(s.id)}>
               <div className="mb-1 truncate text-[13px] font-medium">{s.title}</div>
               <div className="text-[11.5px]" style={dim}>

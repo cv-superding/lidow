@@ -143,7 +143,7 @@ export function ChatPanel(): React.JSX.Element {
       </div>
 
       {plan && plan.status === 'draft' && (
-        <div className="mx-4 mb-2 rounded-2xl p-3" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)' }}>
+        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)' }}>
           <div className="mb-2 text-[13px] font-semibold">📋 任务计划待确认：{plan.goal}</div>
           <div className="space-y-1.5">
             {plan.items.map((it, i) => (
@@ -168,7 +168,7 @@ export function ChatPanel(): React.JSX.Element {
       )}
 
       {confirmRequest && (
-        <div className="mx-4 mb-2 rounded-2xl p-3" style={{ background: '#3a1f1f', border: '1px solid #7a3b3b' }}>
+        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: '#3a1f1f', border: '1px solid #7a3b3b' }}>
           <div className="mb-2 text-[13px] font-semibold" style={{ color: '#ffb4b4' }}>⚠️ 危险操作确认</div>
           <div className="text-[12.5px]" style={{ color: '#e8d5d5' }}>{confirmRequest.reason}</div>
           <div className="mt-2 flex gap-2">

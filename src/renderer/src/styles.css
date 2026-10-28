@@ -4,6 +4,13 @@
 :root {
   --accent: #5b8cff;
 
+  /* 动效令牌：统一缓动与时长 */
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 160ms;
+  --dur: 240ms;
+  --dur-slow: 300ms;
+
   --bg: #f6f7f9;
   --bg-panel: #ffffff;
   --bg-elevated: #ffffff;
@@ -54,6 +61,122 @@ body {
     transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
     opacity 0.2s ease;
 }
+
+/* ---------- 动效体系 ---------- */
+/* 入场：视图/页面切换淡入上浮 */
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 弹层：确认卡/计划卡弹出 */
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+/* 通知：右侧滑入 */
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* 标签页/列表项进入 */
+@keyframes tabIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* webview 容器淡入 */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+/* 呼吸点（连接/运行状态） */
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.anim-view {
+  animation: fadeUp var(--dur) var(--ease) both;
+}
+.anim-pop {
+  animation: popIn var(--dur-fast) var(--ease) both;
+}
+.anim-toast {
+  animation: toastIn var(--dur) var(--ease) both;
+}
+.anim-tab {
+  animation: tabIn var(--dur-fast) var(--ease) both;
+}
+.anim-fade {
+  animation: fadeIn var(--dur) ease both;
+}
+.anim-breathe {
+  animation: breathe 1.6s var(--ease-in-out) infinite;
+}
+
+/* 悬停抬升：卡片类通用 */
+.hover-lift {
+  transition:
+    transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease;
+}
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow);
+}
+
+/* 控件默认过渡（按钮/输入/下拉的全局微动效） */
+button,
+input,
+select,
+textarea {
+  transition:
+    background-color var(--dur-fast) ease,
+    color var(--dur-fast) ease,
+    border-color var(--dur-fast) ease,
+    opacity var(--dur-fast) ease,
+    transform var(--dur-fast) var(--ease);
+}
+button:active {
+  transform: scale(0.98);
+}
+
+/* 说明：不跟随系统"减弱动态效果"钳制——桌面应用的动效是产品设计的一部分；
+   仅长循环呼吸点在其偏好下降频，其余动画保持 */
 
 ::-webkit-scrollbar {
   width: 8px;

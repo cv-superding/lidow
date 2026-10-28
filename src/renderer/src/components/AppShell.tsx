@@ -106,7 +106,7 @@ export function AppShell(): React.JSX.Element {
           </span>
           {running && (
             <span className="flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px]" style={{ background: 'var(--bg-hover)', color: 'var(--accent)' }}>
-              <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: 'var(--accent)' }} />
+              <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
               Agent 运行中
             </span>
           )}
@@ -149,7 +149,7 @@ export function AppShell(): React.JSX.Element {
         {notices.slice(-3).map((n, i) => (
           <div
             key={`${n.ts}-${i}`}
-            className="rounded-xl px-3.5 py-2 text-[12.5px]"
+            className="anim-toast rounded-xl px-3.5 py-2 text-[12.5px]"
             style={{
               background: 'var(--bg-elevated)',
               border: '1px solid var(--border)',

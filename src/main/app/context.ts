@@ -1,6 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import os from 'node:os'
 import { nanoid } from 'nanoid'
 import { JsonStore } from '@main/infra/store'
 import { Logger } from '@main/infra/log'
@@ -215,6 +216,17 @@ export class AppContext {
 
     app.on('web-contents-created', (_e, wc) => {
       wc.on('destroyed', () => this.overlay.disposeWebContents(wc.id))
+      // 嵌入式 webview 环境漂白：UA 去除 Electron 标识，对齐真实 Chrome（缓解平台"使用环境异常"误判）
+      if (wc.getType() === 'webview') {
+        try {
+          const chrome = process.versions.chrome ?? '126'
+          wc.setUserAgent(
+            `Mozilla/5.0 (${os.platform() === 'win32' ? 'Windows NT 10.0; Win64; x64' : os.platform()}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome} Safari/537.36`
+          )
+        } catch {
+          /* 忽略 */
+        }
+      }
     })
 
     void this.mcp.connectAll()

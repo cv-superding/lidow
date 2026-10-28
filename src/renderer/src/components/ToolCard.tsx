@@ -9,7 +9,7 @@ export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element 
   const color = result.ok ? '#4caf7d' : '#e06c6c'
 
   return (
-    <div className="w-[92%] overflow-hidden rounded-2xl" style={{ background: 'var(--bg-panel)', border: `1px solid ${result.ok ? 'var(--border)' : '#7a3b3b'}` }}>
+    <div className="hover-lift w-[92%] overflow-hidden rounded-2xl" style={{ background: 'var(--bg-panel)', border: `1px solid ${result.ok ? 'var(--border)' : '#7a3b3b'}` }}>
       <button
         className="flex w-full items-center gap-2 px-3.5 py-2 text-left text-[12.5px]"
         onClick={() => setOpen(!open)}
@@ -22,7 +22,7 @@ export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element 
       </button>
 
       {open && (
-        <div className="border-t px-3.5 py-2.5 text-[12.5px]" style={{ borderColor: 'var(--border)' }}>
+        <div className="anim-tab border-t px-3.5 py-2.5 text-[12.5px]" style={{ borderColor: 'var(--border)' }}>
           {result.error && <div className="mb-2" style={{ color: '#e06c6c' }}>{result.error}</div>}
           {display?.kind === 'diff' && <DiffView patch={display.patch} />}
           {display?.kind === 'terminal' && (

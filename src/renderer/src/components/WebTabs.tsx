@@ -11,7 +11,7 @@ export function WebTabs(): React.JSX.Element {
         {tabs.map((t) => (
           <button
             key={t.id}
-            className="group flex items-center gap-1.5 rounded-t-xl px-3.5 py-1.5 text-[12.5px] transition-panel"
+            className="anim-tab group flex items-center gap-1.5 rounded-t-xl px-3.5 py-1.5 text-[12.5px] transition-panel"
             style={{
               background: t.id === activeTabId ? 'var(--bg-panel)' : 'transparent',
               color: t.id === activeTabId ? 'var(--text)' : 'var(--text-dim)'
@@ -34,7 +34,7 @@ export function WebTabs(): React.JSX.Element {
       </div>
       <div className="relative flex-1">
         {tabs.map((t) => (
-          <div key={t.id} className="absolute inset-0" style={{ display: t.id === activeTabId ? 'block' : 'none' }}>
+          <div key={t.id} className="anim-fade absolute inset-0" style={{ display: t.id === activeTabId ? 'block' : 'none' }}>
             <WebviewTab tabId={t.id} />
           </div>
         ))}
@@ -143,7 +143,7 @@ function HomeEmpty(): React.JSX.Element {
         {providers.map((p) => (
           <button
             key={p.id}
-            className="w-44 rounded-2xl px-4 py-4 text-[13.5px] font-medium transition-panel hover:scale-[1.03]"
+            className="hover-lift w-44 rounded-2xl px-4 py-4 text-[13.5px] font-medium"
             style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', boxShadow: 'var(--shadow)' }}
             onClick={() => void createSession(p.id)}
           >

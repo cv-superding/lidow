@@ -9,6 +9,23 @@ import type { DomAdapter, OverlayCommand, OverlayEvent } from '@shared/types'
 
 let adapter: DomAdapter | null = null
 
+// ---------- 环境硬化（preload 先于页面脚本执行） ----------
+// 补全嵌入式 webview 缺失的浏览器特征，缓解平台"使用环境异常"误判
+try {
+  Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false, configurable: true })
+  Object.defineProperty(Navigator.prototype, 'languages', { get: () => ['zh-CN', 'zh', 'en'], configurable: true })
+  Object.defineProperty(Navigator.prototype, 'plugins', {
+    get: () => [{ name: 'Chrome PDF Viewer' }, { name: 'Chromium PDF Viewer' }],
+    configurable: true
+  })
+  type ChromeStub = { runtime?: { connect?: () => void; sendMessage?: () => void } }
+  const w = window as unknown as { chrome?: ChromeStub }
+  if (!w.chrome) w.chrome = {}
+  if (!w.chrome.runtime) w.chrome.runtime = { connect: () => undefined, sendMessage: () => undefined }
+} catch {
+  /* 页面环境差异忽略 */
+}
+
 const send = (event: OverlayEvent): void => {
   try {
     ipcRenderer.send('lidow:overlay', event)
@@ -354,6 +371,42 @@ setInterval(() => {
   const loggedIn = adapter.loginFlag.length === 0 ? true : findFirst(adapter.loginFlag) !== null
   send({ type: 'login-state', loggedIn })
 }, 4000)
+
+// ---------- 平台环境提示弹窗自动关闭（仅处理已知警告文本，不触碰其它内容） ----------
+
+const dismissedDialogs = new WeakSet<Element>()
+
+function dismissEnvWarnings(): void {
+  try {
+    const candidates = document.querySelectorAll<HTMLElement>('div,section,dialog')
+    for (const el of candidates) {
+      const text = el.textContent ?? ''
+      if (!text.includes('使用环境异常') || text.length > 220) continue
+      if (dismissedDialogs.has(el)) continue
+      // 最内层命中容器
+      const inner = Array.from(el.querySelectorAll<HTMLElement>('div')).find((d) => d.textContent?.includes('使用环境异常'))
+      const dialog = inner && inner.textContent!.length <= text.length ? inner : el
+      if (dismissedDialogs.has(dialog)) continue
+      dismissedDialogs.add(dialog)
+      // 在弹窗容器及其近邻祖先中找关闭控件
+      let scope: Element | null = dialog
+      for (let up = 0; up < 3 && scope; up++) {
+        const closer = scope.querySelector<HTMLElement>(
+          'button, [class*="close" i], [aria-label*="关闭" i], [aria-label*="close" i], svg[class*="close" i]'
+        )
+        if (closer) {
+          click(closer)
+          return
+        }
+        scope = scope.parentElement
+      }
+    }
+  } catch {
+    /* 页面差异忽略 */
+  }
+}
+
+setInterval(dismissEnvWarnings, 1500)
 
 // ---------- 命令接收 ----------
 
