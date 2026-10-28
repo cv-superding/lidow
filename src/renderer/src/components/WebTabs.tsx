@@ -100,8 +100,8 @@ function HomeEmpty(): React.JSX.Element {
         <div style={{ color: 'var(--text-dim)' }}>零 Token 成本的内嵌网页版 AI Agent — 选择一个工作目录开始</div>
         <div className="flex gap-3">
           <button
-            className="rounded-xl px-5 py-2.5 text-[13px] text-white"
-            style={{ background: 'var(--accent)', boxShadow: 'var(--shadow)' }}
+            className="rounded-xl px-5 py-2.5 text-[13px]"
+            style={{ background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)' }}
             onClick={() => {
               void api.pickDirectory().then((dir) => dir && void openProject(dir))
             }}

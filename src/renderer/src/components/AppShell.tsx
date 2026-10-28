@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { useStore, type ViewId } from '../store'
+import { useStore, useProject, type ViewId } from '../store'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
 import { PureModeShell } from './PureModeShell'
@@ -17,43 +17,53 @@ const RAIL: { id: ViewId; icon: string; label: string }[] = [
   { id: 'settings', icon: '⚙', label: '设置' }
 ]
 
+/** thinkrail 式面板头：大写小字号标题 + 右侧控制钮 */
+export function PanelHeader({ title, children }: { title: string; children?: React.ReactNode }): React.JSX.Element {
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-1 border-b px-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-header)' }}>
+      <span className="flex-1 truncate text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-hint)' }}>
+        {title}
+      </span>
+      {children}
+    </div>
+  )
+}
+
 export function LeftRail(): React.JSX.Element {
   const { view, setView } = useStore()
   return (
     <div
-      className="group/rail flex h-full flex-col gap-1 border-r py-3 transition-panel"
-      style={{ width: 56, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
+      className="group/rail flex h-full flex-col gap-0.5 border-r py-2 transition-panel"
+      style={{ width: 48, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
       onMouseEnter={(e) => {
-        e.currentTarget.style.width = '176px'
+        e.currentTarget.style.width = '168px'
       }}
       onMouseLeave={(e) => {
-        e.currentTarget.style.width = '56px'
+        e.currentTarget.style.width = '48px'
       }}
     >
-      <div className="mb-3 flex h-9 items-center gap-2.5 overflow-hidden px-4">
-        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[15px] font-bold text-white" style={{ background: 'var(--accent)' }}>
-          L
-        </span>
-        <span className="whitespace-nowrap text-[13.5px] font-semibold opacity-0 transition-opacity group-hover/rail:opacity-100">Lidow</span>
-      </div>
-      {RAIL.map((item) => (
+      {RAIL.map((item) => {
+        const active = view === item.id
+        return (
+          <button
+            key={item.id}
+            className="relative flex h-8 items-center gap-2.5 overflow-hidden px-3.5 text-[12.5px]"
+            style={{
+              background: active ? 'var(--bg-hover)' : 'transparent',
+              color: active ? 'var(--text)' : 'var(--text-hint)'
+            }}
+            onClick={() => setView(item.id)}
+          >
+            {active && <span className="absolute left-0 h-4 w-0.5 rounded-r" style={{ background: 'var(--accent)' }} />}
+            <span className="w-4 shrink-0 text-center text-[13px]">{item.icon}</span>
+            <span className="whitespace-nowrap opacity-0 transition-opacity group-hover/rail:opacity-100">{item.label}</span>
+          </button>
+        )
+      })}
+      <div className="mt-auto px-3.5 pb-1">
         <button
-          key={item.id}
-          className="flex h-9 items-center gap-2.5 overflow-hidden px-4 text-[13px] transition-panel"
-          style={{
-            background: view === item.id ? 'var(--bg-hover)' : 'transparent',
-            color: view === item.id ? 'var(--text)' : 'var(--text-dim)'
-          }}
-          onClick={() => setView(item.id)}
-        >
-          <span className="w-4 shrink-0 text-center text-[14px]">{item.icon}</span>
-          <span className="whitespace-nowrap opacity-0 transition-opacity group-hover/rail:opacity-100">{item.label}</span>
-        </button>
-      ))}
-      <div className="mt-auto px-4">
-        <button
-          className="flex h-9 w-full items-center gap-2.5 overflow-hidden text-[13px]"
-          style={{ color: 'var(--text-dim)' }}
+          className="flex h-8 w-full items-center gap-2.5 overflow-hidden text-[12.5px]"
+          style={{ color: 'var(--text-hint)' }}
           onClick={() => void useStore.getState().setPure(!useStore.getState().pureMode)}
         >
           <span className="w-4 shrink-0 text-center">⛶</span>
@@ -64,8 +74,57 @@ export function LeftRail(): React.JSX.Element {
   )
 }
 
+/** thinkrail 三段式顶栏：品牌 | 当前位置面包屑 | 连接状态 */
+function TopBar(): React.JSX.Element {
+  const { view, streamingText, stop, rightOpen, toggleRight } = useStore()
+  const project = useProject(useStore())
+  const running = streamingText.length > 0
+  return (
+    <div className="flex h-9 shrink-0 items-center border-b" style={{ borderColor: 'var(--border)', background: 'var(--bg-header)' }}>
+      {/* 品牌 */}
+      <div className="flex h-full items-center gap-2 border-r px-3" style={{ borderColor: 'var(--border)' }}>
+        <span className="flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}>
+          L
+        </span>
+        <span className="text-[12.5px] font-semibold tracking-tight">Lidow</span>
+      </div>
+      {/* 位置面包屑 */}
+      <div className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
+        <span className="truncate text-[12px]" style={{ color: 'var(--text-dim)' }}>
+          {project?.name ?? '未打开项目'}
+        </span>
+        <span style={{ color: 'var(--text-hint)' }}>›</span>
+        <span className="truncate text-[12px]">{view === 'home' ? '工作台' : RAIL.find((r) => r.id === view)?.label}</span>
+        {running && (
+          <span className="ml-2 flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px]" style={{ background: 'var(--bubble-user-bg)', color: 'var(--accent)' }}>
+            <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+            运行中
+          </span>
+        )}
+      </div>
+      {/* 状态与控制 */}
+      <div className="flex h-full items-center gap-1.5 px-3">
+        {running && (
+          <button className="rounded-md px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--danger)', color: 'var(--on-accent)' }} onClick={() => void stop('all')}>
+            全部停止
+          </button>
+        )}
+        {view === 'home' && (
+          <button className="rounded-md px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }} onClick={toggleRight}>
+            {rightOpen ? '收起面板' : '对话面板'}
+          </button>
+        )}
+        <span className="ml-1 flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
+          就绪
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export function AppShell(): React.JSX.Element {
-  const { booted, view, rightOpen, pureMode, toggleRight, stop, notices, streamingText } = useStore()
+  const { booted, view, rightOpen, pureMode, notices } = useStore()
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -83,55 +142,27 @@ export function AppShell(): React.JSX.Element {
     return <PureModeShell />
   }
 
-  const running = streamingText.length > 0
-
   return (
-    <div className="flex h-full overflow-hidden">
-      <LeftRail />
-      <div className="flex min-w-0 flex-1 flex-col">
-        {/* 顶部极简地址栏 */}
-        <div className="flex h-10 items-center gap-2 border-b px-3" style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
-          <span className="text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
-            {view === 'home' ? '工作台' : RAIL.find((r) => r.id === view)?.label}
-          </span>
-          {running && (
-            <span className="flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px]" style={{ background: 'var(--bg-hover)', color: 'var(--accent)' }}>
-              <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
-              Agent 运行中
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-1.5">
-            {running && (
-              <button className="rounded-lg px-2.5 py-1 text-[11.5px] text-white" style={{ background: '#c04c4c' }} onClick={() => void stop('all')}>
-                全部停止
-              </button>
-            )}
-            {view === 'home' && (
-              <button className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }} onClick={toggleRight}>
-                {rightOpen ? '收起面板' : '展开面板'}
-              </button>
-            )}
-          </div>
+    <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
+      <TopBar />
+      <div className="flex min-h-0 flex-1">
+        <LeftRail />
+        <div className="min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
+          {view === 'home' && <WebTabs />}
+          {view === 'sessions' && <SessionsView />}
+          {view === 'files' && <FilesView />}
+          {view === 'tasks' && <TasksView />}
+          {view === 'plugins' && <PluginsView />}
+          {view === 'memory' && <MemoryView />}
+          {view === 'knowledge' && <KnowledgeView />}
+          {view === 'audit' && <AuditView />}
+          {view === 'settings' && <SettingsView />}
         </div>
-
-        <div className="flex min-h-0 flex-1">
-          <div className="min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
-            {view === 'home' && <WebTabs />}
-            {view === 'sessions' && <SessionsView />}
-            {view === 'files' && <FilesView />}
-            {view === 'tasks' && <TasksView />}
-            {view === 'plugins' && <PluginsView />}
-            {view === 'memory' && <MemoryView />}
-            {view === 'knowledge' && <KnowledgeView />}
-            {view === 'audit' && <AuditView />}
-            {view === 'settings' && <SettingsView />}
+        {view === 'home' && rightOpen && (
+          <div className="transition-panel shrink-0 border-l" style={{ width: 440, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
+            <ChatPanel />
           </div>
-          {view === 'home' && rightOpen && (
-            <div className="transition-panel shrink-0 border-l" style={{ width: 440, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
-              <ChatPanel />
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       {/* 通知浮层 */}
@@ -142,9 +173,9 @@ export function AppShell(): React.JSX.Element {
             className="anim-toast rounded-xl px-3.5 py-2 text-[12.5px]"
             style={{
               background: 'var(--bg-elevated)',
-              border: '1px solid var(--border)',
+              border: '1px solid var(--border-strong)',
               boxShadow: 'var(--shadow)',
-              color: n.level === 'error' ? '#e06c6c' : n.level === 'warn' ? '#d0a23c' : 'var(--text)'
+              color: n.level === 'error' ? 'var(--danger)' : n.level === 'warn' ? 'var(--warning)' : 'var(--text)'
             }}
           >
             {n.message}

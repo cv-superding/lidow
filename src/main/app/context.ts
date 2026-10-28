@@ -29,7 +29,7 @@ import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
-  accent: '#5b8cff',
+  accent: '#8dff4f',
   language: 'zh-CN',
   pureMode: false,
   dangerConfirm: true,

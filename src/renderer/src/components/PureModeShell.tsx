@@ -190,7 +190,7 @@ export function PureModeShell(): React.JSX.Element {
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
-              <button className="rounded-lg px-2.5 py-1.5 text-[12px] text-white" style={{ background: 'var(--accent)' }} onClick={() => void newSession()}>
+              <button className="rounded-lg px-2.5 py-1.5 text-[12px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} onClick={() => void newSession()}>
                 + 新会话
               </button>
             </div>
@@ -223,7 +223,7 @@ export function PureModeShell(): React.JSX.Element {
                 <button
                   title="删除会话"
                   className="hidden shrink-0 text-[11px] group-hover:block"
-                  style={{ color: '#e06c6c' }}
+                  style={{ color: 'var(--danger)' }}
                   onClick={(e) => {
                     e.stopPropagation()
                     void deleteSession(s.id)
@@ -292,7 +292,7 @@ export function PureModeShell(): React.JSX.Element {
           )}
           {activeSession && (
             <>
-              <button title="停止当前任务" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: running ? '#c04c4c' : 'var(--bg-hover)', color: running ? '#fff' : 'var(--text-dim)' }} onClick={() => void useStore.getState().stop('generate')}>
+              <button title="停止当前任务" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: running ? 'var(--danger)' : 'var(--bg-hover)', color: running ? 'var(--on-accent)' : 'var(--text-dim)' }} onClick={() => void useStore.getState().stop('generate')}>
                 停止
               </button>
               <button title="压缩上下文" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.compactSession(activeSession.id).then((s) => useStore.setState({ activeSession: s }))}>

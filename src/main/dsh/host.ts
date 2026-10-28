@@ -124,7 +124,7 @@ export class DshHost {
     })
     svc('settingsController', 'ui', {
       patch: (p: Partial<AppSettings>) => d.settings.patch(p),
-      reset: () => d.settings.patch({ theme: 'dark', accent: '#5b8cff' })
+      reset: () => d.settings.patch({ theme: 'dark', accent: '#8dff4f' })
     })
     svc('shortcuts', 'ui', {
       get: () => d.settings.get().globalHotkeys,

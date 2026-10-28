@@ -285,7 +285,7 @@ function setupFloatingBall(): void {
   const style = new CSSStyleSheet()
   style.replaceSync(`
     #lidow-ball{position:fixed;z-index:2147483647;right:18px;bottom:96px;width:40px;height:40px;border-radius:50%;
-      background:linear-gradient(135deg,#5b8cff,#7c5bff);box-shadow:0 4px 16px rgba(60,90,220,.45);cursor:grab;
+      background:linear-gradient(135deg,#8dff4f,#59d915);box-shadow:0 4px 16px rgba(89,217,21,.35);cursor:grab;
       display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;font-weight:700;user-select:none;
       transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s;}
     #lidow-ball:hover{transform:scale(1.1);box-shadow:0 6px 22px rgba(60,90,220,.6);}

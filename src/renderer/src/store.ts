@@ -108,7 +108,7 @@ export const useStore = create<LidowState>((set, get) => ({
   version: '',
   settings: {
     theme: 'dark',
-    accent: '#5b8cff',
+    accent: '#8dff4f',
     language: 'zh-CN',
     pureMode: false,
     dangerConfirm: true,

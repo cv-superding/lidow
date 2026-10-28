@@ -58,8 +58,12 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   return (
     <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
       <div
-        className={`max-w-[92%] rounded-2xl px-4 py-2.5 ${isUser ? 'rounded-br-md' : 'rounded-bl-md'}`}
-        style={isUser ? { background: 'var(--accent)', color: '#fff' } : { background: 'var(--bg-panel)', border: '1px solid var(--border)' }}
+        className={`max-w-[92%] px-4 py-2.5 ${isUser ? 'rounded-2xl rounded-br-md' : 'px-1'}`}
+        style={
+          isUser
+            ? { background: 'var(--bubble-user-bg)', border: '1px solid var(--bubble-user-border)' }
+            : { background: 'transparent', border: 'none', padding: '2px 0' }
+        }
       >
         {turn.text ? <TurnBody text={turn.text} /> : <span style={{ color: 'var(--text-dim)' }}>（本轮无文本，仅工具调用）</span>}
       </div>
@@ -132,7 +136,7 @@ export function ChatPanel(): React.JSX.Element {
         ))}
         {streamingText && (
           <div className="flex flex-col items-start gap-1">
-            <div className="max-w-[92%] rounded-2xl rounded-bl-md px-4 py-2.5" style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)' }}>
+            <div className="max-w-[92%] px-1 py-2.5">
               <TurnBody text={streamingText} />
             </div>
             <div className="text-[11px]" style={{ color: 'var(--text-dim)' }}>
@@ -157,7 +161,7 @@ export function ChatPanel(): React.JSX.Element {
             ))}
           </div>
           <div className="mt-2 flex gap-2">
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px] text-white" style={{ background: 'var(--accent)' }} onClick={() => void api.confirmPlan(plan.id, true)}>
+            <button className="rounded-lg px-3 py-1.5 text-[12.5px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} onClick={() => void api.confirmPlan(plan.id, true)}>
               确认执行
             </button>
             <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.confirmPlan(plan.id, false)}>
@@ -168,11 +172,11 @@ export function ChatPanel(): React.JSX.Element {
       )}
 
       {confirmRequest && (
-        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: '#3a1f1f', border: '1px solid #7a3b3b' }}>
-          <div className="mb-2 text-[13px] font-semibold" style={{ color: '#ffb4b4' }}>⚠️ 危险操作确认</div>
-          <div className="text-[12.5px]" style={{ color: '#e8d5d5' }}>{confirmRequest.reason}</div>
+        <div className="anim-pop mx-4 mb-2 rounded-2xl p-3" style={{ background: 'rgba(255, 75, 117, 0.08)', border: '1px solid rgba(255, 75, 117, 0.35)' }}>
+          <div className="mb-2 text-[13px] font-semibold" style={{ color: 'var(--danger)' }}>⚠️ 危险操作确认</div>
+          <div className="text-[12.5px]" style={{ color: 'var(--text-dim)' }}>{confirmRequest.reason}</div>
           <div className="mt-2 flex gap-2">
-            <button className="rounded-lg px-3 py-1.5 text-[12.5px] text-white" style={{ background: '#c04c4c' }} onClick={() => void answerConfirm(true)}>
+            <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--danger)', color: 'var(--on-accent)' }} onClick={() => void answerConfirm(true)}>
               允许
             </button>
             <button className="rounded-lg px-3 py-1.5 text-[12.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void answerConfirm(false)}>
@@ -217,8 +221,8 @@ export function ChatPanel(): React.JSX.Element {
         )}
         <div className="flex items-end gap-2">
           <textarea
-            className="max-h-40 min-h-[42px] flex-1 resize-none rounded-2xl px-4 py-2.5 text-[13.5px] outline-none"
-            style={{ background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text)' }}
+            className="max-h-40 min-h-[42px] flex-1 resize-none rounded-xl px-4 py-2.5 text-[13.5px] outline-none focus:border-[var(--border-strong)]"
+            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text)' }}
             placeholder="输入任务…（/ 唤起指令，Enter 发送，Shift+Enter 换行）"
             value={input}
             onChange={(e) => {
@@ -234,20 +238,21 @@ export function ChatPanel(): React.JSX.Element {
           />
           {running ? (
             <button
-              className="h-[42px] rounded-2xl px-4 text-[13px] text-white"
-              style={{ background: '#c04c4c' }}
+              className="h-[42px] rounded-2xl px-4 text-[13px]"
+              style={{ background: 'var(--danger)', color: 'var(--on-accent)' }}
               onClick={() => void stop('generate')}
             >
               停止
             </button>
           ) : (
             <button
-              className="h-[42px] rounded-2xl px-5 text-[13px] text-white disabled:opacity-40"
-              style={{ background: 'var(--accent)' }}
+              title="发送 (Enter)"
+              className="h-[42px] w-[42px] shrink-0 rounded-full text-[16px] disabled:opacity-40"
+              style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
               disabled={!input.trim()}
               onClick={() => void submit()}
             >
-              发送
+              ↑
             </button>
           )}
         </div>

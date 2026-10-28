@@ -249,7 +249,7 @@ export function PluginsView(): React.JSX.Element {
             {m.installed ? (
               <span className="text-[11.5px]" style={{ color: '#4caf7d' }}>已安装</span>
             ) : (
-              <button className="rounded-lg px-3 py-1 text-[11.5px] text-white" style={{ background: 'var(--accent)' }} onClick={() => void api.installPlugin(`${m.source}:${m.id}`).then(refresh)}>
+              <button className="rounded-lg px-3 py-1 text-[11.5px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} onClick={() => void api.installPlugin(`${m.source}:${m.id}`).then(refresh)}>
                 安装
               </button>
             )}
@@ -269,8 +269,7 @@ export function MemoryView(): React.JSX.Element {
       title="用户记忆"
       actions={
         <button
-          className="rounded-lg px-3 py-1.5 text-[12px] text-white"
-          style={{ background: 'var(--accent)' }}
+          className="rounded-lg px-3 py-1.5 text-[12px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
           onClick={() => {
             if (!title || !content) return
             void api.addMemory(title, content, []).then(() => {
@@ -316,8 +315,7 @@ export function KnowledgeView(): React.JSX.Element {
       title="本地知识库"
       actions={
         <button
-          className="rounded-lg px-3 py-1.5 text-[12px] text-white"
-          style={{ background: 'var(--accent)' }}
+          className="rounded-lg px-3 py-1.5 text-[12px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
           onClick={() => {
             void api.pickDirectory().then((dir) => {
               if (!dir) return
@@ -508,8 +506,7 @@ export function SettingsView(): React.JSX.Element {
             <input id="mcp-cmd" className="flex-1 rounded-lg px-2 py-1.5 text-[12px]" style={{ background: 'var(--bg-hover)' }} placeholder="command（如 npx）" />
             <input id="mcp-args" className="w-48 rounded-lg px-2 py-1.5 text-[12px]" style={{ background: 'var(--bg-hover)' }} placeholder="args 逗号分隔" />
             <button
-              className="rounded-lg px-3 py-1.5 text-[12px] text-white"
-              style={{ background: 'var(--accent)' }}
+              className="rounded-lg px-3 py-1.5 text-[12px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
               onClick={() => {
                 const name = (document.getElementById('mcp-name') as HTMLInputElement).value
                 const command = (document.getElementById('mcp-cmd') as HTMLInputElement).value

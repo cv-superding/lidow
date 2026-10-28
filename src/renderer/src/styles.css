@@ -16,6 +16,19 @@
   /* 状态层（State Layers）：hover 8% / active 12% 前景色叠层 */
   --state-hover: rgba(15, 18, 25, 0.06);
   --state-active: rgba(15, 18, 25, 0.12);
+  --accent-hover: #59d915;
+  --on-accent: #0a0a0a;
+  --bg-header: var(--bg-panel);
+  --bg-content: var(--bg-panel);
+  --bg-input: var(--bg-panel);
+  --border-strong: var(--border);
+  --text-hint: var(--text-dim);
+  --bubble-user-bg: rgba(141, 255, 79, 0.1);
+  --bubble-user-border: rgba(141, 255, 79, 0.4);
+  --success: #41cb66;
+  --danger: #ff4b75;
+  --warning: #ffd54b;
+  --info: #6ac8ff;
 
   --bg: #f6f7f9;
   --bg-panel: #fdfaf4;
@@ -28,44 +41,86 @@
 }
 
 :root.dark {
-  --bg: #1c1f26;
-  --bg-panel: #23262e;
-  --bg-elevated: #2a2e38;
-  --bg-hover: rgba(255, 255, 255, 0.07);
-  --border: rgba(255, 255, 255, 0.09);
-  --text: #e4e7ec;
-  --text-dim: #98a0ad;
-  --shadow: 0 1px 3px rgba(10, 12, 16, 0.35), 0 8px 24px rgba(10, 12, 16, 0.3);
-  --state-hover: rgba(255, 255, 255, 0.08);
-  --state-active: rgba(255, 255, 255, 0.14);
+  --accent: #8dff4f;
+  --accent-hover: #59d915;
+  --on-accent: #0a0a0a;
+  --bg: #09090b;
+  --bg-panel: #101013;
+  --bg-elevated: #18181b;
+  --bg-header: #18181b;
+  --bg-content: #18181b;
+  --bg-input: #18181b;
+  --bg-hover: #27272a;
+  --border: #27272a;
+  --border-strong: #3f3f46;
+  --text: #f4f4f5;
+  --text-dim: #babac1;
+  --text-hint: #71717a;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3), 0 8px 28px rgba(0, 0, 0, 0.4);
+  --state-hover: rgba(255, 255, 255, 0.07);
+  --state-active: rgba(255, 255, 255, 0.13);
+  --bubble-user-bg: rgba(141, 255, 79, 0.1);
+  --bubble-user-border: rgba(141, 255, 79, 0.4);
+  --success: #41cb66;
+  --danger: #ff4b75;
+  --warning: #ffd54b;
+  --info: #6ac8ff;
 }
 
 /* 主题三：Midnight 深空蓝（低饱和蓝调暗色） */
 :root.midnight {
+  --accent: #6ac8ff;
+  --accent-hover: #8fd8ff;
+  --on-accent: #06121c;
   --bg: #0a0e1a;
   --bg-panel: #101627;
   --bg-elevated: #161e33;
-  --bg-hover: rgba(150, 180, 255, 0.08);
-  --border: rgba(150, 180, 255, 0.14);
+  --bg-header: #131a2e;
+  --bg-content: #131a2e;
+  --bg-input: #161e33;
+  --bg-hover: #1f2a45;
+  --border: #1f2a45;
+  --border-strong: #2d3b5e;
   --text: #dde6f5;
   --text-dim: #8a97b5;
-  --shadow: 0 1px 3px rgba(4, 8, 24, 0.5), 0 8px 24px rgba(4, 8, 24, 0.45);
+  --text-hint: #5f6c8c;
+  --shadow: 0 2px 8px rgba(4, 8, 24, 0.5), 0 8px 28px rgba(4, 8, 24, 0.45);
   --state-hover: rgba(150, 180, 255, 0.1);
   --state-active: rgba(150, 180, 255, 0.16);
+  --bubble-user-bg: rgba(106, 200, 255, 0.1);
+  --bubble-user-border: rgba(106, 200, 255, 0.4);
+  --success: #41cb66;
+  --danger: #ff4b75;
+  --warning: #ffd54b;
+  --info: #6ac8ff;
 }
 
 /* 主题四：Warm 暖沙纸感（低饱和暖调浅色） */
 :root.warm {
+  --accent: #b8860b;
+  --accent-hover: #d9a418;
+  --on-accent: #1c1400;
   --bg: #f6f1e7;
-  --bg-panel: #fffdf8;
+  --bg-panel: #fdfaf4;
   --bg-elevated: #ffffff;
-  --bg-hover: rgba(120, 90, 40, 0.06);
-  --border: rgba(120, 90, 40, 0.14);
-  --text: #3d3529;
-  --text-dim: #8d8271;
-  --shadow: 0 1px 3px rgba(90, 70, 40, 0.08), 0 8px 24px rgba(90, 70, 40, 0.08);
+  --bg-header: #f0e9db;
+  --bg-content: #ebe4d4;
+  --bg-input: #f0e9db;
+  --bg-hover: #e3d9c4;
+  --border: #e3d9c4;
+  --border-strong: #d2c5a8;
+  --text: #2d2a24;
+  --text-dim: #6b6353;
+  --text-hint: #948b77;
+  --shadow: 0 2px 8px rgba(90, 70, 40, 0.1), 0 8px 28px rgba(90, 70, 40, 0.12);
   --state-hover: rgba(120, 90, 40, 0.08);
   --state-active: rgba(120, 90, 40, 0.14);
+  --bubble-user-bg: rgba(184, 134, 11, 0.1);
+  --bubble-user-border: rgba(184, 134, 11, 0.35);
+  --success: #167230;
+  --danger: #d02533;
+  --warning: #946300;
+  --info: #2265cf;
 }
 
 html,
