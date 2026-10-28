@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore, useProject } from '../store'
 import { api } from '../api'
+import { InitProjectModal } from './InitProjectModal'
 import {
   IconPlus,
   IconSearch,
@@ -14,74 +15,6 @@ import {
   IconFile
 } from './icons'
 
-
-/** 初始化项目弹窗：选目录 + 输入第一句话（cuckoo init-prompt 同款） */
-function InitProjectModal({ onClose, onSend }: { onClose: () => void; onSend: (text: string) => void }): React.JSX.Element {
-  const [dir, setDir] = useState('')
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
-  const pick = async (): Promise<void> => {
-    const d = await api.pickDirectory()
-    if (d) setDir(d)
-  }
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.45)' }}>
-      <div
-        className="anim-pop w-[560px] max-w-[92vw] rounded-2xl p-5"
-        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow)' }}
-      >
-        <div className="mb-4 text-[15px] font-semibold">初始化项目</div>
-        <div className="mb-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>项目目录</div>
-        <div className="mb-4 flex gap-2">
-          <input
-            className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] outline-none"
-            style={{ background: 'var(--bg-input)', border: '1px solid var(--border)' }}
-            placeholder="请先选择项目目录"
-            readOnly
-            value={dir}
-          />
-          <button
-            className="shrink-0 rounded-lg px-3 py-2 text-[12.5px]"
-            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
-            onClick={() => void pick()}
-          >
-            选择目录
-          </button>
-        </div>
-        <div className="mb-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>
-          你要对 AI 说的第一句话（发送时自动附加项目上下文与系统提示词）
-        </div>
-        <textarea
-          className="mb-4 min-h-[110px] w-full resize-none rounded-lg px-3 py-2.5 text-[12.5px] leading-relaxed outline-none"
-          style={{ background: 'var(--bg-input)', border: '1px solid var(--border)', color: 'var(--text)' }}
-          placeholder="例如：帮我看看这个项目的入口文件在哪里…"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        <div className="flex justify-end gap-2">
-          <button
-            className="rounded-lg px-4 py-2 text-[12.5px]"
-            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            className="rounded-lg px-4 py-2 text-[12.5px] disabled:opacity-40"
-            style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
-            disabled={!dir || !text.trim() || busy}
-            onClick={() => {
-              setBusy(true)
-              if (dir) void api.openProject(dir).then(() => onSend(text.trim()))
-            }}
-          >
-            发送
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
 
 /** 相对时间：刚刚 / N 分 / N 小时 / 昨天 / N 天 / 日期 */
 function relTime(ts: number): string {

@@ -216,6 +216,11 @@ export class AppContext {
     this.overlay.setThinkChunkHandler((sessionId, think) => {
       this.emit({ type: 'think-chunk', sessionId, think })
     })
+    // 用户在网页输入框里自己发消息时，回复没有经过 lidow 的 send/await 通道。
+    // 常驻接管：回复里若带工具块就执行，否则提示用户改用原生输入框。
+    this.overlay.setPageReplyHandler((sessionId, text) => {
+      void this.loop.adoptExternalReply(sessionId, text)
+    })
     this.overlay.setFloatActionHandler((sessionId, action) => {
       if (action === 'open-panel') {
         // 悬浮球左键单击 → 展开对话面板并把窗口提到前台（回归修复：此前无该分支，点击无任何反应）
@@ -266,9 +271,11 @@ export class AppContext {
     const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
     if (!provider) return
     this.overlay.sendCmd(sessionId, { kind: 'configure', adapter: provider.adapter })
-    // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）
+    // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
+    // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
+    // 这样 AI 也拿得到工具协议与工作目录（否则它会答「我没有文件系统访问权限」）。
     const spec = HOOKS[provider.id]
-    if (spec) void this.overlay.injectHook(sessionId, buildHookSource(spec))
+    if (spec) void this.overlay.injectHook(sessionId, buildHookSource(spec, this.systemPromptFor(sessionId)))
   }
 
   private registerEcosystemTools(): void {

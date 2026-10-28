@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
+import { InitProjectModal } from './InitProjectModal'
 
 export function WebTabs(): React.JSX.Element {
   const { tabs, activeTabId, setActiveTab, closeTab } = useStore()
@@ -97,6 +98,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
 function HomeEmpty(): React.JSX.Element {
   const { providers, projects, openProject, createSession, setView } = useStore()
   const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>([])
+  const [initOpen, setInitOpen] = useState(false)
 
   useEffect(() => {
     void api.listTemplates().then(setTemplates).catch(() => setTemplates([]))
@@ -111,13 +113,32 @@ function HomeEmpty(): React.JSX.Element {
           <button
             className="rounded-xl px-5 py-2.5 text-[13px]"
             style={{ background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)' }}
+            onClick={() => setInitOpen(true)}
+          >
+            初始化项目
+          </button>
+          <button
+            className="rounded-xl px-5 py-2.5 text-[13px]"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text)', border: '1px solid var(--border)' }}
             onClick={() => {
               void api.pickDirectory().then((dir) => dir && void openProject(dir))
             }}
           >
-            打开项目目录
+            打开已有目录
           </button>
         </div>
+        {initOpen && (
+          <InitProjectModal
+            onClose={() => setInitOpen(false)}
+            onSend={(text) => {
+              setInitOpen(false)
+              void useStore
+                .getState()
+                .sendPrompt(text)
+                .then(() => useStore.getState().setPure(true))
+            }}
+          />
+        )}
         {templates.length > 0 && (
           <div className="mt-4 flex flex-wrap justify-center gap-2">
             {templates.map((t) => (
@@ -170,6 +191,25 @@ function HomeEmpty(): React.JSX.Element {
           + 添加平台
         </button>
       </div>
+      <button
+        className="mt-2 rounded-xl px-4 py-2 text-[12.5px]"
+        style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)', border: '1px solid var(--border)' }}
+        onClick={() => setInitOpen(true)}
+      >
+        初始化新项目（选目录 + 第一句话）
+      </button>
+      {initOpen && (
+        <InitProjectModal
+          onClose={() => setInitOpen(false)}
+          onSend={(text) => {
+            setInitOpen(false)
+            void useStore
+              .getState()
+              .sendPrompt(text)
+              .then(() => useStore.getState().setPure(true))
+          }}
+        />
+      )}
     </div>
   )
 }

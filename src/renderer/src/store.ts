@@ -229,7 +229,12 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async createSession(providerId) {
     const project = useProject(get())
-    if (!project) return
+    if (!project) {
+      // 没有项目就没有工作目录，会话无法落盘、工具无根可执行。
+      // 之前这里静默 return，用户点平台只看到网页、AI 也拿不到工具上下文。
+      get().notice('请先初始化项目（选择工作目录），再开始对话', 'warn')
+      return
+    }
     const s = await api.createSession(project.id, providerId)
     // 关键：新建后必须把新会话设为 activeSession，
     // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
@@ -266,6 +271,19 @@ export const useStore = create<LidowState>((set, get) => ({
         for (let i = 0; wcId <= 0 && i < 40; i++) {
           await new Promise((r) => setTimeout(r, 150))
           wcId = get().tabs.find((t) => t.id === existing.id)?.wcId ?? -1
+        }
+        // store 里没拿到（webview 已 attach 但 wcId 未回写）：直接从 DOM 取。
+        // 缺了这步 bindTabSession 会因 webContentsId<=0 静默跳过 → 会话永远绑不上
+        // → hook 不注入 → 网页里发消息 AI 完全不知道有工具和工作目录。
+        if (wcId <= 0) {
+          try {
+            wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
+          } catch {
+            wcId = -1
+          }
+        }
+        if (wcId > 0) {
+          set({ tabs: get().tabs.map((t) => (t.id === existing.id ? { ...t, wcId } : t)) })
         }
         await get().bindTabSession(existing.id, sessionId, wcId)
       }
@@ -325,6 +343,10 @@ export const useStore = create<LidowState>((set, get) => ({
       await api.bindSession(sessionId, webContentsId)
       // 会话切换 = 换一个网页会话承载：重置页面到新对话（净模式切换会话的关键）
       if (switched) void api.newChat(sessionId)
+    } else {
+      // 没有 wcId 就等于没绑定：主进程收不到 bindSession，hook 不注入，
+      // 网页里无论发什么都到不了 lidow（AI 会说「我没有工作目录」）。
+      get().notice('网页尚未就绪，未能绑定会话（请稍后重试发送）', 'warn')
     }
   },
 
@@ -335,6 +357,12 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async sendPrompt(text) {
+    // 没有项目就没有工作目录：AI 只会答「我没有文件系统访问」，工具也无根可落。
+    // 在发送前拦住并引导初始化，比让用户看到一条误导性回复更好。
+    if (!get().projects.length) {
+      get().notice('请先初始化项目（选择工作目录），AI 才有可以操作的文件系统', 'warn')
+      return
+    }
     let { activeSession } = get()
     // 没有活动会话：自动新建（纯净模式直接发送的兜底）
     if (!activeSession) {

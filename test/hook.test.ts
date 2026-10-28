@@ -125,3 +125,60 @@ describe('DeepSeek hook 注入源码', () => {
     expect(String((parsed.calls[0]!.input as { content?: string }).content).trim()).toBe('OK')
   })
 })
+
+describe('请求体系统提示词注入', () => {
+  /** 用假 XHR 跑 hook，返回原始 send 收到的 body */
+  function runXhr(sysPrompt: string, userBody: string): string {
+    let capturedBody = ''
+    const proto = {
+      open(): void {},
+      send(this: unknown, body?: string): void {
+        capturedBody = body ?? ''
+      },
+      addEventListener(): void {}
+    }
+    const sandboxWindow = { fetch: () => Promise.resolve({}), __lidowNet: { emit: () => undefined } } as Record<
+      string,
+      unknown
+    >
+    const fn = new Function(
+      'window',
+      'XMLHttpRequest',
+      'TextDecoder',
+      'TextEncoder',
+      'setInterval',
+      'clearInterval',
+      'Date',
+      buildHookSource(DEEPSEEK_HOOK, sysPrompt)
+    )
+    fn(sandboxWindow, { prototype: proto } as unknown, TextDecoder, TextEncoder, () => 0, () => undefined, Date)
+
+    const xhr = Object.create(proto) as { open(m: string, u: string): void; send(b: string): void }
+    xhr.open('POST', '/api/v0/chat/completion')
+    xhr.send(userBody)
+    return capturedBody
+  }
+
+  it('网页里自己发送时，系统提示词被拼进 prompt 字段', () => {
+    const sys = '# 身份\n你是 Lidow 的 Agent，工作目录是 D:/proj'
+    const out = runXhr(sys, JSON.stringify({ prompt: '建个文件', chat_session_id: 'x' }))
+    const obj = JSON.parse(out) as { prompt: string; chat_session_id: string; parent_message_id?: number }
+    expect(obj.prompt.startsWith('# 身份')).toBe(true)
+    expect(obj.prompt).toContain('建个文件')
+    // 其它字段必须原样保留，否则 DeepSeek 会话会断
+    expect(obj.chat_session_id).toBe('x')
+  })
+
+  it('已经带系统提示词的请求不会被重复注入', () => {
+    const sys = '# 身份\n你是 Lidow 的 Agent，工作目录是 D:/proj'
+    const out = runXhr(sys, JSON.stringify({ prompt: sys + '\n\n---\n\n# 用户任务\n\n建个文件' }))
+    const obj = JSON.parse(out) as { prompt: string }
+    expect(obj.prompt.indexOf('# 身份')).toBe(0)
+    expect(obj.prompt.match(/# 身份/g)).toHaveLength(1)
+  })
+
+  it('系统提示词为空时不改动请求体', () => {
+    const raw = JSON.stringify({ prompt: '建个文件' })
+    expect(runXhr('', raw)).toBe(raw)
+  })
+})

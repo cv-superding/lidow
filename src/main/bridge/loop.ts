@@ -3,7 +3,7 @@ import { nanoid } from 'nanoid'
 import type { SessionStore } from '@main/session/store'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext } from '@main/tools/types'
-import { formatObservations, parseToolCalls } from './parser'
+import { formatObservations, looksLikeWildToolIntent, parseToolCalls } from './parser'
 import { attemptRewrite, extractMemoryMarkers, interceptCheck } from '@main/security/refusal'
 import { Logger } from '@main/infra/log'
 
@@ -103,105 +103,202 @@ export class AgentLoop {
         const sys = this.deps.systemPromptFor(sessionId)
         if (sys) prompt = sys + '\n\n---\n\n# 用户任务\n\n' + userText
       }
-      for (let round = 0; round < MAX_TURNS; round++) {
-        if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
-
-        // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗 + 拒绝改写）
-        let reply = await this.collectReply(sessionId, prompt)
-        let rewriteCount = 0
-        for (;;) {
-          const mod = this.deps.securityMod()
-          const outcome = await attemptRewrite(
-            reply,
-            { mode: mod.mode, ctfInject: mod.ctfInject, maxRewrites: mod.maxRewrites, rewriteApi: mod.rewriteApi },
-            rewriteCount
-          )
-          if (!outcome.followUp) {
-            if (outcome.exhausted) {
-              this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
-            }
-            break
-          }
-          rewriteCount++
-          Logger.info('loop', `检测到拒绝，改写重试 ${rewriteCount}/${mod.maxRewrites}`)
-          reply = await this.collectReply(sessionId, outcome.followUp)
-        }
-
-        // 1.5 自定义拦截：命中即终止本轮，不执行工具
-        {
-          const mod = this.deps.securityMod()
-          const hit = interceptCheck(reply, mod.customPatterns)
-          if (hit) {
-            Logger.warn('loop', `回复命中拦截规则: ${hit}`)
-            this.deps.emit({
-              type: 'notice',
-              sessionId,
-              level: 'warn',
-              message: mod.customNotice || `回复命中拦截规则（${hit}），已阻止工具执行`
-            })
-          }
-        }
-
-        // 1.6 [记忆] 正文标记自动捕获
-        for (const marker of extractMemoryMarkers(reply)) {
-          this.deps.captureMemory(marker)
-        }
-        const intercepted = interceptCheck(reply, this.deps.securityMod().customPatterns) !== null
-        const turn: ChatTurn = {
-          id: `turn_${nanoid(8)}`,
-          role: 'assistant',
-          text: reply,
-          ts: Date.now(),
-          status: intercepted ? 'stopped' : 'done'
-        }
-        store.appendTurn(sessionId, turn)
-        this.deps.emit({ type: 'session-updated', sessionId })
-
-        if (intercepted) break
-
-        // 2. 解析工具调用
-        const parsed = parseToolCalls(reply)
-        if (parsed.calls.length === 0) {
-          if (parsed.malformed.length > 0) {
-            prompt = `你的工具调用块无法解析（JSON 错误），原始内容：\n${parsed.malformed.join('\n---\n')}\n请修正后重新输出工具调用块。`
-            continue
-          }
-          break // 纯答复，任务完成
-        }
-
-        // 3. 执行工具（带确认门）
-        const results: ToolResult[] = []
-        for (const call of parsed.calls) {
-          if (state.stopped.has('auto-loop')) break
-          const result = await this.executeCall(sessionId, call)
-          results.push(result)
-          this.deps.emit({ type: 'tool-start', sessionId, result })
-        }
-        store.patchTurn(sessionId, turn.id, { toolResults: results })
-
-        if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
-
-        // 4. 观察结果回传
-        prompt = formatObservations(
-          results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error }))
-        )
-        // 5. 自动压缩检查
-        this.maybeCompact(sessionId)
-      }
+      await this.toolLoop(sessionId, state, prompt)
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      Logger.warn('loop', `循环结束 session=${sessionId}: ${msg}`)
-      this.deps.emit({ type: 'notice', sessionId, level: 'info', message: `任务结束：${msg}` })
-      this.deps.store.appendTurn(sessionId, {
-        id: `turn_${nanoid(8)}`,
-        role: 'system',
-        text: `[Lidow] ${msg}`,
-        ts: Date.now(),
-        status: 'stopped'
-      })
-      this.deps.emit({ type: 'session-updated', sessionId })
+      this.handleLoopError(sessionId, err)
     } finally {
       this.running.delete(sessionId)
+    }
+  }
+
+  /**
+   * 接管「用户在网页输入框里自己发出去」的 AI 回复。
+   * 这条路径没有经过 lidow 的发送，所以系统提示词没进上下文 —— 但回复里
+   * 仍可能带工具块，必须执行，否则用户会看到 AI 说「我没有工作目录」。
+   * 首轮文本直接用已收到的回复，不再重新发送。
+   */
+  async adoptExternalReply(sessionId: string, text: string): Promise<void> {
+    if (this.running.has(sessionId)) return
+    if (!text.trim()) return
+    const state: RunningLoop = { sessionId, stopped: new Set() }
+    this.running.set(sessionId, state)
+    try {
+      const parsed = parseToolCalls(text)
+      if (parsed.calls.length === 0) {
+        // 没有标准工具块。但如果是「有工具意图、格式野了」（XML/DSML/裸 JSON），
+        // 补一轮带系统提示词的发送，把它拉回 lidow 协议 —— 否则用户会看到
+        // AI 输出 <write>…</write> 却什么都没发生。
+        if (looksLikeWildToolIntent(text)) {
+          Logger.info('loop', `网页侧回复含野生工具格式，注入系统提示词纠偏 session=${sessionId}`)
+          this.deps.emit({
+            type: 'notice',
+            sessionId,
+            level: 'info',
+            message: 'AI 用了不支持的调用格式，已自动纠正并重试'
+          })
+          const sys = this.deps.systemPromptFor(sessionId)
+          const fixPrompt =
+            (sys ? sys + '\n\n---\n\n' : '') +
+            '# 格式纠正\n\n你上一条回复使用了不支持的工具调用格式。\n' +
+            '请改用 lidow 协议：只输出如下代码块，不要用 XML / <write> / <invoke>。\n\n' +
+            '```lidow\n{"tool":"write","input":{"path":"相对路径","content":"文件内容"}}\n```\n\n' +
+            '# 用户原始任务\n\n' +
+            this.lastUserTextOf(sessionId)
+          await this.toolLoop(sessionId, state, fixPrompt)
+          return
+        }
+        // 纯文本闲聊：它已经渲染在网页里了，不重复记录，只提示一句
+        this.deps.emit({
+          type: 'notice',
+          sessionId,
+          level: 'info',
+          message: '你在网页里直接提问时，AI 不知道工作目录与工具。用下方输入框发送才能操作本地文件。'
+        })
+        return
+      }
+      Logger.info('loop', `接管网页侧回复 session=${sessionId} 工具块=${parsed.calls.length}`)
+      const store = this.deps.store
+      const turn: ChatTurn = {
+        id: `turn_${nanoid(8)}`,
+        role: 'assistant',
+        text,
+        ts: Date.now(),
+        status: 'done'
+      }
+      store.appendTurn(sessionId, turn)
+      this.deps.emit({ type: 'session-updated', sessionId })
+      const results: ToolResult[] = []
+      for (const call of parsed.calls) {
+        const result = await this.executeCall(sessionId, call)
+        results.push(result)
+        this.deps.emit({ type: 'tool-start', sessionId, result })
+      }
+      store.patchTurn(sessionId, turn.id, { toolResults: results })
+      await this.toolLoop(
+        sessionId,
+        state,
+        formatObservations(results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error })))
+      )
+    } catch (err) {
+      this.handleLoopError(sessionId, err)
+    } finally {
+      this.running.delete(sessionId)
+    }
+  }
+
+  /** 取会话里最近一条用户消息（纠偏时还原原始任务） */
+  private lastUserTextOf(sessionId: string): string {
+    const turns = this.deps.store.get(sessionId)?.turns ?? []
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i]!.role === 'user') return turns[i]!.text
+    }
+    return ''
+  }
+
+  private handleLoopError(sessionId: string, err: unknown): void {
+    const msg = err instanceof Error ? err.message : String(err)
+    Logger.warn('loop', `循环结束 session=${sessionId}: ${msg}`)
+    this.deps.emit({ type: 'notice', sessionId, level: 'info', message: `任务结束：${msg}` })
+    this.deps.store.appendTurn(sessionId, {
+      id: `turn_${nanoid(8)}`,
+      role: 'system',
+      text: `[Lidow] ${msg}`,
+      ts: Date.now(),
+      status: 'stopped'
+    })
+    this.deps.emit({ type: 'session-updated', sessionId })
+  }
+
+  /**
+   * 工具循环主体（发送 → 收集 → 解析 → 执行 → 回传）。
+   */
+  private async toolLoop(sessionId: string, state: RunningLoop, initialPrompt: string): Promise<void> {
+    const store = this.deps.store
+    let prompt = initialPrompt
+    for (let round = 0; round < MAX_TURNS; round++) {
+      if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
+
+      // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗 + 拒绝改写）
+      let reply = await this.collectReply(sessionId, prompt)
+      let rewriteCount = 0
+      for (;;) {
+        const mod = this.deps.securityMod()
+        const outcome = await attemptRewrite(
+          reply,
+          { mode: mod.mode, ctfInject: mod.ctfInject, maxRewrites: mod.maxRewrites, rewriteApi: mod.rewriteApi },
+          rewriteCount
+        )
+        if (!outcome.followUp) {
+          if (outcome.exhausted) {
+            this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
+          }
+          break
+        }
+        rewriteCount++
+        Logger.info('loop', `检测到拒绝，改写重试 ${rewriteCount}/${mod.maxRewrites}`)
+        reply = await this.collectReply(sessionId, outcome.followUp)
+      }
+
+      // 1.5 自定义拦截：命中即终止本轮，不执行工具
+      {
+        const mod = this.deps.securityMod()
+        const hit = interceptCheck(reply, mod.customPatterns)
+        if (hit) {
+          Logger.warn('loop', `回复命中拦截规则: ${hit}`)
+          this.deps.emit({
+            type: 'notice',
+            sessionId,
+            level: 'warn',
+            message: mod.customNotice || `回复命中拦截规则（${hit}），已阻止工具执行`
+          })
+        }
+      }
+
+      // 1.6 [记忆] 正文标记自动捕获
+      for (const marker of extractMemoryMarkers(reply)) {
+        this.deps.captureMemory(marker)
+      }
+      const intercepted = interceptCheck(reply, this.deps.securityMod().customPatterns) !== null
+      const turn: ChatTurn = {
+        id: `turn_${nanoid(8)}`,
+        role: 'assistant',
+        text: reply,
+        ts: Date.now(),
+        status: intercepted ? 'stopped' : 'done'
+      }
+      store.appendTurn(sessionId, turn)
+      this.deps.emit({ type: 'session-updated', sessionId })
+
+      if (intercepted) break
+
+      // 2. 解析工具调用
+      const parsed = parseToolCalls(reply)
+      if (parsed.calls.length === 0) {
+        if (parsed.malformed.length > 0) {
+          prompt = `你的工具调用块无法解析（JSON 错误），原始内容：\n${parsed.malformed.join('\n---\n')}\n请修正后重新输出工具调用块。`
+          continue
+        }
+        break // 纯答复，任务完成
+      }
+
+      // 3. 执行工具（带确认门）
+      const results: ToolResult[] = []
+      for (const call of parsed.calls) {
+        if (state.stopped.has('auto-loop')) break
+        const result = await this.executeCall(sessionId, call)
+        results.push(result)
+        this.deps.emit({ type: 'tool-start', sessionId, result })
+      }
+      store.patchTurn(sessionId, turn.id, { toolResults: results })
+
+      if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
+
+      // 4. 观察结果回传
+      prompt = formatObservations(
+        results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error }))
+      )
+      // 5. 自动压缩检查
+      this.maybeCompact(sessionId)
     }
   }
 

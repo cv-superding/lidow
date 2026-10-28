@@ -34,6 +34,8 @@ export class OverlayManager {
   private onFloatAction?: (sessionId: string, action: string) => void
   /** 思考过程增量回调（供 renderer 折叠块显示） */
   private onThinkChunk?: (sessionId: string, think: string) => void
+  /** 网页侧「AI 回复完成」常驻回调：用户直接在网页输入框发消息时也能接管（cuckoo observer 同款） */
+  private onPageReply?: (sessionId: string, text: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
 
@@ -127,10 +129,18 @@ export class OverlayManager {
           clearTimeout(ch.domFallbackTimer)
           ch.domFallbackTimer = undefined
         }
+        // 有等待方 → 交给 loop 的 collectReply；没有等待方 → 是用户在网页里
+        // 自己发的消息，交给常驻回调接管（否则这条回复无人处理，AI 也就永远
+        // 不知道有工具和工作目录可用）
+        const hadWaiter = ch.replyResolvers.size > 0
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
         for (const r of ch.replyResolvers) r(payload.text)
         ch.replyResolvers.clear()
+        if (!hadWaiter && payload.text.trim()) {
+          const sessionId = this.sessionOfWebContents(sender.id)
+          if (sessionId) this.onPageReply?.(sessionId, payload.text)
+        }
         break
       }
       case 'net-error': {
@@ -180,6 +190,11 @@ export class OverlayManager {
 
   setThinkChunkHandler(fn: (sessionId: string, think: string) => void): void {
     this.onThinkChunk = fn
+  }
+
+  /** 注册「网页侧 AI 回复完成」回调（用户在网页里自行发送时也走这条） */
+  setPageReplyHandler(fn: (sessionId: string, text: string) => void): void {
+    this.onPageReply = fn
   }
 
   bindSession(sessionId: string, webContentsId: number): void {

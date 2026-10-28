@@ -53,6 +53,22 @@ export function parseToolCalls(reply: string): ParsedReply {
   return { cleanText: clean.trim(), calls, malformed }
 }
 
+/**
+ * 识别「AI 有工具意图但格式不对」的回复。
+ * 网页版 AI 不知道 lidow 协议时常见的野生格式：
+ *   <write><path>a.txt</path><content>x</content></write>
+ *   <｜tool▁calls｜> / <invoke name="write">…（DeepSeek 原生 DSML）
+ *   纯 JSON 代码块 {"tool":"write","input":{…}}
+ * 命中说明它想调工具、只是格式被拒 —— 值得用系统提示词纠一轮，
+ * 而不是当普通闲聊忽略（用户会以为「AI 根本没动手」）。
+ */
+const WILD_TOOL_RE =
+  /<\s*(?:[\w-]+:)?(?:invoke|parameter)\s+name=|<[ \t]*｜｜DSML｜｜|<\s*(write|read|edit|glob|grep|bash|pwsh|delete|webFetch|todoWrite)\b[^>]*>|["'](?:tool|name)["']\s*:\s*["'](?:write|read|edit|glob|grep|bash|pwsh|delete|webFetch|todoWrite)["']/i
+
+export function looksLikeWildToolIntent(reply: string): boolean {
+  return WILD_TOOL_RE.test(reply)
+}
+
 /** 构造给 AI 的观察结果消息 */
 export function formatObservations(results: { name: string; ok: boolean; output: string; error?: string }[]): string {
   const body = results

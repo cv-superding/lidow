@@ -23,6 +23,11 @@ export interface ProviderHookSpec {
   extract: (frame: unknown) => { text?: string; think?: string; finished?: boolean; incomplete?: boolean } | null
   /** 从帧对象捕获 token/消息 id（可选） */
   captureMeta?: (frame: unknown) => { accumulatedTokens?: number; msgIds?: unknown } | null
+  /**
+   * 请求体里「用户输入」的字段名。给了就会在发送前把系统提示词前缀拼进该字段 ——
+   * 这样即使用户直接在网页输入框里发送，AI 也能拿到工具协议与工作目录。
+   */
+  promptField?: string
 }
 
 /** DeepSeek 补齐帧：p/v 增量补丁 + response/fragments 结构 */
@@ -108,16 +113,51 @@ function deepseekExtract(frame: unknown): ExtractResult | null {
 }
 
 /** 生成注入主世界的自包含 IIFE 源码 */
-export function buildHookSource(spec: ProviderHookSpec): string {
+export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string {
+  // 内联进模板前先做一次 JS 字符串字面量转义（含换行/引号/反斜杠）
+  const sysLiteral = JSON.stringify(sysPrompt)
+  const promptField = spec.promptField ? JSON.stringify(spec.promptField) : 'null'
   return String.raw`(() => {
   var MARKER = '__lidowHookInstalled__';
-  if (window[MARKER]) return;
+  var SYS_PROMPT = ${sysLiteral};
+  var PROMPT_FIELD = ${promptField};
+  // 已装过：只刷新系统提示词（会话切换/项目切换后旧提示词会过期），
+  // 其余 hook 保持不动，避免重复包一层 fetch/XHR。
+  if (window[MARKER]) { window['__lidowSysPrompt__'] = SYS_PROMPT; return; }
   window[MARKER] = true;
+  window['__lidowSysPrompt__'] = SYS_PROMPT;
 
   var isCompletion = ${spec.isCompletion};
   var isStopStream = ${spec.isStopStream ?? 'function () { return false; }'};
   var extractFn = ${spec.extract};
   var userStopped = false;
+  // 已被 lidow 自己注入过的 prompt 打标，避免同一请求重复拼接
+  var INJECT_TAG = '__lidow_injected__';
+
+  /**
+   * 把系统提示词拼进请求体的用户输入字段。
+   * 目的：用户直接在网页输入框里发消息时，AI 也能拿到工具协议与工作目录，
+   * 而不是回一句「我没有文件系统访问权限」。
+   */
+  function injectPrompt(body) {
+    // 读 window 上的当前值：会话切换后会刷新提示词，闭包变量会过期
+    var sys = window['__lidowSysPrompt__'] || SYS_PROMPT;
+    if (!sys || !PROMPT_FIELD || typeof body !== 'string') return body;
+    try {
+      var obj = JSON.parse(body);
+      if (!obj || typeof obj !== 'object') return body;
+      var cur = obj[PROMPT_FIELD];
+      if (typeof cur !== 'string' || !cur) return body;
+      if (cur.indexOf(INJECT_TAG) === 0) return body;
+      // 经 lidow 自己发送的消息已经带了系统提示词（loop 里拼的），别再叠一层。
+      // 用「开头就是该系统提示词」判断：sys 本身可能很长，取前 40 字符会撞车。
+      if (cur.indexOf(sys) === 0) return body;
+      obj[PROMPT_FIELD] = sys + '\n\n---\n\n# 用户任务\n\n' + cur;
+      return JSON.stringify(obj);
+    } catch (e) {
+      return body;
+    }
+  }
 
   // 经 contextBridge 暴露的桥上报（CustomEvent 无法跨 contextIsolation 世界）
   function emit(kind, detail) {
@@ -258,6 +298,16 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     if (isStopStream(url, method)) { userStopped = true; return origFetch.apply(this, arguments); }
     var isCompletionReq = isCompletion(url, method);
     if (isCompletionReq) userStopped = false;
+    // 与 XHR 一致：把工具协议注入请求体（fetch 走 body 字段）
+    if (isCompletionReq && PROMPT_FIELD && init && typeof init.body === 'string') {
+      var injectedBody = injectPrompt(init.body);
+      if (injectedBody !== init.body) {
+        try {
+          init = Object.assign({}, init, { body: injectedBody });
+          arguments[1] = init;
+        } catch (e) {}
+      }
+    }
     var p = origFetch.apply(this, arguments);
     if (!isCompletionReq) return p;
     return p.then(function (response) {
@@ -292,6 +342,19 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     var isC = (info && info.isCompletion === true) || xhr.__lidowIsCompletion === true;
     if (!isC) return origSend.apply(this, arguments);
     userStopped = false;
+    // 用户直接在网页里发送时，把工具协议/工作目录注入进请求体，
+    // 让 AI 与「经 lidow 发送」时看到同样的上下文
+    var args = arguments;
+    if (PROMPT_FIELD && args.length > 0 && typeof args[0] === 'string') {
+      var injected = injectPrompt(args[0]);
+      if (injected !== args[0]) {
+        try {
+          var replaced = Array.prototype.slice.call(args);
+          replaced[0] = injected;
+          args = replaced;
+        } catch (e) {}
+      }
+    }
     // DeepSeek 用 XHR 流式（responseType 可能是 text 或 stream）：
     // progress 事件不可靠，改用 readystatechange + 轮询增量读取。
     var lastLen = 0;
@@ -390,7 +453,7 @@ export function buildHookSource(spec: ProviderHookSpec): string {
     // 兜底轮询：某些环境 readystatechange 不逐块触发
     timer = setInterval(consumeChunk, 120);
 
-    return origSend.apply(this, arguments);
+    return origSend.apply(this, args);
   };
 })();`
 }
@@ -401,7 +464,8 @@ export const DEEPSEEK_HOOK: ProviderHookSpec = {
   isCompletion: (url, method) => method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/completion') !== -1,
   isStopStream: (url, method) => method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/stop_stream') !== -1,
   extract: deepseekExtract,
-  captureMeta: () => null
+  captureMeta: () => null,
+  promptField: 'prompt'
 }
 
 /** ChatGPT：POST /backend-api/conversation，data: 行内为 JSON 增量（message.content.parts） */
