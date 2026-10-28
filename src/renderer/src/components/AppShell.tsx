@@ -1,26 +1,28 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore, useProject, type ViewId } from '../store'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
 import { PureModeShell } from './PureModeShell'
 import { SessionsView, FilesView, TasksView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
+import { RAIL_ICONS, IconPure, IconChevronRight, IconChat } from './icons'
+import { WindowControls } from './TitleBar'
 
-const RAIL: { id: ViewId; icon: string; label: string }[] = [
-  { id: 'home', icon: '⌂', label: '工作台' },
-  { id: 'sessions', icon: '💬', label: '会话' },
-  { id: 'files', icon: '📁', label: '文件' },
-  { id: 'tasks', icon: '☑', label: '任务' },
-  { id: 'plugins', icon: '🧩', label: '插件' },
-  { id: 'memory', icon: '🧠', label: '记忆' },
-  { id: 'knowledge', icon: '📚', label: '知识库' },
-  { id: 'audit', icon: '🕘', label: '审计' },
-  { id: 'settings', icon: '⚙', label: '设置' }
+const RAIL: { id: ViewId; label: string }[] = [
+  { id: 'home', label: '工作台' },
+  { id: 'sessions', label: '会话' },
+  { id: 'files', label: '文件' },
+  { id: 'tasks', label: '任务' },
+  { id: 'plugins', label: '插件' },
+  { id: 'memory', label: '记忆' },
+  { id: 'knowledge', label: '知识库' },
+  { id: 'audit', label: '审计' },
+  { id: 'settings', label: '设置' }
 ]
 
 /** thinkrail 式面板头：大写小字号标题 + 右侧控制钮 */
 export function PanelHeader({ title, children }: { title: string; children?: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="flex h-7 shrink-0 items-center gap-1 border-b px-2" style={{ borderColor: 'var(--border)', background: 'var(--bg-header)' }}>
+    <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2.5" style={{ borderColor: 'var(--border)', background: 'var(--bg-header)' }}>
       <span className="flex-1 truncate text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: 'var(--text-hint)' }}>
         {title}
       </span>
@@ -30,57 +32,70 @@ export function PanelHeader({ title, children }: { title: string; children?: Rea
 }
 
 export function LeftRail(): React.JSX.Element {
-  const { view, setView } = useStore()
+  const { view, setView, pureMode, setPure } = useStore()
+  const [hovered, setHovered] = useState(false)
   return (
     <div
-      className="group/rail flex h-full flex-col gap-0.5 border-r py-2 transition-panel"
-      style={{ width: 48, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
-      onMouseEnter={(e) => {
-        e.currentTarget.style.width = '168px'
+      className="flex h-full flex-col border-r transition-[width] duration-200"
+      style={{
+        width: hovered ? 176 : 46,
+        borderColor: 'var(--border)',
+        background: 'var(--bg-panel)',
+        transitionTimingFunction: 'cubic-bezier(0.2,0,0,1)'
       }}
-      onMouseLeave={(e) => {
-        e.currentTarget.style.width = '48px'
-      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
-      {RAIL.map((item) => {
-        const active = view === item.id
-        return (
-          <button
-            key={item.id}
-            className="relative flex h-8 items-center gap-2.5 overflow-hidden px-3.5 text-[12.5px]"
-            style={{
-              background: active ? 'var(--bg-hover)' : 'transparent',
-              color: active ? 'var(--text)' : 'var(--text-hint)'
-            }}
-            onClick={() => setView(item.id)}
-          >
-            {active && <span className="absolute left-0 h-4 w-0.5 rounded-r" style={{ background: 'var(--accent)' }} />}
-            <span className="w-4 shrink-0 text-center text-[13px]">{item.icon}</span>
-            <span className="whitespace-nowrap opacity-0 transition-opacity group-hover/rail:opacity-100">{item.label}</span>
-          </button>
-        )
-      })}
-      <div className="mt-auto px-3.5 pb-1">
+      <div className="flex flex-col gap-0.5 py-1.5">
+        {RAIL.map((item) => {
+          const Icon = RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
+          const active = view === item.id
+          return (
+            <button
+              key={item.id}
+              className="relative flex h-8 items-center gap-2.5 overflow-hidden px-3 text-[12.5px] transition-colors"
+              style={{
+                background: active ? 'var(--bg-hover)' : 'transparent',
+                color: active ? 'var(--text)' : 'var(--text-hint)'
+              }}
+              onClick={() => setView(item.id)}
+            >
+              {active && <span className="absolute left-0 top-1/2 h-4 w-[2px] -translate-y-1/2 rounded-r" style={{ background: 'var(--accent)' }} />}
+              <span className="flex w-4 shrink-0 items-center justify-center">
+                <Icon size={17} />
+              </span>
+              <span className={`whitespace-nowrap transition-opacity ${hovered ? 'opacity-100' : 'opacity-0'}`}>{item.label}</span>
+            </button>
+          )
+        })}
+      </div>
+      <div className="mt-auto border-t px-0 py-1.5" style={{ borderColor: 'var(--border)' }}>
         <button
-          className="flex h-8 w-full items-center gap-2.5 overflow-hidden text-[12.5px]"
-          style={{ color: 'var(--text-hint)' }}
-          onClick={() => void useStore.getState().setPure(!useStore.getState().pureMode)}
+          className="flex h-8 w-full items-center gap-2.5 overflow-hidden px-3 text-[12.5px] transition-colors"
+          style={{ color: pureMode ? 'var(--accent)' : 'var(--text-hint)' }}
+          title="纯净模式：只保留对话"
+          onClick={() => setPure(!pureMode)}
         >
-          <span className="w-4 shrink-0 text-center">⛶</span>
-          <span className="whitespace-nowrap opacity-0 transition-opacity group-hover/rail:opacity-100">纯净模式</span>
+          <span className="flex w-4 shrink-0 items-center justify-center">
+            <IconPure size={17} />
+          </span>
+          <span className={`whitespace-nowrap transition-opacity ${hovered ? 'opacity-100' : 'opacity-0'}`}>纯净模式</span>
         </button>
       </div>
     </div>
   )
 }
 
-/** thinkrail 三段式顶栏：品牌 | 当前位置面包屑 | 连接状态 */
+/** thinkrail 三段式顶栏：品牌 | 面包屑 | 状态 + 窗口控制。整条可拖拽窗口 */
 function TopBar(): React.JSX.Element {
   const { view, streamingText, stop, rightOpen, toggleRight } = useStore()
   const project = useProject(useStore())
   const running = streamingText.length > 0
   return (
-    <div className="flex h-9 shrink-0 items-center border-b" style={{ borderColor: 'var(--border)', background: 'var(--bg-header)' }}>
+    <div
+      className="flex h-10 shrink-0 items-center border-b"
+      style={{ borderColor: 'var(--border)', background: 'var(--bg-header)', WebkitAppRegion: 'drag' } as React.CSSProperties}
+    >
       {/* 品牌 */}
       <div className="flex h-full items-center gap-2 border-r px-3" style={{ borderColor: 'var(--border)' }}>
         <span className="flex h-5 w-5 items-center justify-center rounded text-[11px] font-bold" style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}>
@@ -88,13 +103,13 @@ function TopBar(): React.JSX.Element {
         </span>
         <span className="text-[12.5px] font-semibold tracking-tight">Lidow</span>
       </div>
-      {/* 位置面包屑 */}
-      <div className="flex h-full min-w-0 flex-1 items-center gap-2 px-3">
+      {/* 面包屑 */}
+      <div className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-3">
         <span className="truncate text-[12px]" style={{ color: 'var(--text-dim)' }}>
           {project?.name ?? '未打开项目'}
         </span>
-        <span style={{ color: 'var(--text-hint)' }}>›</span>
-        <span className="truncate text-[12px]">{view === 'home' ? '工作台' : RAIL.find((r) => r.id === view)?.label}</span>
+        <IconChevronRight size={11} className="shrink-0" />
+        <span className="truncate text-[12px] font-medium">{view === 'home' ? '工作台' : RAIL.find((r) => r.id === view)?.label}</span>
         {running && (
           <span className="ml-2 flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10.5px]" style={{ background: 'var(--bubble-user-bg)', color: 'var(--accent)' }}>
             <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
@@ -102,29 +117,36 @@ function TopBar(): React.JSX.Element {
           </span>
         )}
       </div>
-      {/* 状态与控制 */}
-      <div className="flex h-full items-center gap-1.5 px-3">
+      {/* 控制区（不可拖拽） */}
+      <div className="flex h-full items-center gap-1.5 pl-2" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
         {running && (
           <button className="rounded-md px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--danger)', color: 'var(--on-accent)' }} onClick={() => void stop('all')}>
             全部停止
           </button>
         )}
         {view === 'home' && (
-          <button className="rounded-md px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)', color: 'var(--text-dim)' }} onClick={toggleRight}>
-            {rightOpen ? '收起面板' : '对话面板'}
+          <button
+            className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-[11.5px]"
+            style={{ background: rightOpen ? 'var(--bg-hover)' : 'transparent', color: rightOpen ? 'var(--text)' : 'var(--text-hint)' }}
+            title="显示/隐藏对话面板"
+            onClick={toggleRight}
+          >
+            <IconChat size={13} />
+            对话面板
           </button>
         )}
-        <span className="ml-1 flex items-center gap-1.5 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+        <span className="flex items-center gap-1.5 pl-1 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
           <span className="h-1.5 w-1.5 rounded-full" style={{ background: 'var(--success)' }} />
           就绪
         </span>
       </div>
+      <WindowControls />
     </div>
   )
 }
 
 export function AppShell(): React.JSX.Element {
-  const { booted, view, rightOpen, pureMode, notices } = useStore()
+  const { booted, view, rightOpen, pureMode, notices, toggleRight } = useStore()
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -159,8 +181,20 @@ export function AppShell(): React.JSX.Element {
           {view === 'settings' && <SettingsView />}
         </div>
         {view === 'home' && rightOpen && (
-          <div className="transition-panel shrink-0 border-l" style={{ width: 440, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
-            <ChatPanel />
+          <div className="transition-panel flex shrink-0 flex-col border-l" style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
+            <PanelHeader title="Agent 活动">
+              <button
+                className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
+                style={{ color: 'var(--text-hint)' }}
+                title="收起面板"
+                onClick={toggleRight}
+              >
+                <IconChevronRight size={13} className="rotate-180" />
+              </button>
+            </PanelHeader>
+            <div className="min-h-0 flex-1">
+              <ChatPanel mode="workbench" />
+            </div>
           </div>
         )}
       </div>

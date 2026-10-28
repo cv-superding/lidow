@@ -31,7 +31,10 @@ function createWindow(): BrowserWindow {
     minHeight: 620,
     backgroundColor: '#101014',
     autoHideMenuBar: true,
+    // Windows/Linux 自绘标题栏（去掉系统标题栏，避免双栏 + 与 thinkrail 风格一致）
+    frame: process.platform === 'darwin',
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 10 } : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

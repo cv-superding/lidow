@@ -209,6 +209,12 @@ export class AppContext {
     this.hotkeys.applyAll()
 
     this.overlay.setFloatActionHandler((sessionId, action) => {
+      if (action === 'open-panel') {
+        // 悬浮球左键单击 → 展开对话面板并把窗口提到前台（回归修复：此前无该分支，点击无任何反应）
+        this.emit({ type: 'ui-panel', sessionId, panel: 'chat', open: true })
+        this.focusWindow()
+        return
+      }
       const level = action === 'stop-generate' ? 'generate' : action === 'stop-tool' ? 'tool' : 'all'
       this.loop.stop(sessionId, level)
     })
@@ -231,6 +237,14 @@ export class AppContext {
 
     void this.mcp.connectAll()
     Logger.info('context', 'AppContext 初始化完成')
+  }
+
+  private focusWindow(): void {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
   }
 
   emit(event: { type: string; sessionId: string; [k: string]: unknown }): void {

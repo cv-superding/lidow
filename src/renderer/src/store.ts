@@ -350,15 +350,25 @@ export const useStore = create<LidowState>((set, get) => ({
         })
         break
       case 'tool-confirm-required':
-        set({ confirmRequest: { callId: e.callId, reason: e.reason } })
+        // 需要用户确认时自动把面板推到眼前（否则 AI 一直等待而用户看不到审批卡）
+        set({ confirmRequest: { callId: e.callId, reason: e.reason }, pureMode: false, view: 'home', rightOpen: true })
         break
       case 'plan-proposed':
-        set({ plan: e.plan })
+        set({ plan: e.plan, pureMode: false, view: 'home', rightOpen: true })
         break
       case 'notice': {
         const ts = Date.now()
         set({ notices: [...s.notices.slice(-20), { level: e.level, message: e.message, ts }] })
         get().scheduleNoticeRemoval(ts)
+        break
+      }
+      case 'ui-panel': {
+        // 悬浮球"打开面板"：退出净模式并展开右侧对话面板
+        set({ pureMode: false, view: 'home', rightOpen: e.panel === 'chat' ? e.open : get().rightOpen })
+        break
+      }
+      case 'ui-toggle-pure': {
+        set({ pureMode: !get().pureMode })
         break
       }
       default:

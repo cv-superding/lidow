@@ -8,6 +8,7 @@ import { useStore } from '../store'
 import { api } from '../api'
 import { ToolCard } from './ToolCard'
 import type { ChatTurn } from '@shared/types'
+import { IconArrowUp, IconStop } from './icons'
 
 const SLASH_COMMANDS = [
   { cmd: '/compact', desc: '手动压缩上下文' },
@@ -74,7 +75,7 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   )
 }
 
-export function ChatPanel(): React.JSX.Element {
+export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const { activeSession, streamingText, streamingTps, sendPrompt, stop, confirmRequest, answerConfirm, plan, quickCmds } = useStore()
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
@@ -87,7 +88,12 @@ export function ChatPanel(): React.JSX.Element {
     })
   }, [])
 
-  const turns = useMemo(() => activeSession?.turns ?? [], [activeSession])
+  const allTurns = useMemo(() => activeSession?.turns ?? [], [activeSession])
+  // workbench 模式只显示发生过工具调用的轮次——网页里已经有完整对话，这里不重复
+  const turns = useMemo(
+    () => (mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns),
+    [allTurns, mode]
+  )
   const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
 
   useEffect(() => {
@@ -126,15 +132,26 @@ export function ChatPanel(): React.JSX.Element {
     <div className="flex h-full flex-col" style={{ background: 'var(--bg)' }}>
       <div ref={scrollRef} className="flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {turns.length === 0 && !streamingText && (
-          <div className="flex h-full flex-col items-center justify-center gap-2" style={{ color: 'var(--text-dim)' }}>
-            <div className="text-3xl font-bold" style={{ color: 'var(--accent)' }}>L</div>
-            <div>开始你的第一个任务 — 网页中的 AI 将驱动本地工具</div>
+          <div className="flex h-full flex-col items-center justify-center gap-2.5 px-6 text-center" style={{ color: 'var(--text-hint)' }}>
+            <div className="text-2xl font-bold" style={{ color: 'var(--accent)' }}>L</div>
+            {mode === 'workbench' ? (
+              <>
+                <div className="text-[12.5px]">Agent 活动面板</div>
+                <div className="text-[11.5px] leading-relaxed">
+                  这里只显示本地工具调用、文件改动与需要你确认的操作。
+                  <br />
+                  对话内容看左侧网页，不重复显示。
+                </div>
+              </>
+            ) : (
+              <div className="text-[12.5px]">开始你的第一个任务 — 网页中的 AI 将驱动本地工具</div>
+            )}
           </div>
         )}
         {turns.map((t) => (
           <TurnItem key={t.id} turn={t} />
         ))}
-        {streamingText && (
+        {streamingText && mode === 'pure' && (
           <div className="flex flex-col items-start gap-1">
             <div className="max-w-[92%] px-1 py-2.5">
               <TurnBody text={streamingText} />
@@ -242,7 +259,7 @@ export function ChatPanel(): React.JSX.Element {
               style={{ background: 'var(--danger)', color: 'var(--on-accent)' }}
               onClick={() => void stop('generate')}
             >
-              停止
+              <span className="flex items-center gap-1.5"><IconStop size={13} /> 停止</span>
             </button>
           ) : (
             <button
@@ -252,7 +269,7 @@ export function ChatPanel(): React.JSX.Element {
               disabled={!input.trim()}
               onClick={() => void submit()}
             >
-              ↑
+              <span className="flex items-center justify-center"><IconArrowUp size={17} /></span>
             </button>
           )}
         </div>

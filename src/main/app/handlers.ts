@@ -1,4 +1,4 @@
-import { app, dialog, shell, nativeTheme } from 'electron'
+import { app, BrowserWindow, dialog, shell, nativeTheme } from 'electron'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { AppContext } from './context'
@@ -46,6 +46,18 @@ export function registerHandlers(
   })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
   R('quit', () => app.quit())
+
+  // ---------- 窗口控制（自绘标题栏） ----------
+  R('windowMinimize', () => BrowserWindow.getFocusedWindow()?.minimize())
+  R('windowToggleMaximize', () => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win) return false
+    if (win.isMaximized()) win.unmaximize()
+    else win.maximize()
+    return win.isMaximized()
+  })
+  R('windowClose', () => BrowserWindow.getFocusedWindow()?.close())
+  R('windowIsMaximized', () => BrowserWindow.getFocusedWindow()?.isMaximized() ?? false)
 
   // ---------- Provider / 账号 ----------
   R('listProviders', (projectId: string) => ctx.providerRegistryOf(String(projectId)).list())

@@ -287,8 +287,8 @@ function setupFloatingBall(): void {
     #lidow-ball{position:fixed;z-index:2147483647;right:18px;bottom:96px;width:40px;height:40px;border-radius:50%;
       background:linear-gradient(135deg,#8dff4f,#59d915);box-shadow:0 4px 16px rgba(89,217,21,.35);cursor:grab;
       display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;font-weight:700;user-select:none;
-      transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s;}
-    #lidow-ball:hover{transform:scale(1.1);box-shadow:0 6px 22px rgba(60,90,220,.6);}
+      opacity:.45;transition:transform .2s cubic-bezier(.22,1,.36,1),box-shadow .2s,opacity .2s;}
+    #lidow-ball:hover{opacity:1;transform:scale(1.08);box-shadow:0 6px 20px rgba(89,217,21,.45);}
     #lidow-ball:active{cursor:grabbing;}
     #lidow-menu{position:fixed;z-index:2147483647;background:rgba(24,24,30,.96);border:1px solid rgba(255,255,255,.1);
       border-radius:12px;padding:6px;box-shadow:0 8px 32px rgba(0,0,0,.4);display:none;min-width:148px;}

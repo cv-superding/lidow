@@ -3,6 +3,8 @@ import { useStore, useProject } from '../store'
 import { api } from '../api'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
+import { DragStrip } from './TitleBar'
+import { IconFolderOpen, IconChevronLeft, IconChevronRight, IconClose, IconSearch, IconPlus, IconStop, IconDownload, IconCompress, IconFile } from './icons'
 
 /** 相对时间：刚刚 / N 分 / N 小时 / 昨天 / N 天 / 日期 */
 function relTime(ts: number): string {
@@ -44,7 +46,10 @@ function PreviewPanel({ projectId }: { projectId: string }): React.JSX.Element {
           }}
           onClick={() => n.type === 'file' && load(n.path)}
         >
-          {n.type === 'dir' ? '▸ 📁' : '·'} {n.name}
+          <span className="mr-1 inline-flex align-middle" style={{ color: n.type === 'dir' ? 'var(--accent)' : 'var(--text-hint)' }}>
+            {n.type === 'dir' ? <IconFolderOpen size={11} /> : <IconFile size={11} />}
+          </span>
+          {n.name}
         </button>
         {n.children && renderNodes(n.children, depth + 1)}
       </div>
@@ -61,7 +66,7 @@ function PreviewPanel({ projectId }: { projectId: string }): React.JSX.Element {
         style={{ borderColor: 'var(--border)' }}
         onClick={() => setOpen(!open)}
       >
-        {open ? '»' : '«'}
+        {open ? <IconChevronRight size={14} /> : <IconChevronLeft size={14} />}
       </button>
       {open && (
         <div className="anim-fade flex min-h-0 flex-1 flex-col">
@@ -146,7 +151,9 @@ export function PureModeShell(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full overflow-hidden" style={{ background: 'var(--bg)' }}>
+    <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
+      <DragStrip />
+      <div className="flex min-h-0 flex-1">
       {/* webview 承载层：隐藏但保持存活 */}
       <div className="pointer-events-none fixed -left-[9999px] top-0 h-px w-px overflow-hidden" aria-hidden>
         <WebTabs />
@@ -165,7 +172,7 @@ export function PureModeShell(): React.JSX.Element {
               style={{ background: 'var(--bg-hover)' }}
               onClick={() => project && void api.openPathInSystem(project.root)}
             >
-              📁
+              <IconFolderOpen size={14} />
             </button>
             <button
               title="收起侧栏"
@@ -173,7 +180,7 @@ export function PureModeShell(): React.JSX.Element {
               style={{ background: 'var(--bg-hover)' }}
               onClick={() => setSidebarOpen(false)}
             >
-              «
+              <IconChevronLeft size={14} />
             </button>
           </div>
 
@@ -190,15 +197,23 @@ export function PureModeShell(): React.JSX.Element {
                   <option key={p.id} value={p.id}>{p.name}</option>
                 ))}
               </select>
-              <button className="rounded-lg px-2.5 py-1.5 text-[12px] " style={{ background: 'var(--accent)', color: 'var(--on-accent)' }} onClick={() => void newSession()}>
-                + 新会话
+              <button
+                className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1.5 text-[12px] font-medium"
+                style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+                onClick={() => void newSession()}
+              >
+                <IconPlus size={12} />
+                新会话
               </button>
             </div>
           )}
 
-          <div className="px-3.5 pb-2">
+          <div className="relative px-3.5 pb-2">
+            <span className="pointer-events-none absolute left-5.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-hint)' }}>
+              <IconSearch size={12} />
+            </span>
             <input
-              className="w-full rounded-xl px-3 py-1.5 text-[12px] outline-none"
+              className="w-full rounded-lg py-1.5 pl-7 pr-3 text-[12px] outline-none"
               style={{ background: 'var(--bg-hover)', border: '1px solid var(--border)' }}
               placeholder="搜索会话…"
               value={query}
@@ -229,7 +244,7 @@ export function PureModeShell(): React.JSX.Element {
                     void deleteSession(s.id)
                   }}
                 >
-                  ✕
+                  <IconClose size={12} />
                 </button>
               </div>
             ))}
@@ -253,7 +268,7 @@ export function PureModeShell(): React.JSX.Element {
           style={{ borderColor: 'var(--border)', background: 'var(--bg-panel)', color: 'var(--text-dim)' }}
           onClick={() => setSidebarOpen(true)}
         >
-          »
+          <IconChevronRight size={14} />
         </button>
       )}
 
@@ -292,23 +307,23 @@ export function PureModeShell(): React.JSX.Element {
           )}
           {activeSession && (
             <>
-              <button title="停止当前任务" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: running ? 'var(--danger)' : 'var(--bg-hover)', color: running ? 'var(--on-accent)' : 'var(--text-dim)' }} onClick={() => void useStore.getState().stop('generate')}>
-                停止
+              <button title="停止当前任务" className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: running ? 'var(--danger)' : 'var(--bg-hover)', color: running ? 'var(--on-accent)' : 'var(--text-dim)' }} onClick={() => void useStore.getState().stop('generate')}>
+<IconStop size={12} /> 停止
               </button>
-              <button title="压缩上下文" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.compactSession(activeSession.id).then((s) => useStore.setState({ activeSession: s }))}>
-                压缩
+              <button title="压缩上下文" className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.compactSession(activeSession.id).then((s) => useStore.setState({ activeSession: s }))}>
+<IconCompress size={12} /> 压缩
               </button>
               <button
                 title="导出 Markdown"
-                className="rounded-lg px-2.5 py-1 text-[11.5px]"
+                className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-[11.5px]"
                 style={{ background: 'var(--bg-hover)' }}
                 onClick={() => void api.exportSession(activeSession.id).then((p) => useStore.getState().notice(`已导出：${p}`))}
               >
-                导出
+<IconDownload size={12} /> 导出
               </button>
               {project && (
-                <button title="在资源管理器中打开项目文件夹" className="rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.openPathInSystem(project.root)}>
-                  📁 文件夹
+                <button title="在资源管理器中打开项目文件夹" className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-lg px-2.5 py-1 text-[11.5px]" style={{ background: 'var(--bg-hover)' }} onClick={() => void api.openPathInSystem(project.root)}>
+<IconFolderOpen size={12} /> 文件夹
                 </button>
               )}
             </>
@@ -321,6 +336,7 @@ export function PureModeShell(): React.JSX.Element {
 
       {/* 右侧文件预览面板 */}
       {project && <PreviewPanel projectId={project.id} />}
+      </div>
     </div>
   )
 }

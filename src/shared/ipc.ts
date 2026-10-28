@@ -125,6 +125,12 @@ export interface LidowApi {
   applyTemplate(templateId: string, root: string): Promise<void>
   pushToSync(text: string): Promise<void>
 
+  // 窗口控制（自绘标题栏）
+  windowMinimize(): void
+  windowToggleMaximize(): Promise<boolean>
+  windowClose(): void
+  windowIsMaximized(): Promise<boolean>
+
   // 事件订阅（main → renderer）
   onEvent(cb: (event: LidowEvent) => void): () => void
 }
@@ -138,6 +144,8 @@ export type LidowEvent =
   | { type: 'overlay-event'; providerId: string; event: unknown }
   | { type: 'ui-input'; sessionId: string; text: string }
   | { type: 'notice'; level: 'info' | 'warn' | 'error'; message: string }
+  | { type: 'ui-panel'; panel: 'chat' | 'web'; open: boolean }
+  | { type: 'ui-toggle-pure' }
 
 export const IPC_INVOKE_PREFIX = 'lidow:'
 export const IPC_EVENT = 'lidow:event'
