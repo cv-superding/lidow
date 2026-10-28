@@ -348,7 +348,47 @@ export class AppContext {
     }
     p.lastOpenedAt = Date.now()
     this.projectStore.set({ projects: this.projects, activeProjectId: p.id })
+    this.projectDirs.set(p.id, root)
+    this.initProjectScaffold(root)
     return p
+  }
+
+  /**
+   * 项目初始化（打开时幂等执行）：建 .lidow/ 工作目录结构。
+   * 已存在则跳过，不动用户文件。
+   */
+  private initProjectScaffold(root: string): void {
+    try {
+      const dirs = [
+        join(root, '.lidow'),
+        join(root, '.lidow', 'skills'),
+        join(root, '.lidow', 'agents'),
+        join(root, '.lidow', 'rules'),
+        join(root, '.lidow', 'exports'),
+        join(root, '.lidow', 'sessions')
+      ]
+      for (const d of dirs) mkdirSync(d, { recursive: true })
+      const readme = join(root, '.lidow', 'README.md')
+      if (!existsSync(readme)) {
+        writeFileSync(
+          readme,
+          [
+            '# Lidow 项目工作目录',
+            '',
+            '本目录由 Lidow 自动创建，存放会话/技能/规则/导出等项目级数据。',
+            '- skills/  项目技能（渐进披露，AI 可 readSkill 加载）',
+            '- agents/  子代理定义',
+            '- rules/   项目规则（自动注入系统提示词）',
+            '- exports/ 会话导出（Markdown）',
+            '- sessions/ 会话持久化'
+          ].join('\n'),
+          'utf-8'
+        )
+      }
+      Logger.info('project', `项目初始化完成: ${root}`)
+    } catch (e) {
+      Logger.warn('project', `项目初始化跳过: ${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   closeProject(projectId: string): void {
