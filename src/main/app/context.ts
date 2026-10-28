@@ -336,7 +336,8 @@ export class AppContext {
   sessionStoreOf(projectId: string): SessionStore {
     let s = this.sessionStores.get(projectId)
     if (!s) {
-      s = new SessionStore(this.projectDirOf(projectId))
+      // 会话存项目内 .lidow/sessions/（随项目走、可版本化），不污染项目根目录
+      s = new SessionStore(join(this.projectDirOf(projectId), '.lidow'))
       this.sessionStores.set(projectId, s)
     }
     return s
@@ -537,5 +538,10 @@ export class AppContext {
 
   async dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }> {
     return this.dsh.coverage()
+  }
+
+  /** 供测试/调试：直接读会话存储（按项目 id） */
+  sessionStoreFor(projectId: string): SessionStore {
+    return this.sessionStoreOf(projectId)
   }
 }

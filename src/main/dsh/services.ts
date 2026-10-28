@@ -157,6 +157,10 @@ export function registerRuntimeServices(host: DshHost, deps: DshRuntimeDeps): vo
   // ---------- B5：客户端 UI（🔗 event-bridge / ⚙️ native） ----------
   S('uiToasts', 'ui', { show: (message: string, level?: 'info' | 'warn' | 'error') => emitNotice(String(message), level) })
   S('uiNotifications', 'ui', { push: (title: string, body?: string) => emitNotice(`🔔 ${String(title)}${body ? ` — ${String(body)}` : ''}`) })
+  S('notifications', 'misc', {
+    push: (title: string, body?: string) => emitNotice(`🔔 ${String(title)}${body ? ` — ${String(body)}` : ''}`),
+    list: () => []
+  })
   S('uiStatus', 'ui', { set: (text: string) => emitNotice(`[状态] ${String(text)}`) })
   S('uiDialogs', 'ui', {
     confirm: async (message: string): Promise<boolean> => deps.requestConfirm(String(message)),

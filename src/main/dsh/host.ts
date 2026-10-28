@@ -108,6 +108,16 @@ export class DshHost {
       delete: (key: string) => this.kv.delete(key),
       keys: () => [...this.kv.keys()]
     })
+    svc('storageDomain', 'storage', {
+      get: (domain: string, key: string) => this.kv.get(`${String(domain)}::${String(key)}`) ?? null,
+      set: (domain: string, key: string, value: unknown) => {
+        this.kv.set(`${String(domain)}::${String(key)}`, value)
+        return true
+      },
+      delete: (domain: string, key: string) => this.kv.delete(`${String(domain)}::${String(key)}`),
+      keys: (domain: string) =>
+        [...this.kv.keys()].filter((k) => k.startsWith(`${String(domain)}::`)).map((k) => k.slice(String(domain).length + 2))
+    })
     svc('settings', 'ui', {
       get: () => d.settings.get(),
       patch: (p: Partial<AppSettings>) => d.settings.patch(p)
@@ -262,16 +272,19 @@ export class DshHost {
     return [...this.services.values()].map((s) => ({ name: s.name, category: s.category }))
   }
 
-  /** 覆盖度：对照 DSH v0.2.0-rc.2 的 119 服务全名单 */
+  /** 覆盖度：对照 DSH v0.2.0-rc.2 具名服务名单 */
   coverage(implementedExtra: string[] = []): { total: number; implemented: string[]; missing: string[] } {
-    const ALL = DshHost.ALL_SERVICES_119
+    const ALL = DshHost.DSH_NAMED_SERVICES
     const implemented = [...this.services.keys(), ...implementedExtra]
     const missing = ALL.filter((s) => !implemented.includes(s))
     return { total: ALL.length, implemented, missing }
   }
 
-  /** 119 服务全名单（来源：cuckoo-code docs/dsh-api-coverage.md，基于 DSH v0.2.0-rc.2） */
-  static readonly ALL_SERVICES_119: string[] = [
+  /**
+   * DSH 具名服务名单（来源：cuckoo-code docs/dsh-api-coverage.md，基于 DSH v0.2.0-rc.2）。
+   * 共 117 个具名服务；cuckoo 文档标称 119（含 2 个未公开枚举的低频服务），此处如实按具名清单计数。
+   */
+  static readonly DSH_NAMED_SERVICES: string[] = [
     // core/tool 11
     'tools', 'systemPrompt', 'fs', 'shell', 'terminals', 'web', 'mcpResources', 'subprocess', 'sandbox', 'sandboxPolicy', 'shellEnv',
     // session 15

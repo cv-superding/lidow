@@ -232,7 +232,9 @@ export function registerHandlers(
   R('attachWebview', (providerId: string, accountId: string) => {
     const project = ctx.activeProject()
     if (!project) throw new Error('请先打开项目')
+    if (!providerId || typeof providerId !== 'string') throw new Error('attachWebview 缺少 providerId')
     const reg = ctx.providerRegistryOf(project.id)
+    if (!reg.get(String(providerId))) throw new Error(`未知平台: ${String(providerId)}`)
     return {
       partition: reg.partitionOf(String(providerId), accountId ? String(accountId) : undefined),
       overlayPath: join(__dirname, '../preload/overlay.js'),
