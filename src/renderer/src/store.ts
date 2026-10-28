@@ -59,6 +59,8 @@ interface LidowState {
   view: ViewId
   rightOpen: boolean
   pureMode: boolean
+  /** 纯净模式主区当前面板（home=网页对话；其余为该面板视图），不改变 pureMode */
+  pureView: ViewId
   streamingText: string
   streamingTps: number
   confirmRequest: { callId: string; reason: string } | null
@@ -83,6 +85,7 @@ interface LidowState {
   setView(v: ViewId): void
   toggleRight(): void
   setPure(on: boolean): void
+  setPureView(v: ViewId): void
   applyTheme(s: AppSettings): void
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
@@ -132,6 +135,7 @@ export const useStore = create<LidowState>((set, get) => ({
   view: 'home',
   rightOpen: true,
   pureMode: false,
+  pureView: 'home',
   streamingText: '',
   streamingTps: 0,
   confirmRequest: null,
@@ -169,8 +173,12 @@ export const useStore = create<LidowState>((set, get) => ({
   toggleRight() {
     set({ rightOpen: !get().rightOpen })
   },
+  setPureView(v) {
+    set({ pureView: v })
+  },
   setPure(on) {
-    set({ pureMode: on })
+    // 进入纯净模式时回到对话主区
+    set({ pureMode: on, pureView: on ? 'home' : get().pureView })
     void api.setPureMode(on)
     // 净模式进入时确保活动会话有后台 webview 承载（对话驱动依赖页面）
     if (on) {
@@ -224,7 +232,7 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async openSession(id) {
     const s = await api.getSession(id)
-    set({ activeSession: s, view: 'home', rightOpen: true, plan: await api.getActivePlan(id) })
+    set({ activeSession: s, view: 'home', pureView: 'home', rightOpen: true, plan: await api.getActivePlan(id) })
   },
 
   async openProviderTab(providerId, sessionId) {

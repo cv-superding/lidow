@@ -118,8 +118,8 @@ export function PureModeShell(): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const providers = useStore((s) => s.providers)
   const project = useProject(useStore())
-  const setView = useStore((s) => s.setView)
-  const setPure = useStore((s) => s.setPure)
+  const setPureView = useStore((s) => s.setPureView)
+  const pureView = useStore((s) => s.pureView)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
@@ -144,7 +144,11 @@ export function PureModeShell(): React.JSX.Element {
 
   const newSession = async (): Promise<void> => {
     const pid = providerId || activeSession?.providerId || providers[0]?.id
-    if (!pid) return
+    if (!pid) {
+      useStore.getState().notice('请先在「工作台」选择一个平台', 'warn')
+      return
+    }
+    setPureView('home')
     await useStore.getState().createSession(pid)
     const created = useStore.getState().activeSession
     if (created) await useStore.getState().openProviderTab(created.providerId, created.id)
@@ -177,6 +181,16 @@ export function PureModeShell(): React.JSX.Element {
     >
       {/* ① 顶部动作区 */}
       <div className="flex flex-col gap-0.5 px-2 pb-1 pt-2">
+        {pureView !== 'home' && (
+          <button
+            className="sl mb-1 flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-[12px]"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
+            onClick={() => setPureView('home')}
+          >
+            <IconChevronLeft size={13} />
+            <span className="flex-1 text-left">返回对话</span>
+          </button>
+        )}
         <button
           className="sl flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px] font-medium"
           style={{ color: 'var(--text)' }}
@@ -190,11 +204,8 @@ export function PureModeShell(): React.JSX.Element {
         </button>
         <button
           className="sl flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px]"
-          style={{ color: 'var(--text-dim)' }}
-          onClick={() => {
-            void setPure(false)
-            setView('tasks')
-          }}
+          style={{ color: pureView === 'tasks' ? 'var(--text)' : 'var(--text-dim)', background: pureView === 'tasks' ? 'var(--bg-hover)' : 'transparent' }}
+          onClick={() => setPureView('tasks')}
         >
           <span className="shrink-0"><IconHistory size={15} /></span>
           <span className="flex-1 truncate text-left">自动化</span>
@@ -202,10 +213,7 @@ export function PureModeShell(): React.JSX.Element {
         <button
           className="sl flex h-9 w-full items-center gap-2.5 rounded-lg px-2.5 text-[12.5px]"
           style={{ color: 'var(--text-dim)' }}
-          onClick={() => {
-            void setPure(false)
-            setView('plugins')
-          }}
+          onClick={() => setPureView('plugins')}
         >
           <span className="shrink-0"><IconPlugin size={15} /></span>
           <span className="flex-1 truncate text-left">插件市场</span>
@@ -311,10 +319,7 @@ export function PureModeShell(): React.JSX.Element {
           title="设置"
           className="rounded p-1 transition-colors hover:bg-[var(--bg-hover)]"
           style={{ color: 'var(--text-hint)' }}
-          onClick={() => {
-            void setPure(false)
-            setView('settings')
-          }}
+          onClick={() => setPureView('settings')}
         >
           <IconSettings size={13} />
         </button>

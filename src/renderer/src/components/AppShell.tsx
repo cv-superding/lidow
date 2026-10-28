@@ -190,7 +190,7 @@ function ConfirmOverlay(): React.JSX.Element {
 }
 
 export function AppShell(): React.JSX.Element {
-  const { booted, view, rightOpen, pureMode, notices, toggleRight, confirmRequest } = useStore()
+  const { booted, view, rightOpen, pureMode, pureView, notices, toggleRight, confirmRequest } = useStore()
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -204,61 +204,68 @@ export function AppShell(): React.JSX.Element {
     )
   }
 
-  // 纯净模式与工作台共用同一棵树：webview（WebTabs）始终挂载、只在需要时隐藏，
-  // 切换模式不会销毁重建页面，登录态与对话进度得以保留。
+  // WebTabs 在 DOM 中位置固定（顶层、纯模式侧栏之后），用 CSS 决定它是否可见 / 占据哪块区域。
+  // 切换模式或视图不改变它的树位置 → webview 永不卸载 → 登录态与对话进度保留。
+  const showWeb = pureMode ? pureView === 'home' : view === 'home'
+  const showManager = pureMode ? pureView !== 'home' : view !== 'home'
+  const activeView = pureMode ? pureView : view
+
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
       {pureMode ? <DragStrip /> : <TopBar />}
 
-      {pureMode ? (
-        /* 纯净模式：ZCode 式侧栏 + 常驻网页主区（网页对话即主体，不重复渲染聊天记录） */
-        <div className="flex min-h-0 flex-1">
-          <PureModeShell />
-          <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
+      <div className="flex min-h-0 flex-1">
+        {pureMode ? <PureModeShell /> : <LeftRail />}
+
+        {/* 主区容器：WebTabs 与各管理视图共存于同一容器，靠 display 切换 */}
+        <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
+          {/* WebTabs：常驻，不满足条件时仅隐藏 */}
+          <div className={showWeb ? 'h-full' : 'hidden'}>
             <WebTabs />
           </div>
-          <PurePreview />
-          {confirmRequest && <ConfirmOverlay />}
-        </div>
-      ) : (
-        <div className="flex min-h-0 flex-1">
-          <LeftRail />
-          <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
-            {/* WebTabs 常驻：非 home 视图时隐藏而非卸载，避免 webview 重建丢登录态 */}
-            <div className={view === 'home' ? 'h-full' : 'hidden'}>
-              <WebTabs />
-            </div>
-            {view === 'sessions' && <SessionsView />}
-            {view === 'files' && <FilesView />}
-            {view === 'tasks' && <TasksView />}
-            {view === 'plugins' && <PluginsView />}
-            {view === 'memory' && <MemoryView />}
-            {view === 'knowledge' && <KnowledgeView />}
-            {view === 'audit' && <AuditView />}
-            {view === 'settings' && <SettingsView />}
-          </div>
-          {view === 'home' && rightOpen && (
-            <div
-              className="transition-panel flex shrink-0 flex-col border-l"
-              style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
-            >
-              <PanelHeader title="Agent 活动">
-                <button
-                  className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
-                  style={{ color: 'var(--text-hint)' }}
-                  title="收起面板"
-                  onClick={toggleRight}
-                >
-                  <IconChevronRight size={13} className="rotate-180" />
-                </button>
-              </PanelHeader>
-              <div className="min-h-0 flex-1">
-                <ChatPanel mode="workbench" />
-              </div>
+
+          {/* 管理视图：同一容器内切换 */}
+          {showManager && (
+            <div className="absolute inset-0 overflow-auto" style={{ background: 'var(--bg)' }}>
+              {activeView === 'sessions' && <SessionsView />}
+              {activeView === 'files' && <FilesView />}
+              {activeView === 'tasks' && <TasksView />}
+              {activeView === 'plugins' && <PluginsView />}
+              {activeView === 'memory' && <MemoryView />}
+              {activeView === 'knowledge' && <KnowledgeView />}
+              {activeView === 'audit' && <AuditView />}
+              {activeView === 'settings' && <SettingsView />}
             </div>
           )}
         </div>
-      )}
+
+        {/* Agent 活动面板（仅工作台 home 视图） */}
+        {!pureMode && view === 'home' && rightOpen && (
+          <div
+            className="transition-panel flex shrink-0 flex-col border-l"
+            style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
+          >
+            <PanelHeader title="Agent 活动">
+              <button
+                className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
+                style={{ color: 'var(--text-hint)' }}
+                title="收起面板"
+                onClick={toggleRight}
+              >
+                <IconChevronRight size={13} className="rotate-180" />
+              </button>
+            </PanelHeader>
+            <div className="min-h-0 flex-1">
+              <ChatPanel mode="workbench" />
+            </div>
+          </div>
+        )}
+
+        {/* 纯净模式文件预览（仅对话主区） */}
+        {pureMode && pureView === 'home' && <PurePreview />}
+      </div>
+
+      {confirmRequest && <ConfirmOverlay />}
 
       {/* 通知浮层 */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
