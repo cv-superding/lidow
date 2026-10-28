@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react'
 import { useStore, useProject, type ViewId } from '../store'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
-import { PureModeShell } from './PureModeShell'
+import { PureModeShell, PreviewPanel } from './PureModeShell'
 import { SessionsView, FilesView, TasksView, PluginsView, MemoryView, KnowledgeView, AuditView, SettingsView } from './views'
 import { RAIL_ICONS, IconPure, IconChevronRight, IconChat } from './icons'
-import { WindowControls } from './TitleBar'
+import { WindowControls, DragStrip } from './TitleBar'
 
 const RAIL: { id: ViewId; label: string }[] = [
   { id: 'home', label: '工作台' },
@@ -145,8 +145,52 @@ function TopBar(): React.JSX.Element {
   )
 }
 
+
+/** 纯净模式右侧文件预览（无项目时不渲染） */
+function PurePreview(): React.JSX.Element | null {
+  const project = useProject(useStore())
+  return project ? <PreviewPanel projectId={project.id} /> : null
+}
+
+/** 纯净模式下的危险操作确认浮层（网页对话为主体时仍需可见的审批入口） */
+function ConfirmOverlay(): React.JSX.Element {
+  const { confirmRequest, answerConfirm } = useStore()
+  if (!confirmRequest) return <></>
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
+      <div
+        className="anim-pop pointer-events-auto max-w-[560px] rounded-xl p-3.5"
+        style={{ background: 'var(--bg-elevated)', border: '1px solid var(--danger)', boxShadow: 'var(--shadow)' }}
+      >
+        <div className="mb-1.5 text-[12.5px] font-semibold" style={{ color: 'var(--danger)' }}>
+          危险操作需要确认
+        </div>
+        <div className="mb-2.5 text-[12px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+          {confirmRequest.reason}
+        </div>
+        <div className="flex gap-2">
+          <button
+            className="rounded-lg px-3 py-1.5 text-[12px]"
+            style={{ background: 'var(--danger)', color: 'var(--on-accent)' }}
+            onClick={() => void answerConfirm(true)}
+          >
+            允许执行
+          </button>
+          <button
+            className="rounded-lg px-3 py-1.5 text-[12px]"
+            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
+            onClick={() => void answerConfirm(false)}
+          >
+            拒绝
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function AppShell(): React.JSX.Element {
-  const { booted, view, rightOpen, pureMode, notices, toggleRight } = useStore()
+  const { booted, view, rightOpen, pureMode, notices, toggleRight, confirmRequest } = useStore()
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -160,44 +204,61 @@ export function AppShell(): React.JSX.Element {
     )
   }
 
-  if (pureMode) {
-    return <PureModeShell />
-  }
-
+  // 纯净模式与工作台共用同一棵树：webview（WebTabs）始终挂载、只在需要时隐藏，
+  // 切换模式不会销毁重建页面，登录态与对话进度得以保留。
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
-      <TopBar />
-      <div className="flex min-h-0 flex-1">
-        <LeftRail />
-        <div className="min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
-          {view === 'home' && <WebTabs />}
-          {view === 'sessions' && <SessionsView />}
-          {view === 'files' && <FilesView />}
-          {view === 'tasks' && <TasksView />}
-          {view === 'plugins' && <PluginsView />}
-          {view === 'memory' && <MemoryView />}
-          {view === 'knowledge' && <KnowledgeView />}
-          {view === 'audit' && <AuditView />}
-          {view === 'settings' && <SettingsView />}
-        </div>
-        {view === 'home' && rightOpen && (
-          <div className="transition-panel flex shrink-0 flex-col border-l" style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}>
-            <PanelHeader title="Agent 活动">
-              <button
-                className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
-                style={{ color: 'var(--text-hint)' }}
-                title="收起面板"
-                onClick={toggleRight}
-              >
-                <IconChevronRight size={13} className="rotate-180" />
-              </button>
-            </PanelHeader>
-            <div className="min-h-0 flex-1">
-              <ChatPanel mode="workbench" />
-            </div>
+      {pureMode ? <DragStrip /> : <TopBar />}
+
+      {pureMode ? (
+        /* 纯净模式：ZCode 式侧栏 + 常驻网页主区（网页对话即主体，不重复渲染聊天记录） */
+        <div className="flex min-h-0 flex-1">
+          <PureModeShell />
+          <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
+            <WebTabs />
           </div>
-        )}
-      </div>
+          <PurePreview />
+          {confirmRequest && <ConfirmOverlay />}
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <LeftRail />
+          <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
+            {/* WebTabs 常驻：非 home 视图时隐藏而非卸载，避免 webview 重建丢登录态 */}
+            <div className={view === 'home' ? 'h-full' : 'hidden'}>
+              <WebTabs />
+            </div>
+            {view === 'sessions' && <SessionsView />}
+            {view === 'files' && <FilesView />}
+            {view === 'tasks' && <TasksView />}
+            {view === 'plugins' && <PluginsView />}
+            {view === 'memory' && <MemoryView />}
+            {view === 'knowledge' && <KnowledgeView />}
+            {view === 'audit' && <AuditView />}
+            {view === 'settings' && <SettingsView />}
+          </div>
+          {view === 'home' && rightOpen && (
+            <div
+              className="transition-panel flex shrink-0 flex-col border-l"
+              style={{ width: 420, borderColor: 'var(--border)', background: 'var(--bg-panel)' }}
+            >
+              <PanelHeader title="Agent 活动">
+                <button
+                  className="rounded px-1.5 py-0.5 text-[11px] hover:bg-[var(--bg-hover)]"
+                  style={{ color: 'var(--text-hint)' }}
+                  title="收起面板"
+                  onClick={toggleRight}
+                >
+                  <IconChevronRight size={13} className="rotate-180" />
+                </button>
+              </PanelHeader>
+              <div className="min-h-0 flex-1">
+                <ChatPanel mode="workbench" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 通知浮层 */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">
