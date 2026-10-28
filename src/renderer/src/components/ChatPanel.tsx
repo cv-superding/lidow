@@ -111,7 +111,24 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       if (providerId) await useStore.getState().createSession(providerId)
       return
     }
-    if (!session) return
+    // 没有活动会话时自动新建（纯净模式下直接打字发送的常见路径）
+    if (!session) {
+      const providerId = useStore.getState().providers[0]?.id
+      if (!providerId) {
+        useStore.getState().notice('请先在「工作台」选择一个 AI 平台', 'warn')
+        setInput(text)
+        return
+      }
+      await useStore.getState().createSession(providerId)
+      const created = useStore.getState().activeSession
+      if (!created) {
+        setInput(text)
+        return
+      }
+      await useStore.getState().openProviderTab(created.providerId, created.id)
+      await useStore.getState().sendPrompt(text)
+      return
+    }
     if (text === '/compact') {
       const next = await api.compactSession(session.id)
       useStore.setState({ activeSession: next })

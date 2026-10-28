@@ -296,6 +296,8 @@ export interface OverlayCommand {
   text?: string
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
+  /** configure：网络层 hook 源码（注入主世界，拦截 SSE 获取回复，不依赖 DOM） */
+  hookSource?: string
 }
 
 export type OverlayEvent =
@@ -307,3 +309,9 @@ export type OverlayEvent =
   | { type: 'stream-end'; text: string }
   | { type: 'send-result'; ok: boolean; error?: string }
   | { type: 'float-menu-action'; action: string }
+  /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */
+  | { type: 'net-stream'; text: string; think?: string; finished: boolean }
+  /** 网络层 hook：一轮回复完整结束（status 区分 stopped/error/finished） */
+  | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; tokens?: number }
+  /** 网络层 hook：请求失败 */
+  | { type: 'net-error'; text: string; reason: string }

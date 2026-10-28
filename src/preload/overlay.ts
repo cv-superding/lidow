@@ -4,7 +4,7 @@
  *       悬浮球（拖拽 + 右键三层停止菜单）、登录态上报。
  * 与 main 的通信：ipcRenderer 直连（沙箱 shim），页面脚本无法访问。
  */
-import { ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import type { DomAdapter, OverlayCommand, OverlayEvent } from '@shared/types'
 
 let adapter: DomAdapter | null = null
@@ -429,6 +429,56 @@ function dismissEnvWarnings(): void {
 }
 
 setInterval(dismissEnvWarnings, 1500)
+
+// ---------- 网络层 hook（主世界注入）----------
+// 关键：必须在页面主世界执行，才能 hook 到页面自己的 fetch/XHR。
+// preload 处于隔离世界，因此用 webFrame.executeJavaScript 注入。
+/**
+ * 网络 hook 上报桥：contextBridge 把 emit 暴露到主世界，
+ * 主进程注入的 hook 直接调用 window.__lidowNet.emit(...)。
+ * 这是 contextIsolation 下唯一可靠的跨世界通信方式（CustomEvent 不跨世界）。
+ */
+let netBridgeReady = false
+
+function installNetBridge(): void {
+  if (netBridgeReady) return
+  netBridgeReady = true
+  try {
+    contextBridge.exposeInMainWorld('__lidowNet', {
+      emit: (kind: string, detail: Record<string, unknown>) => {
+        try {
+          if (kind === 'stream') {
+            send({
+              type: 'net-stream',
+              text: String(detail.text ?? ''),
+              think: String(detail.think ?? ''),
+              finished: Boolean(detail.finished)
+            })
+          } else if (kind === 'response') {
+            const st = detail.status === 'stopped' ? 'stopped' : detail.status === 'finished' ? 'finished' : 'error'
+            const tu = detail.tokenUsage as { accumulatedTokens?: number } | null | undefined
+            send({
+              type: 'net-response',
+              text: String(detail.text ?? ''),
+              status: st,
+              tokens: typeof tu?.accumulatedTokens === 'number' ? tu.accumulatedTokens : undefined
+            })
+          } else if (kind === 'error') {
+            send({ type: 'net-error', text: String(detail.text ?? ''), reason: String(detail.reason ?? 'unknown') })
+          }
+        } catch {
+          /* 通道关闭 */
+        }
+      }
+    })
+  } catch {
+    /* 已存在（重复 configure）忽略 */
+  }
+}
+
+// 顶层立即建立跨世界桥（contextBridge 必须在 preload 同步阶段调用，
+// 放到 configure 里会因 preload 已结束而失效 → hook 拿不到 __lidowNet）
+installNetBridge()
 
 // ---------- 命令接收 ----------
 

@@ -11,6 +11,10 @@ interface Channel {
   chunkResolvers: Set<(partial: string, tps: number) => void>
   replyResolvers: Set<(text: string) => void>
   sendResolvers: Set<(ok: boolean, err?: string) => void>
+  /** 网络层上报的错误原因（供 loop 判断是否重试） */
+  netError?: string
+  /** did-finish-load 重注入监听是否已绑定 */
+  hookBound?: boolean
 }
 
 /**
@@ -43,7 +47,8 @@ export class OverlayManager {
         streamBuf: '',
         chunkResolvers: new Set(),
         replyResolvers: new Set(),
-        sendResolvers: new Set()
+        sendResolvers: new Set(),
+        netError: undefined
       }
       this.channels.set(sender.id, ch)
     }
@@ -72,6 +77,38 @@ export class OverlayManager {
         for (const r of ch.sendResolvers) r(payload.ok, payload.error)
         ch.sendResolvers.clear()
         break
+      // ---------- 网络层 hook（不依赖 DOM，优先于 DOM 轮询）----------
+      case 'net-stream': {
+        // 主世界 SSE 增量：直接把完整文本交给等待方（比 DOM 轮询更准更快）
+        ch.streamBuf = payload.text
+        for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
+        break
+      }
+      case 'net-response': {
+        ch.streamBuf = payload.text
+        if (payload.status === 'stopped') {
+          // 用户停止：按空/中断处理，交给 loop 的停止逻辑
+          for (const r of ch.chunkResolvers) r(payload.text, 0)
+          ch.chunkResolvers.clear()
+          for (const r of ch.replyResolvers) r('')
+          ch.replyResolvers.clear()
+          break
+        }
+        if (payload.status === 'error') {
+          ch.netError = payload.text
+          break
+        }
+        // finished：以网络层文本为准结束本轮
+        for (const r of ch.chunkResolvers) r(payload.text, 0)
+        ch.chunkResolvers.clear()
+        for (const r of ch.replyResolvers) r(payload.text)
+        ch.replyResolvers.clear()
+        break
+      }
+      case 'net-error': {
+        ch.netError = payload.reason
+        break
+      }
       case 'float-menu-action': {
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && this.onFloatAction) this.onFloatAction(sessionId, payload.action)
@@ -148,6 +185,57 @@ export class OverlayManager {
     return sendP
   }
 
+
+
+  /** 会话 → hook 源码（页面导航/重载后需要重新注入，SPA 内部跳转不会丢） */
+  private hookSources = new Map<string, string>()
+  private hookBoundWc = new Set<number>()
+
+  /**
+   * 向 webview 主世界注入网络层 hook。
+   * executeJavaScript 默认就在主世界执行；页面 reload/导航后主世界脚本会丢失，
+   * 因此同时挂 did-finish-load 重新注入。
+   */
+  async injectHook(sessionId: string, source: string): Promise<boolean> {
+    this.hookSources.set(sessionId, source)
+    // 直接用 binding 里的 webContentsId，不走 channel ——
+    // channels 只在 overlay 主动上报事件时才创建，hook 注入时可能还没建立。
+    let wcId = this.bindings.get(sessionId)
+    for (let i = 0; i < 60 && !wcId; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      wcId = this.bindings.get(sessionId)
+    }
+    if (!wcId) {
+      Logger.warn('overlay', `injectHook: 会话未绑定 webContents session=${sessionId}`)
+      return false
+    }
+    const target = webContents.fromId(wcId)
+    if (!target || target.isDestroyed()) {
+      Logger.warn('overlay', 'injectHook: webContents 不存在')
+      return false
+    }
+    // 页面每次加载完成后补注（刷新/首次打开都能生效）
+    if (!this.hookBoundWc.has(wcId)) {
+      this.hookBoundWc.add(wcId)
+      target.on('did-finish-load', () => {
+        const src = this.hookSources.get(sessionId)
+        if (src) void target.executeJavaScript(src, true).catch(() => undefined)
+      })
+    }
+    for (let i = 0; i < 100; i++) {
+      if (!target.isLoading()) {
+        try {
+          await target.executeJavaScript(source, true)
+          Logger.info('overlay', `hook 注入成功 session=${sessionId} try=${i + 1}`)
+          return true
+        } catch (e) {
+          if (i === 0) Logger.warn('overlay', `hook 注入异常: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    return false
+  }
 
   /** 等待会话的网页通道就绪（webview 尚未 attach 时轮询，最多 waitMs） */
   private async waitForChannel(sessionId: string, waitMs = 8000): Promise<Channel | null> {

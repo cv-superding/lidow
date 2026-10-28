@@ -287,11 +287,12 @@ textarea {
     background-color var(--dur-fast) ease,
     color var(--dur-fast) ease,
     border-color var(--dur-fast) ease,
-    opacity var(--dur-fast) ease,
-    transform var(--dur-fast) var(--ease);
+    opacity var(--dur-fast) ease;
 }
+/* 注意：不要用 :active { transform: scale() } —— mousedown 时按钮缩小会移动命中区域，
+   mouseup 落点跑到按钮外，浏览器按 drag 处理，onClick 永不触发（实测导致按钮"点不动"）。 */
 button:active {
-  transform: scale(0.98);
+  filter: brightness(0.94);
 }
 
 /* 键盘焦点可见性 */

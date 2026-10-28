@@ -226,6 +226,9 @@ export const useStore = create<LidowState>((set, get) => ({
     const project = useProject(get())
     if (!project) return
     const s = await api.createSession(project.id, providerId)
+    // 关键：新建后必须把新会话设为 activeSession，
+    // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
+    set({ activeSession: s, view: 'home', pureView: 'home' })
     await get().refreshSessions()
     await get().openProviderTab(providerId, s.id)
   },
@@ -233,6 +236,15 @@ export const useStore = create<LidowState>((set, get) => ({
   async openSession(id) {
     const s = await api.getSession(id)
     set({ activeSession: s, view: 'home', pureView: 'home', rightOpen: true, plan: await api.getActivePlan(id) })
+    // 打开会话后立刻把承载网页绑定到该会话：
+    // 否则纯净模式直接发送会报「网页未连接」（loop 找不到 channel）。
+    if (s) {
+      try {
+        await get().openProviderTab(s.providerId, s.id)
+      } catch {
+        /* 平台未配置时忽略，发送时还会再试 */
+      }
+    }
   },
 
   async openProviderTab(providerId, sessionId) {
@@ -242,7 +254,16 @@ export const useStore = create<LidowState>((set, get) => ({
     const existing = tabs.find((t) => t.providerId === providerId)
     if (existing) {
       set({ activeTabId: existing.id })
-      if (sessionId) await get().bindTabSession(existing.id, sessionId, existing.wcId ?? -1)
+      if (sessionId) {
+        // webview 可能还在 attach：等 wcId 就绪再绑定，否则主进程收不到 bindSession，
+        // loop 就会报「网页未连接」（纯净模式新建会话后立刻发送的常见路径）。
+        let wcId = existing.wcId ?? -1
+        for (let i = 0; wcId <= 0 && i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 150))
+          wcId = get().tabs.find((t) => t.id === existing.id)?.wcId ?? -1
+        }
+        await get().bindTabSession(existing.id, sessionId, wcId)
+      }
       return
     }
     const info = await api.attachWebview(providerId, provider.activeAccountId ?? provider.accounts[0]?.id ?? '')
@@ -288,7 +309,8 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async sendPrompt(text) {
-    let { activeSession, activeTabId, tabs } = get()
+    const { activeSession } = get()
+    let { activeTabId, tabs } = get()
     if (!activeSession) {
       get().notice('请先新建会话（选择平台）', 'warn')
       return

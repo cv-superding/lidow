@@ -26,6 +26,7 @@ import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
 import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
+import { HOOKS, buildHookSource } from '@main/providers/hooks'
 
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -258,6 +259,9 @@ export class AppContext {
     const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
     if (!provider) return
     this.overlay.sendCmd(sessionId, { kind: 'configure', adapter: provider.adapter })
+    // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）
+    const spec = HOOKS[provider.id]
+    if (spec) void this.overlay.injectHook(sessionId, buildHookSource(spec))
   }
 
   private registerEcosystemTools(): void {
@@ -352,8 +356,15 @@ export class AppContext {
   private projectDirOf(projectId: string): string {
     let dir = this.projectDirs.get(projectId)
     if (!dir) {
-      dir = join(app.getPath('userData'), 'projects', projectId)
-      mkdirSync(dir, { recursive: true })
+      // 优先用项目真实根目录（会话/待办等存在项目的 .lidow/ 下，随项目走）；
+      // 只有项目根未知时才退回 userData（历史行为，会导致会话"消失"）。
+      const project = this.projects.find((p) => p.id === projectId)
+      dir = project?.root ?? join(app.getPath('userData'), 'projects', projectId)
+      try {
+        mkdirSync(dir, { recursive: true })
+      } catch {
+        /* 项目目录不可写时忽略 */
+      }
       this.projectDirs.set(projectId, dir)
     }
     return dir
@@ -363,7 +374,9 @@ export class AppContext {
     let s = this.sessionStores.get(projectId)
     if (!s) {
       // 会话存项目内 .lidow/sessions/（随项目走、可版本化），不污染项目根目录
-      s = new SessionStore(join(this.projectDirOf(projectId), '.lidow'))
+      const base = join(this.projectDirOf(projectId), '.lidow')
+      Logger.info('session', `SessionStore 路径: ${base} (project=${projectId})`)
+      s = new SessionStore(base)
       this.sessionStores.set(projectId, s)
     }
     return s
