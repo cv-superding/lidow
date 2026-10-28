@@ -446,6 +446,23 @@ export function AppShell(): React.JSX.Element {
   const notices = useStore((s) => s.notices)
   const confirmRequest = useStore((s) => s.confirmRequest)
   const [terminalOpen, setTerminalOpen] = useState(false)
+  // 终端高度记忆（拖拽后保持，下次打开仍是这个高度）
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    try {
+      const raw = Number(window.localStorage.getItem('lidow:terminalHeight'))
+      return Number.isFinite(raw) && raw >= 120 && raw <= 720 ? raw : 300
+    } catch {
+      return 300
+    }
+  })
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('lidow:terminalHeight', String(terminalHeight))
+    } catch {
+      /* 隐私模式忽略 */
+    }
+  }, [terminalHeight])
 
   useEffect(() => {
     void useStore.getState().boot()
@@ -529,10 +546,14 @@ export function AppShell(): React.JSX.Element {
         {pureMode && pureView === 'home' && <PurePreview />}
       </div>
 
-      {/* 内置终端：底部抽屉，与主区上下分栏 */}
+      {/* 内置终端：底部抽屉，高度可拖拽（拖拽条在面板顶部） */}
       {terminalOpen && (
-        <div className="shrink-0 border-t" style={{ borderColor: 'var(--border)', height: 260 }}>
-          <TerminalPanel onClose={() => setTerminalOpen(false)} />
+        <div className="shrink-0" style={{ height: terminalHeight }}>
+          <TerminalPanel
+            onClose={() => setTerminalOpen(false)}
+            height={terminalHeight}
+            onHeightChange={setTerminalHeight}
+          />
         </div>
       )}
 
