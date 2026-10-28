@@ -585,6 +585,11 @@ textarea.field {
 .anim-view {
   animation: fadeUp var(--dur) var(--ease-emph) both;
 }
+/* 切换页面用：只淡入、不位移、时长更短。
+   位移动画（fadeUp）在整块内容切换时会让人感觉"先跳一下再落位"。 */
+.anim-fade-quick {
+  animation: fadeIn 120ms ease both;
+}
 .anim-pop {
   animation: popIn var(--dur-fast) var(--ease-emph) both;
 }

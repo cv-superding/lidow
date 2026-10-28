@@ -4,7 +4,9 @@ import { api } from '../api'
 import type { AppSettings, TaskItem } from '@shared/types'
 import { IconPlus, IconRefresh, IconTrash, IconClose, IconCheck, IconFolder, IconSearch } from './icons'
 
-/** 统一页面骨架：标题区 + 滚动内容 */
+/** 统一页面骨架：标题区 + 滚动内容
+ *  只做纯淡入、不做位移：此前 anim-view（fadeUp 上移 6px）叠外层淡入，
+ *  切页时整块内容先上移再落位，就是用户感到的"顿一下"。 */
 function Page({
   title,
   subtitle,
@@ -17,9 +19,9 @@ function Page({
   actions?: React.ReactNode
 }): React.JSX.Element {
   return (
-    <div className="anim-view flex h-full flex-col" style={{ background: 'var(--bg)' }}>
+    <div className="anim-fade-quick flex h-full flex-col" style={{ background: 'var(--bg)' }}>
       <div className="shrink-0 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
-        <div className="mx-auto flex max-w-[860px] items-center gap-3 px-6 py-3.5">
+        <div className="flex items-center gap-3 px-7 py-3.5">
           <div className="min-w-0">
             <div className="text-title truncate">{title}</div>
             {subtitle && (
@@ -31,8 +33,8 @@ function Page({
           <div className="ml-auto flex shrink-0 items-center gap-2">{actions}</div>
         </div>
       </div>
-      <div className="stable-gutter flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto max-w-[860px]">{children}</div>
+      <div className="stable-gutter flex-1 overflow-y-auto px-7 py-5">
+        <div className="max-w-[980px]">{children}</div>
       </div>
     </div>
   )

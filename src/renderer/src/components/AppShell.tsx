@@ -281,9 +281,11 @@ export function AppShell(): React.JSX.Element {
             </div>
           )}
 
-          {/* 管理视图 */}
+          {/* 管理视图：不用动画类。此前外层 anim-fade + Page 内 anim-view 双重入场，
+              每次切页先淡入再上移，视觉上是"顿一下"；且外层 overflow-auto 与
+              Page 自己的滚动区叠加成双层滚动容器，切换时还会重算两遍布局。 */}
           {showManager && (
-            <div className="anim-fade absolute inset-0 z-10 overflow-auto" style={{ background: 'var(--bg)' }}>
+            <div className="absolute inset-0 z-10" style={{ background: 'var(--bg)' }}>
               {activeView === 'sessions' && <SessionsView />}
               {activeView === 'files' && <FilesView />}
               {activeView === 'tasks' && <TasksView />}
