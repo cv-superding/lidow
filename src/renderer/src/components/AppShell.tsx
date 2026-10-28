@@ -132,35 +132,21 @@ function TopBar(): React.JSX.Element {
 
 
 
-/** 工作台首页引导：告诉用户正确路径（纯净模式对话），避免在网页里直接打字绕过 Agent */
+/** 工作台首页：极简欢迎（平台卡片是主体，见 WebTabs 的 HomeEmpty） */
 function HomeGuide(): React.JSX.Element {
-  const { setPure, projects } = useStore()
-  const hasProject = projects.length > 0
   return (
     <div className="flex h-full items-center justify-center px-8">
-      <div className="flex max-w-[520px] flex-col items-center gap-5 text-center">
+      <div className="flex max-w-[480px] flex-col items-center gap-4 text-center">
         <span
           className="flex h-14 w-14 items-center justify-center rounded-2xl text-2xl font-bold"
           style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
         >
           L
         </span>
-        <div className="text-[17px] font-semibold">从纯净模式开始</div>
-        <div className="flex flex-col gap-2 text-[13px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-          <span>
-            1. 点左下角「<b style={{ color: 'var(--text)' }}>纯净模式</b>」进入对话界面
-          </span>
-          <span>2. 在那里的输入框发任务 —— Lidow 会自动告诉 AI 你的项目、目录和工具</span>
-          <span>3. AI 驱动本地工具干活，你在对话里看到思考过程和执行结果</span>
-          {!hasProject && <span style={{ color: 'var(--warning)' }}>还没有项目：先在「文件」视图打开一个文件夹</span>}
+        <div className="text-[17px] font-semibold">Lidow</div>
+        <div className="text-[13px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+          零 Token 成本的内嵌网页版 AI Agent — 选择左侧平台开始
         </div>
-        <button
-          className="rounded-xl px-6 py-2.5 text-[13px] font-medium"
-          style={{ background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)' }}
-          onClick={() => setPure(true)}
-        >
-          进入纯净模式 →
-        </button>
       </div>
     </div>
   )
