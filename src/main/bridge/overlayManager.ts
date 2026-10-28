@@ -131,8 +131,8 @@ export class OverlayManager {
 
   /** 下发发送指令并等待 overlay 确认已注入页面 */
   async sendToPage(sessionId: string, text: string): Promise<void> {
-    const ch = this.channelOfSession(sessionId)
-    if (!ch) throw new Error('网页未连接（webview 未就绪或会话未绑定）')
+    const ch = await this.waitForChannel(sessionId)
+    if (!ch) throw new Error('网页未连接（平台页面未加载完成，请稍后重试）')
     const target = this.targetOf(ch)
     if (!target) throw new Error('webview 已销毁')
     this.startTs.delete(ch.webContentsId)
@@ -148,10 +148,23 @@ export class OverlayManager {
     return sendP
   }
 
+
+  /** 等待会话的网页通道就绪（webview 尚未 attach 时轮询，最多 waitMs） */
+  private async waitForChannel(sessionId: string, waitMs = 8000): Promise<Channel | null> {
+    const deadline = Date.now() + waitMs
+    for (;;) {
+      const ch = this.channelOfSession(sessionId)
+      if (ch) return ch
+      if (Date.now() >= deadline) return null
+      await new Promise((r) => setTimeout(r, 150))
+    }
+  }
+
   /** 等待一轮完整回复（stream-end）；onChunk 提供流式增量 */
-  awaitReply(sessionId: string, onChunk: (partial: string, tps: number) => void): Promise<string> {
-    const ch = this.channelOfSession(sessionId)
-    if (!ch) return Promise.reject(new Error('网页未连接'))
+  async awaitReply(sessionId: string, onChunk: (partial: string, tps: number) => void): Promise<string> {
+    // 首次发送时 webview 可能还在 attach：等待通道就绪而不是立即失败
+    const ch = await this.waitForChannel(sessionId)
+    if (!ch) return Promise.reject(new Error('网页未连接（平台页面未加载完成，请稍后重试）'))
     if (ch.replyResolvers.size > 0) return Promise.reject(new Error('已有等待中的回复请求'))
 
     return new Promise<string>((resolve, reject) => {

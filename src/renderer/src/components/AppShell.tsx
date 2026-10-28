@@ -206,7 +206,6 @@ export function AppShell(): React.JSX.Element {
 
   // WebTabs 在 DOM 中位置固定（顶层、纯模式侧栏之后），用 CSS 决定它是否可见 / 占据哪块区域。
   // 切换模式或视图不改变它的树位置 → webview 永不卸载 → 登录态与对话进度保留。
-  const showWeb = pureMode ? pureView === 'home' : view === 'home'
   const showManager = pureMode ? pureView !== 'home' : view !== 'home'
   const activeView = pureMode ? pureView : view
 
@@ -219,10 +218,27 @@ export function AppShell(): React.JSX.Element {
 
         {/* 主区容器：WebTabs 与各管理视图共存于同一容器，靠 display 切换 */}
         <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
-          {/* WebTabs：常驻，不满足条件时仅隐藏 */}
-          <div className={showWeb ? 'h-full' : 'hidden'}>
+          {/* WebTabs 单点挂载：只在工作台 home 视图可见；
+              纯净模式下仅作为隐藏的对话承载器（AI 网页在后台跑，前端渲染原生对话） */}
+          {/* 用离屏定位而非 display:none —— display:none 会让 webview 停止布局甚至丢状态 */}
+          <div
+            className="h-full"
+            style={
+              !pureMode && view === 'home'
+                ? undefined
+                : { position: 'fixed', left: -99999, top: 0, width: 1280, height: 800, pointerEvents: 'none' }
+            }
+            aria-hidden={pureMode || view !== 'home'}
+          >
             <WebTabs />
           </div>
+
+          {/* 纯净模式对话主区：原生渲染 Lidow 会话记录 + 原生输入框（不显示网页） */}
+          {pureMode && pureView === 'home' && (
+            <div className="h-full">
+              <ChatPanel mode="pure" />
+            </div>
+          )}
 
           {/* 管理视图：同一容器内切换 */}
           {showManager && (

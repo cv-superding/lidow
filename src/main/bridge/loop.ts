@@ -96,11 +96,12 @@ export class AgentLoop {
       }
       this.deps.emit({ type: 'session-updated', sessionId })
 
+      // 系统提示词必须每轮注入：网页版 AI 每次推理都是独立的，
+      // 只在首轮注入会导致后续轮次不知道有工具可用（表现为「我没有文件系统访问权限」）
       let prompt = userText
-      if (store.get(sessionId)?.turns.length === 1) {
-        // 首轮：系统提示词与用户消息合并注入
+      {
         const sys = this.deps.systemPromptFor(sessionId)
-        if (sys) prompt = `${sys}\n\n---\n\n# 用户任务\n\n${userText}`
+        if (sys) prompt = sys + '\n\n---\n\n# 用户任务\n\n' + userText
       }
       for (let round = 0; round < MAX_TURNS; round++) {
         if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')

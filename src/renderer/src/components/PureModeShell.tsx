@@ -119,6 +119,7 @@ export function PureModeShell(): React.JSX.Element {
   const providers = useStore((s) => s.providers)
   const project = useProject(useStore())
   const setPureView = useStore((s) => s.setPureView)
+  const setPure = useStore((s) => s.setPure)
   const pureView = useStore((s) => s.pureView)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
@@ -312,9 +313,14 @@ export function PureModeShell(): React.JSX.Element {
         >
           L
         </span>
-        <span className="min-w-0 flex-1 truncate text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
-          本地会话
-        </span>
+        <button
+          className="sl min-w-0 flex-1 truncate rounded px-1.5 py-1 text-left text-[11.5px] transition-colors"
+          style={{ color: 'var(--text-dim)' }}
+          title="退出纯净模式，回到完整工作台"
+          onClick={() => void setPure(false)}
+        >
+          退出纯净模式
+        </button>
         <button
           title="设置"
           className="rounded p-1 transition-colors hover:bg-[var(--bg-hover)]"

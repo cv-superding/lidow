@@ -109,11 +109,23 @@ function pressEnter(el: Element): void {
   el.dispatchEvent(new KeyboardEvent('keyup', opts))
 }
 
+/**
+ * 真实指针点击：先 pointerdown/mousedown → pointerup/mouseup → click。
+ * 只派发一次 click（此前先 .click() 又 dispatch click → 同一按钮被点两次，
+ * 是"重复发送"的根因之一）。div[role=button] 也能被这串事件正确触发。
+ */
 function click(el: Element): void {
-  ;(el as HTMLElement).click()
-  el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-  el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-  el.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  const rect = el.getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  const base: MouseEventInit = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }
+  const target = el as HTMLElement
+  target.focus?.()
+  el.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerId: 1, isPrimary: true }))
+  el.dispatchEvent(new MouseEvent('mousedown', base))
+  el.dispatchEvent(new PointerEvent('pointerup', { ...base, pointerId: 1, isPrimary: true }))
+  el.dispatchEvent(new MouseEvent('mouseup', base))
+  el.dispatchEvent(new MouseEvent('click', base))
 }
 
 // ---------- 消息/流式监听 ----------
@@ -122,7 +134,6 @@ let observer: MutationObserver | null = null
 let lastText = ''
 let streaming = false
 let everFlag = false // 平台是否出现过流式标志（决定是否启用文本稳定兜底判定）
-let stableSince = 0
 let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -190,24 +201,36 @@ function watchMessages(): void {
         send({ type: 'stream-start' })
       }
     }
+
     if (streaming) {
-      scheduleChunk()
+      // 流式中：上报增量；停止标志消失且文本不再变化 → 延迟确认结束
+      if (text && text !== lastText) {
+        lastText = text
+        scheduleChunk()
+      }
       if (endTimer) clearTimeout(endTimer)
-      if (!flag && text === lastText) {
-        // 停止按钮消失且文本未再变化 → 延迟确认结束
+      if (!flag) {
         endTimer = setTimeout(() => {
           if (!isStreaming()) finishStream()
         }, 900)
       }
-    } else if (flag === false && !everFlag && text && text !== lastText) {
-      // 平台始终无流式标志：文本变化后稳定 2.5s 判定一轮结束（兜底，等待流超时仍是最终防线）
-      if (stableSince === 0) stableSince = Date.now()
+      return
+    }
+
+    // 未进入流式状态（平台无停止标志或标志闪现太快）：
+    // 文本一旦出现就当作回复开始，并以"文本静默 1.5s"作为结束判据。
+    if (text && text !== lastText) {
+      lastText = text
+      if (!everFlag) {
+        streaming = true
+        send({ type: 'stream-start' })
+      }
       scheduleChunk()
       if (endTimer) clearTimeout(endTimer)
-      if (Date.now() - stableSince > 2500) finishStream()
-    } else if (text && text !== lastText) {
-      stableSince = 0
-      lastText = text
+      endTimer = setTimeout(() => {
+        // 静默期内没有新文本 → 这一轮结束
+        if (lastBubbleText() === lastText) finishStream()
+      }, 1500)
     }
   })
   observer.observe(document.body, { childList: true, subtree: true, characterData: true })
@@ -252,7 +275,6 @@ async function doSend(text: string): Promise<void> {
     send({ type: 'send-result', ok: true })
     streaming = false
     everFlag = false
-    stableSince = 0
     lastText = ''
   } catch (e) {
     send({ type: 'send-result', ok: false, error: String(e instanceof Error ? e.message : e) })

@@ -37,19 +37,32 @@ const DEEPSEEK: ProviderDescriptor = {
       'div[contenteditable="true"]',
       '[role="textbox"]'
     ],
+    // DeepSeek 用 <div role="button" class="ds-button ds-button--primary ..."> 而非 <button>，
+    // 因此必须匹配 div[role=button]；旧选择器只能命中 <button> 元素 → 发送永远点不到。
     send: [
+      'div[role="button"].ds-button--primary.ds-button--circle',
+      'div[role="button"].ds-button--primary.ds-button--filled',
+      'div[role="button"][class*="ds-button--primary"]',
       'button[type="submit"]',
       'button[aria-label*="send" i]',
       'button[aria-label*="发送"]',
-      'button[data-action="send"]',
       '[data-testid="send-button"]',
-      'button svg[data-icon="send"]',
-      'button:has(svg[data-icon="send"])',
       'button:has(> svg)'
     ],
-    messages: ['div.ds-markdown', 'main'],
-    bubble: ['div.ds-markdown--block', '[class*="message-item"]', 'div[class*="markdown"]'],
-    streamingFlag: ['div[class*="stop"]', 'button[aria-label*="停止"]'],
+    messages: ['div.ds-markdown', 'div[class*="ds-markdown"]', 'main'],
+    bubble: [
+      'div.ds-markdown--block',
+      'div[class*="ds-markdown--block"]',
+      'div[class*="markdown"]',
+      '[class*="message-item"]'
+    ],
+    // 停止按钮同为 div[role=button]；命中"停止/stop"文案或 danger 变体
+    streamingFlag: [
+      'div[role="button"][class*="ds-button"][class*="danger"]',
+      'div[class*="stop"]',
+      'button[aria-label*="停止"]',
+      'button[aria-label*="stop" i]'
+    ],
     newChat: ['a[class*="new-chat"]', 'button[aria-label*="开始新对话"]', 'a[href="https://chat.deepseek.com/"]'],
     loginFlag: ['._9d8da05', 'img[class*="avatar"]', '[class*="user-info"]']
   }

@@ -288,9 +288,18 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async sendPrompt(text) {
-    const { activeSession, activeTabId, tabs } = get()
-    if (!activeSession) return
-    const tab = tabs.find((t) => t.id === activeTabId)
+    let { activeSession, activeTabId, tabs } = get()
+    if (!activeSession) {
+      get().notice('请先新建会话（选择平台）', 'warn')
+      return
+    }
+    let tab = tabs.find((t) => t.id === activeTabId)
+    // 纯净模式首次发送时可能还没有承载网页：按会话的平台自动打开
+    if (!tab) {
+      await get().openProviderTab(activeSession.providerId, activeSession.id)
+      ;({ activeTabId, tabs } = get())
+      tab = tabs.find((t) => t.id === activeTabId)
+    }
     // 会话与承载网页不一致时重绑（净模式切换会话后直接发送的场景）
     if (tab && tab.sessionId !== activeSession.id) {
       await get().bindTabSession(tab.id, activeSession.id, tab.wcId ?? -1)
