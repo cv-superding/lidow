@@ -27,9 +27,9 @@ jobs:
       - name: Build Windows (installer + portable)
         if: matrix.os == 'windows-latest'
         run: npx electron-builder --win nsis portable --config electron-builder.yml
-      - name: Build macOS (dmg)
+      - name: Build macOS (dmg + zip)
         if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac dmg --config electron-builder.yml
+        run: npx electron-builder --mac --config electron-builder.yml
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -37,11 +37,12 @@ jobs:
           path: |
             dist/*.exe
             dist/*.dmg
+            dist/*.zip
             dist/*.blockmap
             dist/latest*.yml
           if-no-files-found: error
 
-  # 单一发布任务：合并全部平台产物为一个草稿 Release
+  # 单一发布任务：合并全部平台产物并直接发布（electron-updater 不读取 draft）
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -50,12 +51,13 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - name: Create draft release
+      - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          draft: false
           files: |
             dist/*.exe
             dist/*.dmg
+            dist/*.zip
             dist/*.blockmap
             dist/latest*.yml

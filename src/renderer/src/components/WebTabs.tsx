@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { useStore } from '../store'
+import { DEFAULT_ACCOUNT_ID, accountKeyOf, useStore } from '../store'
 import { api } from '../api'
 import { registerWebview } from '../webviews'
-import { IconPlus, IconClose, IconFolder } from './icons'
+import { IconPlus, IconClose, IconFolder, IconChevronLeft } from './icons'
 
 /** 选目录并打开项目；入口在网页浮窗，这里只作为工作台空态的手动入口 */
 async function pickAndOpen(): Promise<void> {
@@ -38,7 +38,14 @@ export function WebTabs(): React.JSX.Element {
                 style={{ background: t.loggedIn ? 'var(--success)' : 'var(--warning)' }}
                 title={t.loggedIn ? '已登录' : '未登录'}
               />
-              <span className="truncate">{t.providerName}</span>
+              <span className="truncate">
+                {t.providerName}
+                {t.accountName && (
+                  <span className="ml-1 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                    {t.accountName}
+                  </span>
+                )}
+              </span>
               <span
                 className="flex h-4 w-4 items-center justify-center rounded opacity-0 transition-opacity duration-[130ms] hover:bg-[var(--bg-active)] group-hover:opacity-100"
                 style={{ color: 'var(--text-hint)' }}
@@ -85,14 +92,21 @@ export function WebTabs(): React.JSX.Element {
 function AddTabButton(): React.JSX.Element {
   const providers = useStore((s) => s.providers)
   const tabs = useStore((s) => s.tabs)
+  const projectId = useStore((s) => s.activeProjectId)
   const openProviderTab = useStore((s) => s.openProviderTab)
   const [open, setOpen] = useState(false)
+  const [pickId, setPickId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
+  const picked = pickId ? providers.find((p) => p.id === pickId) ?? null : null
 
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
+        setOpen(false)
+        setPickId(null)
+      }
     }
     document.addEventListener('mousedown', onDown)
     return () => document.removeEventListener('mousedown', onDown)
@@ -100,13 +114,64 @@ function AddTabButton(): React.JSX.Element {
 
   const openedIds = new Set(tabs.map((t) => t.providerId))
 
+  const closeMenu = (): void => {
+    setOpen(false)
+    setPickId(null)
+  }
+
+  const hasTab = (providerId: string, accountId: string): boolean =>
+    tabs.some((t) => t.providerId === providerId && accountKeyOf(t.accountId) === accountKeyOf(accountId))
+
+  const openAccount = (providerId: string, accountId: string): void => {
+    closeMenu()
+    void openProviderTab(providerId, undefined, accountId)
+  }
+
+  // 新增账号 = 建一个全新 partition：这是唯一需要重新登录的路径
+  const addAccount = async (providerId: string): Promise<void> => {
+    if (!projectId) {
+      useStore.getState().notice('请先初始化项目，再添加账号', 'warn')
+      return
+    }
+    setBusy(true)
+    try {
+      const updated = await api.addAccount(projectId, providerId, '')
+      await useStore.getState().refreshProviders()
+      const created = updated.accounts[updated.accounts.length - 1]
+      closeMenu()
+      if (created) await openProviderTab(providerId, undefined, created.id)
+    } catch (e) {
+      useStore.getState().notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // 默认账号是隐式的（内置平台没显式建账号时，登录态就在 default 分区）。
+  // 有账号记录时仍保留它：否则先登录后加账号的用户会看不到自己原来的登录态。
+  const accountRows = picked
+    ? [
+        ...(picked.accounts.length === 0 || hasTab(picked.id, DEFAULT_ACCOUNT_ID)
+          ? [{ id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态' }]
+          : []),
+        ...picked.accounts.map((a) => ({
+          id: a.id,
+          label: a.label,
+          hint: a.id === picked.activeAccountId ? '当前账号' : '独立登录态'
+        }))
+      ]
+    : []
+
   return (
     <div ref={boxRef} className="relative mb-[6px] ml-0.5">
       <button
         className="flex h-7 w-7 items-center justify-center rounded-[var(--r-md)] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
         style={{ color: 'var(--text-hint)' }}
         title="新建平台标签（可多开）"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => !v)
+          setPickId(null)
+        }}
       >
         <IconPlus size={14} />
       </button>
@@ -115,38 +180,93 @@ function AddTabButton(): React.JSX.Element {
           className="anim-pop absolute left-0 top-[calc(100%+4px)] z-50 w-[280px] overflow-hidden rounded-[var(--r-lg)] p-1.5"
           style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
         >
-          <div className="text-label px-2 py-1.5">选择平台（多开）</div>
-          <div className="grid grid-cols-2 gap-1.5 p-1">
-            {providers.map((p) => {
-              const already = openedIds.has(p.id)
-              return (
-                <button
-                  key={p.id}
-                  className="flex flex-col items-start gap-0.5 rounded-[var(--r-md)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-                  style={{ border: '1px solid var(--border)' }}
-                  onClick={() => {
-                    setOpen(false)
-                    void openProviderTab(p.id, undefined, true)
-                  }}
-                >
-                  <span className="flex w-full items-center gap-1.5">
-                    <span className="truncate text-[12px] font-medium">{p.name}</span>
-                    {already && (
-                      <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
-                        已打开
+          {!picked ? (
+            <>
+              <div className="text-label px-2 py-1.5">选择平台（多开）</div>
+              <div className="grid grid-cols-2 gap-1.5 p-1">
+                {providers.map((p) => {
+                  const already = openedIds.has(p.id)
+                  return (
+                    <button
+                      key={p.id}
+                      className="flex flex-col items-start gap-0.5 rounded-[var(--r-md)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                      style={{ border: '1px solid var(--border)' }}
+                      onClick={() => setPickId(p.id)}
+                    >
+                      <span className="flex w-full items-center gap-1.5">
+                        <span className="truncate text-[12px] font-medium">{p.name}</span>
+                        {already && (
+                          <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
+                            已打开
+                          </span>
+                        )}
                       </span>
-                    )}
-                  </span>
-                  <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
-                    {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '未登录'}
+                      <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                        {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : already ? '默认账号' : '未登录'}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+              <div className="px-2 pb-1 pt-0.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                选平台后可挑账号：已有账号复用登录态，只有新增账号才需重新登录
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="flex items-center gap-1 px-1 pb-1 pt-1">
+                <button
+                  className="flex h-6 w-6 items-center justify-center rounded-[var(--r-sm)] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                  style={{ color: 'var(--text-dim)' }}
+                  onClick={() => setPickId(null)}
+                  title="返回平台列表"
+                >
+                  <IconChevronLeft size={12} />
+                </button>
+                <span className="text-label">{picked.name} · 选择账号</span>
+              </div>
+              <div className="flex flex-col gap-1 p-1">
+                {accountRows.map((row) => {
+                  const isOpen = hasTab(picked.id, row.id)
+                  return (
+                    <button
+                      key={row.id}
+                      className="flex flex-col items-start gap-0.5 rounded-[var(--r-md)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                      style={{ border: '1px solid var(--border)' }}
+                      onClick={() => openAccount(picked.id, row.id)}
+                    >
+                      <span className="flex w-full items-center gap-1.5">
+                        <span className="truncate text-[12px] font-medium">{row.label}</span>
+                        {isOpen && (
+                          <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
+                            已打开
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                        {row.hint}
+                      </span>
+                    </button>
+                  )
+                })}
+                <button
+                  className="flex items-center gap-1.5 rounded-[var(--r-md)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                  style={{ border: '1px dashed var(--border-strong)', color: 'var(--text-dim)' }}
+                  disabled={busy}
+                  onClick={() => void addAccount(picked.id)}
+                >
+                  <IconPlus size={11} />
+                  <span className="text-[12px]">{busy ? '创建中…' : '新增账号'}</span>
+                  <span className="ml-auto text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                    需重新登录
                   </span>
                 </button>
-              )
-            })}
-          </div>
-          <div className="px-2 pb-1 pt-0.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-            每个平台独立登录态，可同时开多个并行工作
-          </div>
+              </div>
+              <div className="px-2 pb-1 pt-0.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                已有账号沿用登录态；新增账号使用独立分区，需要登录一次
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

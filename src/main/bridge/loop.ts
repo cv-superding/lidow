@@ -26,7 +26,7 @@ export interface LoopDeps {
   /** 工具执行上下文基座：按「当前会话」取，切项目后不能串根目录 */
   toolCtxBase: (sessionId: string) => Omit<ToolContext, 'confirm'>
   /** 在指定项目里新建会话（自动续接用；routed 门面没有 create） */
-  createSession: (projectId: string, providerId: string, parentSessionId: string) => Session
+  createSession: (projectId: string, providerId: string, parentSessionId: string, accountId?: string) => Session
   confirm: (sessionId: string, reason: string) => Promise<boolean>
   /** 把消息送进网页（overlay 注入发送），resolve 于发送成功 */
   sendToPage: (sessionId: string, text: string) => Promise<void>
@@ -765,7 +765,7 @@ export class AgentLoop {
       if (!session) return null
       const summary = this.lastSummaryOf(sessionId)
 
-      const next = this.deps.createSession(session.projectId, session.providerId, session.id)
+      const next = this.deps.createSession(session.projectId, session.providerId, session.id, session.accountId)
       this.deps.store.update(next.id, (s) => ({ ...s, title: `${session.title}（续）`.slice(0, 40) }))
       // 摘要必须落进新会话：调用方用 lastSummaryOf(next) 组装续接 prompt，
       // 不落盘的话新会话的第一句话会丢掉全部压缩上下文。

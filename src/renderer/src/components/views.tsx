@@ -1831,9 +1831,11 @@ export function SettingsView(): React.JSX.Element {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const mcpServers = useStore((s) => s.mcpServers)
   const mcpTools = useStore((s) => s.mcpTools)
+  const appVersion = useStore((s) => s.version)
+  const update = useStore((s) => s.updateState)
+  const checkUpdate = useStore((s) => s.checkUpdate)
+  const downloadUpdate = useStore((s) => s.downloadUpdate)
   const s = settings
-  const [updateBusy, setUpdateBusy] = useState(false)
-  const [updateMsg, setUpdateMsg] = useState('')
 
   const patch = (p: Parameters<typeof api.updateSettings>[0]): void => {
     void api.updateSettings(p).then((next) => {
@@ -2245,50 +2247,58 @@ export function SettingsView(): React.JSX.Element {
 
         {/* 更新 */}
         <SettingGroup id="settings-about" title="关于与更新">
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2.5">
+          <div className="flex flex-col gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="text-[12.5px] font-medium">Lidow v{appVersion || '—'}</span>
+              <span className="badge">GPL-3.0</span>
               <button
                 className="btn btn-outline"
-                disabled={updateBusy}
-                onClick={() => {
-                  setUpdateBusy(true)
-                  setUpdateMsg('')
-                  void api
-                    .checkUpdate()
-                    .then((u) =>
-                      setUpdateMsg(
-                        u.hasUpdate ? `发现新版本 v${u.version}，可下载安装` : '当前已是最新版本'
-                      )
-                    )
-                    .catch((e) => setUpdateMsg(`检查失败：${e instanceof Error ? e.message : String(e)}`))
-                    .finally(() => setUpdateBusy(false))
-                }}
+                disabled={update.phase === 'checking' || update.phase === 'downloading'}
+                onClick={() => void checkUpdate(true)}
               >
-                <IconRefresh size={13} /> 检查更新
+                <IconRefresh size={13} /> {update.phase === 'checking' ? '检查中…' : '检查更新'}
               </button>
               <button
-                className="btn btn-outline"
-                disabled={updateBusy || !updateMsg.includes('发现新版本')}
-                onClick={() => {
-                  setUpdateBusy(true)
-                  void api
-                    .downloadUpdate()
-                    .then((r) => setUpdateMsg(r.message))
-                    .catch((e) => setUpdateMsg(`下载失败：${e instanceof Error ? e.message : String(e)}`))
-                    .finally(() => setUpdateBusy(false))
-                }}
+                className="btn btn-primary"
+                disabled={update.phase !== 'available'}
+                onClick={() => void downloadUpdate()}
               >
-                下载并安装
+                {update.portable ? '打开下载页' : '下载并安装'}
               </button>
-              <span className="text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
-                GPL-3.0 · 零 Token 成本内嵌网页版 Agent
-              </span>
             </div>
-            {updateMsg && (
-              <div className="text-[12px]" style={{ color: 'var(--text-body)' }}>
-                {updateMsg}
+            {(update.phase === 'downloading' || update.phase === 'downloaded') && (
+              <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: 'var(--bg-active)' }}>
+                <div
+                  className="h-full rounded-full transition-[width] duration-300"
+                  style={{
+                    width: `${update.phase === 'downloaded' ? 100 : Math.round(update.percent ?? 0)}%`,
+                    background: 'var(--accent)'
+                  }}
+                />
               </div>
             )}
+            <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+              {update.phase === 'checking'
+                ? '正在检查最新版本…'
+                : update.phase === 'available'
+                  ? `发现新版本 v${update.version}${update.portable ? '（便携版将打开下载页）' : '，下载完成后自动重启安装'}`
+                  : update.phase === 'downloading'
+                    ? `正在下载 ${Math.round(update.percent ?? 0)}%${
+                        update.bytesPerSecond
+                          ? ` · ${(update.bytesPerSecond / 1024 / 1024).toFixed(1)} MB/s`
+                          : ''
+                      }`
+                    : update.phase === 'downloaded'
+                      ? '下载完成，正在重启安装…'
+                      : update.phase === 'up-to-date'
+                        ? '当前已是最新版本'
+                        : update.phase === 'error'
+                          ? `更新失败：${update.message ?? '请稍后重试'}`
+                          : '启动后会自动检查更新；也可以手动检查。'}
+            </div>
+            <div className="text-[11px]" style={{ color: 'var(--text-hint)' }}>
+              零 Token 成本内嵌网页版 Agent · GPL-3.0
+            </div>
           </div>
         </SettingGroup>
         </div>

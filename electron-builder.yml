@@ -31,14 +31,20 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: always
+  # 文件名不能带空格：electron-updater 按 latest.yml 里的连字符名去 Releases 找文件
+  artifactName: ${productName}-Setup-${version}.${ext}
 
 portable:
   artifactName: ${productName}-${version}-portable.${ext}
 
 mac:
-  target: dmg
+  # zip 是 electron-updater 在 macOS 上唯一支持的更新包格式（dmg 只用于首次安装）
+  target:
+    - dmg
+    - zip
   category: public.app-category.developer-tools
   icon: build/icon.png
+  artifactName: ${productName}-${version}.${ext}
 
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

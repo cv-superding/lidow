@@ -207,8 +207,8 @@ export class AppContext {
     this.loop = new AgentLoop({
       store: routedSessionFacade((id) => this.sessionStoreOf(this.sessionProjectOf(id))),
       // 自动续接要新建会话：必须走真实 SessionStore（门面没有 create）
-      createSession: (projectId, providerId, parentSessionId) =>
-        this.sessionStoreOf(projectId).create(projectId, providerId, parentSessionId),
+      createSession: (projectId, providerId, parentSessionId, accountId) =>
+        this.sessionStoreOf(projectId).create(projectId, providerId, parentSessionId, accountId),
       tools: this.tools,
       // 按会话取根目录：任务运行中切换活动项目不能把工具写到另一个项目
       toolCtxBase: (sessionId) => this.toolCtx(sessionId),
@@ -1165,8 +1165,8 @@ export class AppContext {
     return this.sync.pushAll(text)
   }
 
-  async updateCheck(): Promise<{ hasUpdate: boolean; version?: string; url?: string }> {
-    return checkForUpdate()
+  async updateCheck(): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
+    return checkForUpdate(true)
   }
 
   /** 服务端权威 token 消耗（按平台累计） */

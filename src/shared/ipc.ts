@@ -47,7 +47,7 @@ export interface LidowApi {
   // 会话
   listSessions(projectId: string, providerId?: string): Promise<SessionMeta[]>
   getSession(sessionId: string): Promise<Session | null>
-  createSession(projectId: string, providerId: string, parentSessionId?: string): Promise<Session>
+  createSession(projectId: string, providerId: string, parentSessionId?: string, accountId?: string): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
   /** 删除项目内所有 0 轮次会话（保留 keepSessionId），返回清理数 */
   cleanupEmptySessions(projectId: string, keepSessionId?: string): Promise<number>
@@ -160,7 +160,9 @@ export interface LidowApi {
   overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
-  checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string }>
+  checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
+  /** 当前更新状态（启动时自动检查的结果可能早于渲染层订阅） */
+  getUpdateState(): Promise<UpdateState>
   /** 下载并安装更新（便携版打开 Releases 页） */
   downloadUpdate(): Promise<{ ok: boolean; message: string }>
   listTemplates(): Promise<{ id: string; name: string; description: string }[]>
@@ -177,8 +179,23 @@ export interface LidowApi {
   onEvent(cb: (event: LidowEvent) => void): () => void
 }
 
+/** 应用内更新状态：main 主动推送，渲染层据此显示提示与下载进度 */
+export interface UpdateState {
+  phase: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'up-to-date' | 'error'
+  version?: string
+  percent?: number
+  transferred?: number
+  total?: number
+  bytesPerSecond?: number
+  message?: string
+  portable?: boolean
+  /** 是否用户手动触发（自动检查失败不应弹提示） */
+  manual?: boolean
+}
+
 export type LidowEvent =
   | { type: 'session-updated'; sessionId: string }
+  | { type: 'update-state'; state: UpdateState }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }

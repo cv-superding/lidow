@@ -6,6 +6,7 @@ import { WebTabs } from './WebTabs'
 import { PureModeShell, PreviewPanel } from './PureModeShell'
 import { TerminalPanel } from './TerminalPanel'
 import { HelpPanel } from './HelpPanel'
+import { UpdatePrompt } from './UpdatePrompt'
 import {
   SessionsView,
   FilesView,
@@ -603,6 +604,9 @@ export function AppShell(): React.JSX.Element {
           />
         </div>
       )}
+
+      {/* 更新提示：发现新版本 / 下载进度 / 自动安装倒计时 */}
+      <UpdatePrompt />
 
       {/* 确认浮层：纯净模式下 ChatPanel 自带内联确认卡，这里不重复渲染 */}
       {confirmRequest && !(pureMode && pureView === 'home') && <ConfirmOverlay />}

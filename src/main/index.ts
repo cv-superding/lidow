@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs'
 import { Logger } from './infra/log'
 import { AppContext } from './app/context'
 import { registerHandlers } from './app/handlers'
+import { scheduleAutoUpdateCheck, setUpdateEmitter } from './app/platform'
 import { disposeRuntimeServices } from './dsh/services'
 
 /**
@@ -27,6 +28,8 @@ function registerHandler(name: string, fn: IpcHandler): void {
  * （表现为"刚登录过又要重新登录"）。这里在 app ready 前锁定同名目录。
  */
 app.setPath('userData', join(app.getPath('appData'), 'Lidow'))
+// Windows 任务栏分组/通知归属（与 electron-builder appId 一致）
+if (process.platform === 'win32') app.setAppUserModelId('ai.lidow.app')
 
 const ctx = new AppContext()
 
@@ -37,6 +40,8 @@ function createWindow(): BrowserWindow {
     minWidth: 960,
     minHeight: 620,
     backgroundColor: '#101014',
+    // 开发模式窗口/任务栏图标：打包版由 electron-builder 写入 exe 图标
+    icon: app.isPackaged ? undefined : join(__dirname, '../../build/icon.png'),
     autoHideMenuBar: true,
     // Windows/Linux 自绘标题栏（去掉系统标题栏，避免双栏 + 与 thinkrail 风格一致）
     frame: process.platform === 'darwin',
@@ -79,9 +84,12 @@ app.whenReady().then(() => {
       if (!win.isDestroyed()) win.webContents.send('lidow:event', event)
     }
   }
+  // 更新状态由 main 统一维护：进度/可用版本经事件推给渲染层
+  setUpdateEmitter((state) => ctx.emit({ type: 'update-state', sessionId: '', state }))
   registerHandlers(registerHandler, ctx)
 
   createWindow()
+  scheduleAutoUpdateCheck()
   Logger.info('app', `Lidow 启动完成 v${app.getVersion()}`)
 
   app.on('activate', () => {

@@ -1,10 +1,24 @@
 <div align="center">
 
+<img src="build/icon.png" width="92" height="92" alt="Lidow" />
+
 # Lidow
 
 **零 Token 成本的内嵌网页版 AI Agent 桌面端**
 
 嵌入 AI 网页版会话，让 AI 直接驱动你本地的工具——不申请 API Key、不按 Token 计费。
+
+[![Release](https://img.shields.io/github/v/release/cv-superding/lidow?display_name=tag&sort=semver)](https://github.com/cv-superding/lidow/releases)
+[![CI](https://github.com/cv-superding/lidow/actions/workflows/ci.yml/badge.svg)](https://github.com/cv-superding/lidow/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-6f42c1.svg)](#快速开始)
+[![Provider](https://img.shields.io/badge/provider-DeepSeek%20Web-4d6bfe.svg)](#它是什么)
+[![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Tests](https://img.shields.io/badge/tests-120%20passing-brightgreen.svg)](#快速开始)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 
 `Electron 45` · `TypeScript strict` · `React 19` · `TailwindCSS 4` · `GPL-3.0`
 
@@ -48,6 +62,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 - 智能任务拆解（planSubmit 确认卡）、**人机共用任务看板**（AI todoWrite 与用户双向同步）、
   项目模板一键初始化、本地知识库挂载检索、多账号一键切换、自定义快捷指令（斜杠菜单）、全局热键
 - 多端同步：飞书 / 企业微信 / 钉钉群机器人推送
+- 内置自动更新：启动自动检查、应用内下载进度条、下载完成自动重启安装（便携版引导下载页）
 - 管理页：工作区 / 会话 / 文件 / 任务 / 技能 / 子代理 / MCP / 插件 / 快捷指令 / 记忆 / 知识库 / 审计 / 设置（搜索、筛选、统计与空态操作齐备）
 
 ## 快速开始

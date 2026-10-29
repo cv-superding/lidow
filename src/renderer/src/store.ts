@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { api } from './api'
 import { waitWebviewWcId, webviewWcId } from './webviews'
-import type { LidowEvent } from '@shared/ipc'
+import type { LidowEvent, UpdateState } from '@shared/ipc'
 import type {
   AppSettings,
   DomAdapter,
@@ -40,6 +40,17 @@ export type ViewId =
   | 'audit'
   | 'settings'
 
+/**
+ * 内置平台在「没有显式建账号」时，登录态落在 persist:lidow-<id>-default。
+ * 这个隐式账号也要能在多开菜单里被选中，否则已登录的默认分区永远无法复用。
+ */
+export const DEFAULT_ACCOUNT_ID = '__default__'
+
+/** 归一化账号 id：'' 与 '__default__' 指向同一个默认分区 */
+export function accountKeyOf(accountId?: string): string {
+  return !accountId || accountId === DEFAULT_ACCOUNT_ID ? '' : accountId
+}
+
 /** 统一的项目解析：与 main 的 activeProjectId 对齐（修多项目时取错 projects[0]） */
 export function useProject(s: LidowState): ProjectInfo | null {
   // 只认 activeProjectId；不兜底 projects[0] —— 静默落到别的项目会导致
@@ -51,7 +62,10 @@ interface WebTab {
   id: string
   providerId: string
   providerName: string
+  /** '' = 隐式默认账号分区，'__default__' = 显式选择默认账号 */
   accountId: string
+  /** 账号显示名（多账号时标签上区分） */
+  accountName?: string
   partition: string
   overlayPath: string
   home: string
@@ -100,6 +114,10 @@ interface LidowState {
   confirmRequest: { callId: string; reason: string } | null
   plan: TaskPlan | null
   notices: { level: string; message: string; ts: number }[]
+  /** 应用内更新状态（main 自动检查 + 下载进度） */
+  updateState: UpdateState
+  /** 用户点「稍后」隐藏的版本（本次运行内不再主动弹） */
+  updateDismissedVersion: string
   skills: SkillMeta[]
   agents: AgentMeta[]
   rules: RuleEntry[]
@@ -130,9 +148,9 @@ interface LidowState {
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
   refreshSessions(): Promise<void>
-  createSession(providerId: string): Promise<void>
+  createSession(providerId: string, accountId?: string): Promise<void>
   openSession(id: string): Promise<void>
-  openProviderTab(providerId: string, sessionId?: string, forceNew?: boolean): Promise<void>
+  openProviderTab(providerId: string, sessionId?: string, accountId?: string): Promise<void>
   closeTab(id: string): void
   setActiveTab(id: string): void
   bindTabSession(tabId: string, sessionId: string, webContentsId: number): Promise<void>
@@ -142,6 +160,9 @@ interface LidowState {
   answerConfirm(ok: boolean): Promise<void>
   notice(message: string, level?: 'info' | 'warn' | 'error'): void
   scheduleNoticeRemoval(ts: number): void
+  checkUpdate(manual?: boolean): Promise<void>
+  downloadUpdate(): Promise<void>
+  dismissUpdate(): void
   refreshAll(): Promise<void>
   handleEvent(e: LidowEvent): void
 }
@@ -216,6 +237,8 @@ export const useStore = create<LidowState>((set, get) => ({
   confirmRequest: null,
   plan: null,
   notices: [],
+  updateState: { phase: 'idle' },
+  updateDismissedVersion: '',
   skills: [],
   agents: [],
   rules: [],
@@ -243,6 +266,11 @@ export const useStore = create<LidowState>((set, get) => ({
     set({ booted: true, version: state.version, settings: state.settings, pureMode: state.settings.pureMode, projects: state.projects, activeProjectId: state.activeProjectId })
     get().applyTheme(state.settings)
     api.onEvent((e) => get().handleEvent(e))
+    // main 的自动检查可能早于本窗口订阅：补拉一次当前状态
+    void api
+      .getUpdateState()
+      .then((u) => set({ updateState: u }))
+      .catch(() => undefined)
     if (state.projects.length > 0) {
       await get().refreshProviders()
       await get().refreshSessions()
@@ -365,7 +393,7 @@ export const useStore = create<LidowState>((set, get) => ({
     set({ sessions: await api.listSessions(project.id) })
   },
 
-  async createSession(providerId) {
+  async createSession(providerId, accountId) {
     const project = useProject(get())
     if (!project) {
       // 没有项目就没有工作目录，会话无法落盘、工具无根可执行。
@@ -373,12 +401,22 @@ export const useStore = create<LidowState>((set, get) => ({
       get().notice('请先初始化项目（选择工作目录），再开始对话', 'warn')
       return
     }
-    const s = await api.createSession(project.id, providerId)
+    // 优先用调用方给出的账号；否则沿用当前平台标签的账号（多账号下新建任务
+    // 不应悄悄跳回默认账号的页面）。
+    const activeTab = get().tabs.find((t) => t.id === get().activeTabId)
+    let account = accountId
+    if (account === undefined && activeTab && activeTab.providerId === providerId) {
+      // 标签用的是隐式默认分区时，若已存在账号记录，'' 会被主进程解析成 accounts[0]，
+      // 必须显式传 __default__，否则会话在下次打开时会跳到另一个账号。
+      const hasAccounts = (get().providers.find((p) => p.id === providerId)?.accounts.length ?? 0) > 0
+      account = activeTab.accountId || (hasAccounts ? DEFAULT_ACCOUNT_ID : '')
+    }
+    const s = await api.createSession(project.id, providerId, undefined, account)
     // 关键：新建后必须把新会话设为 activeSession，
     // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
     set({ activeSession: s, view: 'home', pureView: 'home' })
     await get().refreshSessions()
-    await get().openProviderTab(providerId, s.id)
+    await get().openProviderTab(providerId, s.id, account)
   },
 
   async openSession(id) {
@@ -388,7 +426,7 @@ export const useStore = create<LidowState>((set, get) => ({
     // 否则纯净模式直接发送会报「网页未连接」（loop 找不到 channel）。
     if (s) {
       try {
-        await get().openProviderTab(s.providerId, s.id)
+        await get().openProviderTab(s.providerId, s.id, s.accountId)
       } catch {
         /* 平台未配置时忽略，发送时还会再试 */
       }
@@ -396,15 +434,18 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
 
-  async openProviderTab(providerId, sessionId, forceNew = false) {
+  async openProviderTab(providerId, sessionId, accountId) {
     const { providers } = get()
     const provider = providers.find((p) => p.id === providerId)
     if (!provider) return
-    // forceNew：多开模式。同平台再开一个独立 webview（各自 partition，
-    // 登录态互不干扰），用于并行跑多个任务。
-    const existing = forceNew
-      ? get().tabs.find((t) => t.providerId === providerId && t.id.includes('__new_') && !t.sessionId)
-      : get().tabs.find((t) => t.providerId === providerId)
+    // 未指定账号 = 沿用该平台的当前账号；指定账号则以调用方为准（含隐式默认账号）。
+    // '' 被显式传入时表示「默认分区」，用哨兵值避免主进程回退到 accounts[0]。
+    const requested = accountId === '' ? DEFAULT_ACCOUNT_ID : accountId
+    const target = requested ?? provider.activeAccountId ?? provider.accounts[0]?.id ?? ''
+    const targetKey = accountKeyOf(target)
+    // 同一平台同一账号只保留一个标签：再次选择账号应该是切回已有页面，
+    // 而不是用同样的 partition 再造一个 webview（看起来像重新登录）。
+    const existing = get().tabs.find((t) => t.providerId === providerId && accountKeyOf(t.accountId) === targetKey)
     if (existing) {
       set({ activeTabId: existing.id })
       if (sessionId) {
@@ -419,15 +460,17 @@ export const useStore = create<LidowState>((set, get) => ({
       }
       return
     }
-    const info = await api.attachWebview(providerId, provider.activeAccountId ?? provider.accounts[0]?.id ?? '')
-    // 多开时给独立 partition：同一平台两个实例互相看不到对方的登录态
-    const extraPartition = forceNew ? `-x${Date.now().toString(36)}` : ''
+    // partition 由账号决定：选了已有账号就复用它的持久化分区（登录态还在），
+    // 只有新增账号 / 默认分区未登录时才会落到登录页。
+    const info = await api.attachWebview(providerId, target)
+    const account = provider.accounts.find((a) => a.id === target)
     const tab: WebTab = {
-      id: forceNew ? `tab_${providerId}__new_${Date.now().toString(36)}` : `tab_${providerId}`,
+      id: targetKey ? `tab_${providerId}__${targetKey}` : `tab_${providerId}`,
       providerId,
       providerName: provider.name,
-      accountId: provider.activeAccountId ?? provider.accounts[0]?.id ?? '',
-      partition: forceNew ? `${info.partition}${extraPartition}` : info.partition,
+      accountId: target,
+      accountName: account?.label ?? (provider.accounts.length > 0 && !targetKey ? '默认账号' : undefined),
+      partition: info.partition,
       overlayPath: info.overlayPath,
       home: info.home,
       sessionId: sessionId ?? '',
@@ -519,10 +562,15 @@ export const useStore = create<LidowState>((set, get) => ({
     }
     let { activeTabId, tabs } = get()
     let tab = tabs.find((t) => t.id === activeTabId)
-    // 活动标签必须属于当前会话的平台；否则按会话的平台切换/打开标签。
-    // 不同步时会把 A 平台会话的提示词直接发进 B 平台的页面（跨平台串台）。
-    if (!tab || tab.providerId !== activeSession.providerId) {
-      await get().openProviderTab(activeSession.providerId, activeSession.id)
+    // 活动标签必须属于当前会话的平台（多账号时还要属于同一个账号）；
+    // 否则按会话的平台/账号切换或打开标签。不同步会把 A 平台的提示词
+    // 直接发进 B 平台的页面，或发进同平台另一个账号（串台）。
+    if (
+      !tab ||
+      tab.providerId !== activeSession.providerId ||
+      (activeSession.accountId && accountKeyOf(tab.accountId) !== accountKeyOf(activeSession.accountId))
+    ) {
+      await get().openProviderTab(activeSession.providerId, activeSession.id, activeSession.accountId)
       ;({ activeTabId, tabs } = get())
       tab = tabs.find((t) => t.id === activeTabId)
     }
@@ -568,6 +616,61 @@ export const useStore = create<LidowState>((set, get) => ({
     }, 4500)
   },
 
+  async checkUpdate(manual = false) {
+    const cur = get().updateState
+    // main 正在下载/已下载：重复 check 只会打断流程
+    if (cur.phase === 'checking' || cur.phase === 'downloading' || cur.phase === 'downloaded') return
+    set({ updateState: { ...cur, phase: 'checking', manual, message: '' } })
+    try {
+      const r = await api.checkUpdate()
+      const latest = get().updateState
+      // 事件可能已把状态推进到 available：不要被旧的回包覆盖
+      if (latest.phase === 'downloading' || latest.phase === 'downloaded') return
+      set({
+        updateState: {
+          ...latest,
+          phase: r.hasUpdate ? 'available' : 'up-to-date',
+          version: r.version ?? latest.version,
+          portable: Boolean(r.portable),
+          manual
+        }
+      })
+    } catch (e) {
+      set({
+        updateState: {
+          ...get().updateState,
+          phase: 'error',
+          manual,
+          message: e instanceof Error ? e.message : String(e)
+        }
+      })
+    }
+  },
+
+  async downloadUpdate() {
+    const cur = get().updateState
+    if (cur.phase === 'downloading' || cur.phase === 'downloaded') return
+    set({ updateState: { ...cur, phase: 'downloading', percent: 0 } })
+    try {
+      const r = await api.downloadUpdate()
+      if (!r.ok) set({ updateState: { ...get().updateState, phase: 'error', message: r.message } })
+      else if (get().updateState.phase !== 'downloaded') {
+        // 便携版不会真的下载/安装：回退到 available，避免进度条永远停在 0%
+        set({ updateState: { ...get().updateState, phase: cur.portable ? 'available' : 'downloaded' } })
+        get().notice(r.message)
+      }
+    } catch (e) {
+      set({
+        updateState: { ...get().updateState, phase: 'error', message: e instanceof Error ? e.message : String(e) }
+      })
+    }
+  },
+
+  dismissUpdate() {
+    const v = get().updateState.version
+    set({ updateDismissedVersion: v ?? '' })
+  },
+
 
   async refreshAll() {
     const s = get()
@@ -594,6 +697,9 @@ export const useStore = create<LidowState>((set, get) => ({
   handleEvent(e) {
     const s = get()
     switch (e.type) {
+      case 'update-state':
+        set({ updateState: e.state })
+        break
       case 'session-updated':
         // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时
         // 不能把用户眼前正在滚动的流式输出打没

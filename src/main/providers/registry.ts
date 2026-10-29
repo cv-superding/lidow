@@ -286,6 +286,11 @@ export class ProviderRegistry {
 
   partitionOf(providerId: string, accountId?: string): string {
     const provider = this.get(providerId)
+    // 显式选择隐式默认账号：它没有账号记录，但登录态在 default 分区里，
+    // 不能回退到 accounts[0]（那会让用户以为「沿用登录态」却看到登录页）。
+    if (accountId === '__default__' || (!accountId && provider?.accounts.length === 0)) {
+      return `persist:lidow-${providerId}-default`
+    }
     const acc = provider?.accounts.find((a) => a.id === accountId) ?? provider?.accounts[0]
     return acc?.partition ?? `persist:lidow-${providerId}-default`
   }

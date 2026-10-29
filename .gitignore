@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+dist-local*/
 dist-e2e/
 coverage/
 *.local

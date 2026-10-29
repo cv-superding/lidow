@@ -490,7 +490,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         setInput(text)
         return
       }
-      await useStore.getState().openProviderTab(created.providerId, created.id)
+      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
       await useStore.getState().sendPrompt(text)
       return
     }

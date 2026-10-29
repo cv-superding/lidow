@@ -81,9 +81,12 @@ export function registerHandlers(
     return ctx.providerRegistryOf(String(projectId)).add(desc)
   })
   R('removeProvider', (projectId: string, providerId: string) => ctx.providerRegistryOf(String(projectId)).remove(String(providerId)))
-  R('addAccount', (projectId: string, providerId: string, label: string) =>
-    ctx.providerRegistryOf(String(projectId)).addAccount(String(providerId), String(label ?? ''))
-  )
+  R('addAccount', (projectId: string, providerId: string, label: string) => {
+    const reg = ctx.providerRegistryOf(String(projectId))
+    reg.addAccount(String(providerId), String(label ?? ''))
+    // 返回完整 provider（与 ipc 类型一致）：调用方据此拿到新账号 id 并立即打开它
+    return reg.get(String(providerId))
+  })
   R('switchAccount', (projectId: string, providerId: string, accountId: string) => {
     ctx.providerRegistryOf(String(projectId)).switchAccount(String(providerId), String(accountId))
     return ctx.providerRegistryOf(String(projectId)).get(String(providerId))
@@ -102,7 +105,7 @@ export function registerHandlers(
   )
   R('getSession', (sessionId: string) => ctx.sessionOf(String(sessionId)))
   R('createSession', (...args: unknown[]) => {
-    const [projectId, providerId, parentSessionId] = args as [string, string, string?]
+    const [projectId, providerId, parentSessionId, accountId] = args as [string, string, string?, string?]
     const store = ctx.sessionStoreOf(String(projectId))
     // 新建前回收同平台的历史空会话（0 轮次）：点一次平台建一次会话，
     // 用户没发消息就切走的话，列表会被「新会话」堆满（实测堆过 11 个）
@@ -116,7 +119,12 @@ export function registerHandlers(
         if ((store.get(m.id)?.turns.length ?? 0) === 0) store.delete(m.id)
       }
     }
-    return store.create(String(projectId), String(providerId), parentSessionId)
+    return store.create(
+      String(projectId),
+      String(providerId),
+      parentSessionId,
+      accountId ? String(accountId) : undefined
+    )
   })
   /** 清理空会话（0 轮次）：新建后从未发送的会话会无限堆积 */
   R('cleanupEmptySessions', (projectId: string, keepSessionId?: string) => {
@@ -473,10 +481,9 @@ export function registerHandlers(
     if (ctx.lastSessionId) ctx.configureOverlay(ctx.lastSessionId)
   })
   R('checkUpdate', () => ctx.updateCheck())
+  R('getUpdateState', () => import('@main/app/platform').then((m) => m.getUpdateState()))
   R('downloadUpdate', () =>
-    import('@main/app/platform').then((m) =>
-      m.downloadAndInstallUpdate((e) => ctx.emit({ ...e, sessionId: '' }))
-    )
+    import('@main/app/platform').then((m) => m.downloadAndInstallUpdate())
   )
   R('listTemplates', () => ctx.templates())
   R('applyTemplate', (templateId: string, root: string) => ctx.applyTemplate(String(templateId), String(root)))

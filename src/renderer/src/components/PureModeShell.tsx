@@ -169,7 +169,7 @@ export function PureModeShell(): React.JSX.Element {
   const switchSession = async (id: string): Promise<void> => {
     await useStore.getState().openSession(id)
     const session = useStore.getState().activeSession
-    if (session) await useStore.getState().openProviderTab(session.providerId, session.id)
+    if (session) await useStore.getState().openProviderTab(session.providerId, session.id, session.accountId)
   }
 
   const newSession = async (): Promise<void> => {
@@ -181,7 +181,7 @@ export function PureModeShell(): React.JSX.Element {
     setPureView('home')
     await useStore.getState().createSession(pid)
     const created = useStore.getState().activeSession
-    if (created) await useStore.getState().openProviderTab(created.providerId, created.id)
+    if (created) await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
   }
 
   const deleteSession = async (id: string): Promise<void> => {

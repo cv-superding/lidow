@@ -484,7 +484,7 @@ function evaluateLoginNow(): void {
   const loginBtn = [...document.querySelectorAll<HTMLElement>('button, div[role="button"], a')].find((el) => {
     const t = (el.textContent ?? '').trim()
     if (!t || t.length > 8) return false
-    if (el.closest('#lidow-first-run')) return false
+    if (el.closest('#lidow-first-run, #lidow-first-run-banner')) return false
     return LOGIN_BTN_KWS.includes(t)
   })
   const nowLoggedIn = onLoginPage
@@ -513,7 +513,15 @@ setInterval(() => {
     renderFirstRun()
   }
   if (!adapter) {
-    exposeState({ loggedIn, projectKnown, projectRoot, dismissed: firstRunDismissed, shouldShow: false, reason: 'no-adapter' })
+    exposeState({
+      loggedIn,
+      projectKnown,
+      projectRoot,
+      dismissed: firstRunDismissed,
+      collapsed: firstRunCollapsed,
+      shouldShow: false,
+      reason: 'no-adapter'
+    })
     return
   }
   evaluateLoginNow()
@@ -622,6 +630,8 @@ installNetBridge()
 let projectRoot: string | null = null
 /** 用户手动关掉过引导：本次页面生命周期内不再弹（cuckoo 同款 close 按钮） */
 let firstRunDismissed = false
+/** 用户把引导卡片收起了：改为页面顶部的一行提示条，仍可一键初始化 */
+let firstRunCollapsed = false
 /** 登录态（由轮询更新）：引导必须等登录完成后才出现 */
 let loggedIn = false
 /** 是否已收到过主进程的明确 projectRoot 下发（区分"还没收到"与"确实没有项目"） */
@@ -692,6 +702,7 @@ function exposeState(state: Record<string, unknown>): void {
 
 function renderFirstRun(): void {
   const existing = document.getElementById('lidow-first-run')
+  const banner = document.getElementById('lidow-first-run-banner')
   // 显示条件：
   //  1) 登录已完成 —— 登录页上没有输入框，此时弹引导毫无意义
   //  2) 用户本次没有手动关掉
@@ -702,11 +713,31 @@ function renderFirstRun(): void {
   // 项目一打开就永不弹，等于功能不存在）。
   const persisted = isFirstRunPersisted(projectRoot)
   const shouldShow = loggedIn && projectKnown && !firstRunDismissed && !persisted && !projectInitialized
-  exposeState({ loggedIn, projectKnown, projectRoot, initialized: projectInitialized, dismissed: firstRunDismissed, shouldShow })
+  exposeState({
+    loggedIn,
+    projectKnown,
+    projectRoot,
+    initialized: projectInitialized,
+    dismissed: firstRunDismissed,
+    collapsed: firstRunCollapsed,
+    shouldShow
+  })
   if (!shouldShow) {
     existing?.remove()
+    banner?.remove()
     return
   }
+  // 收起态：不挡主界面，只在页面顶部挂一行提示，随时可以点「初始化项目」
+  if (firstRunCollapsed) {
+    existing?.remove()
+    if (banner) {
+      if ((banner.getAttribute('data-dir') ?? '') === (projectRoot ?? '')) return
+      banner.remove()
+    }
+    renderFirstRunBanner()
+    return
+  }
+  banner?.remove()
   // 已显示：只有「目录变了」才重建内容。
   // 直接 return 会导致选完新目录后弹窗仍显示旧路径（实测踩中）；
   // 无条件重建又会把正在点按钮的用户打断（DOM 被替换）。
@@ -729,6 +760,10 @@ function renderFirstRun(): void {
       text-align:center;animation:lidow-fr-in .24s cubic-bezier(.22,1,.36,1);}
     @keyframes lidow-fr-in{from{opacity:0;transform:translateY(10px) scale(.98);}
       to{opacity:1;transform:translateY(0) scale(1);}}
+    #lidow-first-run .fr-close{position:absolute;top:10px;right:10px;width:26px;height:26px;
+      display:flex;align-items:center;justify-content:center;border:none;border-radius:8px;
+      background:transparent;color:#8a8f9b;font-size:13px;line-height:1;cursor:pointer;transition:all .18s;}
+    #lidow-first-run .fr-close:hover{background:rgba(16,24,40,.06);color:#2f3640;}
     #lidow-first-run .fr-icon{width:44px;height:44px;margin:0 auto 14px;border-radius:12px;
       display:flex;align-items:center;justify-content:center;font-size:20px;
       background:rgba(77,107,254,.12);color:#4d6bfe;}
@@ -761,6 +796,8 @@ function renderFirstRun(): void {
       #lidow-first-run .fr-btn:hover{background:#8b9dff;}
       #lidow-first-run .fr-btn.ghost{background:transparent;color:#a8adba;border-color:rgba(255,255,255,.14);}
       #lidow-first-run .fr-btn.ghost:hover{background:rgba(255,255,255,.06);}
+      #lidow-first-run .fr-close{color:#8a8f9b;}
+      #lidow-first-run .fr-close:hover{background:rgba(255,255,255,.08);color:#e4e6eb;}
     }
   `)
   try {
@@ -776,6 +813,7 @@ function renderFirstRun(): void {
   box.setAttribute('data-dir', projectRoot ?? '')
   box.innerHTML =
     '<div class="fr-card">' +
+    '<button class="fr-close" data-act="close" title="收起，稍后再初始化" aria-label="收起">✕</button>' +
     '<div class="fr-icon">📁</div>' +
     '<div class="fr-title">第一步：初始化项目</div>' +
     '<div class="fr-text">AI 需要一个工作目录才能读写你的文件。<br/>选定目录后再开始对话。</div>' +
@@ -819,9 +857,17 @@ function renderFirstRun(): void {
     box.remove()
     send({ type: 'float-menu-action', action: 'continue-project' })
   })
+  // 收起：不挡主界面，改成页面顶部一行提示（仍可随时初始化）
+  box.querySelector<HTMLButtonElement>('[data-act="close"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    firstRunCollapsed = true
+    box.remove()
+    renderFirstRun()
+  })
   box.querySelector<HTMLButtonElement>('[data-act="pick"]')?.addEventListener('click', (e) => {
     e.stopPropagation()
     const btn = e.currentTarget as HTMLButtonElement
+    const original = btn.textContent ?? '选择目录'
     btn.disabled = true
     btn.textContent = '选择目录中…'
     // 目录选择必须走主进程的对话框：网页侧的 <input type=file> 拿不到真实路径。
@@ -829,11 +875,78 @@ function renderFirstRun(): void {
     send({ type: 'float-menu-action', action: 'init-project' })
     window.setTimeout(() => {
       btn.disabled = false
-      btn.textContent = '初始化项目'
+      btn.textContent = original
     }, 8000)
   })
 
   document.body.appendChild(box)
+}
+
+/**
+ * 引导收起态：页面顶部一条紧凑提示。
+ * 用户点了模态右上角的 × 后，初始化仍是必须步骤，但不能一直挡着主界面，
+ * 于是降级为一条常驻横幅（可再关闭，可一键初始化）。
+ */
+function renderFirstRunBanner(): void {
+  if (!document.getElementById('lidow-first-run-banner-style')) {
+    const st = document.createElement('style')
+    st.id = 'lidow-first-run-banner-style'
+    st.textContent = `
+      #lidow-first-run-banner{position:fixed;top:14px;left:50%;transform:translateX(-50%);
+        z-index:2147483645;display:flex;align-items:center;gap:12px;padding:8px 10px 8px 16px;
+        width:max-content;max-width:min(680px,calc(100vw - 32px));border-radius:12px;
+        background:rgba(255,255,255,.97);border:1px solid rgba(16,24,40,.1);
+        box-shadow:0 10px 30px rgba(16,24,40,.16);backdrop-filter:blur(8px);
+        font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+        font-size:12.5px;line-height:1.45;color:#16181d;
+        animation:lidow-frb-in .22s cubic-bezier(.22,1,.36,1);}
+      @keyframes lidow-frb-in{from{opacity:0;transform:translate(-50%,-8px);}
+        to{opacity:1;transform:translate(-50%,0);}}
+      #lidow-first-run-banner .frb-text{min-width:0;color:#3d4350;}
+      #lidow-first-run-banner .frb-btn{flex-shrink:0;padding:6px 14px;border-radius:8px;border:none;
+        background:#4d6bfe;color:#fff;font-size:12px;font-weight:600;cursor:pointer;transition:all .18s;}
+      #lidow-first-run-banner .frb-btn:hover{background:#3b5bdb;box-shadow:0 4px 12px rgba(77,107,254,.3);}
+      #lidow-first-run-banner .frb-btn:disabled{opacity:.6;cursor:not-allowed;box-shadow:none;}
+      #lidow-first-run-banner .frb-close{flex-shrink:0;width:24px;height:24px;display:flex;
+        align-items:center;justify-content:center;border:none;border-radius:7px;background:transparent;
+        color:#8a8f9b;font-size:13px;line-height:1;cursor:pointer;transition:all .18s;}
+      #lidow-first-run-banner .frb-close:hover{background:rgba(16,24,40,.07);color:#2f3640;}
+      @media (prefers-color-scheme: dark){
+        #lidow-first-run-banner{background:rgba(26,26,26,.97);border-color:rgba(255,255,255,.09);
+          color:#e4e6eb;box-shadow:0 12px 32px rgba(0,0,0,.5);}
+        #lidow-first-run-banner .frb-text{color:#c9cdd6;}
+        #lidow-first-run-banner .frb-btn{background:#6b83ff;}
+        #lidow-first-run-banner .frb-btn:hover{background:#8b9dff;}
+        #lidow-first-run-banner .frb-close:hover{background:rgba(255,255,255,.09);color:#e4e6eb;}
+      }
+    `
+    document.head.appendChild(st)
+  }
+
+  const bar = document.createElement('div')
+  bar.id = 'lidow-first-run-banner'
+  bar.setAttribute('data-dir', projectRoot ?? '')
+  bar.innerHTML =
+    '<span class="frb-text">首次创建对话时，需要初始化项目，并选择一个项目目录，不然无法使用</span>' +
+    '<button class="frb-btn" data-act="init">初始化项目</button>' +
+    '<button class="frb-close" data-act="dismiss" title="关闭" aria-label="关闭">✕</button>'
+
+  // 横幅只是收缩入口：点击必须还原完整弹窗，让用户能选/换目录。
+  // 之前这里直接发 confirm-project，跳过了目录选择（用户反馈：没法选文件夹）。
+  bar.querySelector<HTMLButtonElement>('[data-act="init"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    firstRunCollapsed = false
+    bar.remove()
+    renderFirstRun()
+  })
+  bar.querySelector<HTMLButtonElement>('[data-act="dismiss"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    firstRunDismissed = true
+    firstRunCollapsed = false
+    bar.remove()
+  })
+
+  document.body.appendChild(bar)
 }
 
 /**
@@ -892,9 +1005,9 @@ function watchNativeNewChat(): void {
         let el = ev.target as HTMLElement | null
         // 我们自己弹窗里的按钮不算「平台的新对话」——否则点「新建对话」会命中
         // 这里的 '新对话' 关键字，把 dismissed 重置、弹窗立刻重现（实测踩中）
-        if (el && el.closest('#lidow-first-run')) return
+        if (el && el.closest('#lidow-first-run, #lidow-first-run-banner')) return
         for (let i = 0; i < 4 && el; i++) {
-          if (el.id === 'lidow-first-run' || el.closest?.('#lidow-first-run')) return
+          if (el.closest?.('#lidow-first-run, #lidow-first-run-banner')) return
           const t = (el.textContent ?? '').trim()
           if (t && NEW_CHAT_KWS.some((k) => t === k || t.startsWith(k))) {
             // 等平台自己完成路由跳转后再弹，避免被它随后的渲染覆盖。
@@ -904,6 +1017,7 @@ function watchNativeNewChat(): void {
             clearFirstRunPersisted()
             window.setTimeout(() => {
               firstRunDismissed = false
+              firstRunCollapsed = false
               renderFirstRun()
             }, 900)
             return
@@ -989,6 +1103,7 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       // 显式重置：主进程在「新建对话/切换会话」时下发。
       // 只有这条路径能让初始化模态再弹 —— URL 变化一律不重置（防刚确认又弹）。
       firstRunDismissed = false
+      firstRunCollapsed = false
       projectInitialized = false
       clearFirstRunPersisted()
       renderFirstRun()
