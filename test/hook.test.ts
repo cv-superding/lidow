@@ -115,6 +115,33 @@ describe('DeepSeek hook 注入源码', () => {
     expect(tiny.response[0]!.text).toBe(whole.response[0]!.text)
   })
 
+  it('思考片段不混进正文（同一路径 /fragments/-1/content 靠类型区分）', async () => {
+    // 真实形态：先下发含 type 的 fragments 快照，之后增量补丁只给
+    // response/fragments/-1/content —— 不带类型。若不记住类型表，
+    // 思考内容会被当成正文整段显示（用户实测：思考过程出现在气泡里）
+    const sse = [
+      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"我先想想"}]}}}',
+      '',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，这里要小心"}',
+      '',
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"正文回答"}]}',
+      '',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，继续"}',
+      '',
+      'data: {"p":"response/status","v":"FINISHED"}',
+      ''
+    ].join('\n\n')
+    const cap = await runHook(sse, 32)
+    expect(cap.response).toHaveLength(1)
+    const text = cap.response[0]!.text
+    // 思考内容绝不能出现在正文里
+    expect(text).not.toContain('我先想想')
+    expect(text).not.toContain('这里要小心')
+    // 正文要完整
+    expect(text).toContain('正文回答')
+    expect(text).toContain('继续')
+  })
+
   it('hook 提取的文本能被工具解析器解析出 write 调用', async () => {
     const r = await runHook(FIXTURE, 7)
     const parsed = parseToolCalls(r.response[0]!.text)
