@@ -24,12 +24,14 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      # --publish never：tag 构建时 electron-builder 默认会自动上传，缺 GH_TOKEN 会直接失败；
+      # 发布统一交给下面的 release job（softprops/action-gh-release）。
       - name: Build Windows (installer + portable)
         if: matrix.os == 'windows-latest'
-        run: npx electron-builder --win nsis portable --config electron-builder.yml
+        run: npx electron-builder --win nsis portable --config electron-builder.yml --publish never
       - name: Build macOS (dmg + zip)
         if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac --config electron-builder.yml
+        run: npx electron-builder --mac --config electron-builder.yml --publish never
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
