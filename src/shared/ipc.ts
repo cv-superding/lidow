@@ -196,6 +196,8 @@ export interface UpdateState {
 export type LidowEvent =
   | { type: 'session-updated'; sessionId: string }
   | { type: 'update-state'; state: UpdateState }
+  /** 项目初始化完成：询问是否切到纯净模式（可稍后从左侧栏进入） */
+  | { type: 'ui-pure-suggestion'; sessionId: string }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }

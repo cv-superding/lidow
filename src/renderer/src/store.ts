@@ -107,6 +107,8 @@ interface LidowState {
   pureMode: boolean
   /** 纯净模式主区当前面板（home=网页对话；其余为该面板视图），不改变 pureMode */
   pureView: ViewId
+  /** 项目初始化完成后的「是否进入纯净模式」建议弹窗 */
+  pureSuggestion: boolean
   streamingText: string
   streamingTps: number
   /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
@@ -144,6 +146,7 @@ interface LidowState {
   toggleRight(): void
   setPure(on: boolean): void
   setPureView(v: ViewId): void
+  dismissPureSuggestion(): void
   applyTheme(s: AppSettings): void
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
@@ -184,7 +187,7 @@ export const useStore = create<LidowState>((set, get) => ({
     commandTimeoutMs: 30000,
     sandboxTimeoutMs: 60000,
     outputBufferLimit: 1048576,
-    compactThreshold: 60000,
+    compactThreshold: 600000,
     autoCompact: true,
     watchdog: { enabled: true, idleMs: 90000, maxRetries: 3, prompt: '请继续' },
     retry: {
@@ -196,7 +199,7 @@ export const useStore = create<LidowState>((set, get) => ({
       maxRetries429: 40,
       prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
     },
-    autoContinue: { enabled: true, handoffPrompt: '' },
+    autoContinue: { enabled: false, handoffPrompt: '' },
     globalHotkeys: {},
     securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
     sync: {}
@@ -231,6 +234,7 @@ export const useStore = create<LidowState>((set, get) => ({
   })(),
   pureMode: false,
   pureView: 'home',
+  pureSuggestion: false,
   streamingText: '',
   streamingTps: 0,
   thinkingText: '',
@@ -324,9 +328,12 @@ export const useStore = create<LidowState>((set, get) => ({
   setPureView(v) {
     set({ pureView: v })
   },
+  dismissPureSuggestion() {
+    set({ pureSuggestion: false })
+  },
   setPure(on) {
-    // 进入纯净模式时回到对话主区
-    set({ pureMode: on, pureView: on ? 'home' : get().pureView })
+    // 进入纯净模式时回到对话主区；同时关掉初始化后的模式建议弹窗
+    set({ pureMode: on, pureView: on ? 'home' : get().pureView, pureSuggestion: false })
     void api.setPureMode(on)
     // 净模式进入时确保活动会话有后台 webview 承载（对话驱动依赖页面）
     if (on) {
@@ -699,6 +706,10 @@ export const useStore = create<LidowState>((set, get) => ({
     switch (e.type) {
       case 'update-state':
         set({ updateState: e.state })
+        break
+      case 'ui-pure-suggestion':
+        // 已在纯净模式里就不用再问一次
+        if (!get().pureMode) set({ pureSuggestion: true })
         break
       case 'session-updated':
         // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时

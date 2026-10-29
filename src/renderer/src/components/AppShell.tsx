@@ -442,6 +442,60 @@ function PurePreview(): React.JSX.Element | null {
   return project ? <PreviewPanel projectId={project.id} /> : null
 }
 
+/** 初始化完成后的模式建议：是否立刻进入纯净模式（可稍后从左侧栏进入） */
+function PureModeSuggestion(): React.JSX.Element | null {
+  const open = useStore((s) => s.pureSuggestion)
+  const dismiss = useStore((s) => s.dismissPureSuggestion)
+  const setPure = useStore((s) => s.setPure)
+  if (!open) return null
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center px-6"
+      style={{ background: 'rgba(9,12,18,.44)', backdropFilter: 'blur(2px)' }}
+    >
+      <div
+        className="anim-pop w-full max-w-[420px] rounded-[var(--r-xl)] p-5"
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow-lg)' }}
+      >
+        <div className="flex items-start gap-3">
+          <span
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
+            style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+          >
+            <IconPure size={17} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[14px] font-semibold">项目已初始化</div>
+            <div className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+              是否切换到纯净模式？只保留对话与网页，屏蔽多余界面，专注当前任务。
+            </div>
+            <div
+              className="mt-2.5 rounded-[var(--r-md)] px-2.5 py-2 text-[11.5px] leading-relaxed"
+              style={{ background: 'var(--bg-active)', color: 'var(--text-hint)' }}
+            >
+              现在不切换也没关系：之后随时可以点击左下角的「纯净模式」进入。
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <button className="btn btn-sm btn-ghost" onClick={dismiss}>
+                稍后再说
+              </button>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => {
+                  dismiss()
+                  setPure(true)
+                }}
+              >
+                进入纯净模式
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** 危险操作确认浮层 */
 function ConfirmOverlay(): React.JSX.Element {
   const { confirmRequest, answerConfirm } = useStore()
@@ -607,6 +661,9 @@ export function AppShell(): React.JSX.Element {
 
       {/* 更新提示：发现新版本 / 下载进度 / 自动安装倒计时 */}
       <UpdatePrompt />
+
+      {/* 初始化完成 → 询问是否进入纯净模式 */}
+      <PureModeSuggestion />
 
       {/* 确认浮层：纯净模式下 ChatPanel 自带内联确认卡，这里不重复渲染 */}
       {confirmRequest && !(pureMode && pureView === 'home') && <ConfirmOverlay />}

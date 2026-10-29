@@ -42,7 +42,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   commandTimeoutMs: 30_000,
   sandboxTimeoutMs: 60_000,
   outputBufferLimit: 1024 * 1024,
-  compactThreshold: 60_000,
+  compactThreshold: 600_000,
   watchdog: {
     enabled: true,
     idleMs: 90_000,
@@ -59,7 +59,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
   },
   autoContinue: {
-    enabled: true,
+    enabled: false,
     handoffPrompt:
       '【上下文交接】以上内容来自上一轮会话的压缩摘要，并非完整上下文，可能丢失细节。' +
       '请先读取项目文件核实关键结论，再继续推进未完成的任务。'
@@ -772,6 +772,8 @@ export class AppContext {
         status: 'done'
       })
       this.emit({ type: 'session-updated', sessionId })
+      // 初始化完成：询问是否切到纯净模式（稍后也可从左侧栏进入）
+      this.emit({ type: 'ui-pure-suggestion', sessionId })
       Logger.info('project', `已发送初始化提示词 session=${sessionId} len=${sys.length}`)
     } catch (e) {
       Logger.warn('project', `发送初始化提示词失败：${e instanceof Error ? e.message : String(e)}`)
@@ -830,6 +832,7 @@ export class AppContext {
         level: 'info',
         message: '已把上个对话的摘要带进这个新窗口'
       })
+      this.emit({ type: 'ui-pure-suggestion', sessionId: created.id })
     } catch (e) {
       Logger.warn('project', `延续对话失败：${e instanceof Error ? e.message : String(e)}`)
     }
