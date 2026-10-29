@@ -65,6 +65,7 @@ const DEFAULT_SETTINGS: AppSettings = {
       '请先读取项目文件核实关键结论，再继续推进未完成的任务。'
   },
   autoCompact: true,
+  injectSystemPromptEveryTurn: false,
   globalHotkeys: HotkeyManager.defaults(),
   securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
   sync: {}
@@ -836,13 +837,15 @@ export class AppContext {
       const sys = this.systemPromptFor(sessionId)
       // 直接经 overlay 发送：此时用户正看着网页，消息要出现在 AI 对话框里
       await this.overlay.sendToPage(sessionId, sys)
-      this.sessionStoreOf(this.sessionProjectOf(sessionId)).appendTurn(sessionId, {
+      const initStore = this.sessionStoreOf(this.sessionProjectOf(sessionId))
+      initStore.appendTurn(sessionId, {
         id: `turn_${nanoid(8)}`,
         role: 'system',
         text: '[Lidow 初始化] 已发送系统提示词与工作目录',
         ts: Date.now(),
         status: 'done'
       })
+      initStore.update(sessionId, (x) => ({ ...x, systemPromptSent: true }))
       this.emit({ type: 'session-updated', sessionId })
       // 初始化完成：询问是否切到纯净模式（稍后也可从左侧栏进入）
       this.emit({ type: 'ui-pure-suggestion', sessionId })
@@ -897,6 +900,8 @@ export class AppContext {
       this.emit({ type: 'session-updated', sessionId: created.id })
 
       await this.overlay.sendToPage(created.id, body)
+      // body 里已经带了系统提示词，新会话无需在首轮再重复注入
+      store.update(created.id, (x) => ({ ...x, systemPromptSent: true }))
       Logger.info('project', `延续对话：${prior.id} → ${created.id}（摘要 ${summary?.text.length ?? 0} 字）`)
       this.emit({
         type: 'notice',

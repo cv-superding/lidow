@@ -74,7 +74,8 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       parentSessionId,
-      compactedTurns: 0
+      compactedTurns: 0,
+      systemPromptSent: false
     }
     const session: Session = { ...meta, turns: [] }
     this.index.set(meta.id, meta)

@@ -214,6 +214,11 @@ export class AgentLoop {
       // 丢弃初始化提示/网页直发遗留的思考缓冲，避免挂到新任务的第一轮
       this.deps.takeThinking(sessionId)
       const store = this.deps.store
+      // 首条消息前判断：默认每个网页对话只注入一次系统提示词（初始化/新会话首条）。
+      // 旧会话没有这个标记时，有历史轮次就视为已注入过，避免升级后又重复一遍。
+      const before = store.get(sessionId)
+      const repeatPrompt = this.deps.settings().injectSystemPromptEveryTurn
+      const promptSentBefore = before?.systemPromptSent ?? (before?.turns.length ?? 0) > 0
       const firstTurn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'user',
@@ -229,12 +234,15 @@ export class AgentLoop {
       }
       this.deps.emit({ type: 'session-updated', sessionId })
 
-      // 系统提示词必须每轮注入：网页版 AI 每次推理都是独立的，
-      // 只在首轮注入会导致后续轮次不知道有工具可用（表现为「我没有文件系统访问权限」）
+      // 默认只发一次：网页版会保留同一对话的历史，每轮重复注入既污染正文又占上下文。
+      // 需要兼容平台清空上下文的情况时，可在设置里开启「每轮重复注入系统提示词」。
       let prompt = userText
-      {
+      if (repeatPrompt || !promptSentBefore) {
         const sys = this.deps.systemPromptFor(sessionId)
-        if (sys) prompt = sys + '\n\n---\n\n# 用户任务\n\n' + userText
+        if (sys) {
+          prompt = sys + '\n\n---\n\n# 用户任务\n\n' + userText
+          store.update(sessionId, (s) => ({ ...s, systemPromptSent: true }))
+        }
       }
       await this.toolLoop(sessionId, state, prompt)
     } catch (err) {
@@ -292,7 +300,10 @@ export class AgentLoop {
             level: 'info',
             message: 'AI 用了不支持的调用格式，已自动纠正并重试'
           })
-          const sys = this.deps.systemPromptFor(sessionId)
+          // 默认不再整段重发系统提示词（网页对话里已有）；只有显式开启每轮注入时才带
+          const sys = this.deps.settings().injectSystemPromptEveryTurn
+            ? this.deps.systemPromptFor(sessionId)
+            : ''
           const fixPrompt =
             (sys ? sys + '\n\n---\n\n' : '') + FORMAT_FIX_PROMPT + this.lastUserTextOf(sessionId)
           await this.toolLoop(sessionId, state, fixPrompt)

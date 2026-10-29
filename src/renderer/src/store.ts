@@ -223,6 +223,7 @@ export const useStore = create<LidowState>((set, get) => ({
     outputBufferLimit: 1048576,
     compactThreshold: 600000,
     autoCompact: true,
+    injectSystemPromptEveryTurn: false,
     watchdog: { enabled: true, idleMs: 90000, maxRetries: 3, prompt: '请继续' },
     retry: {
       enabled: true,

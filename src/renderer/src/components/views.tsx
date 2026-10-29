@@ -2088,6 +2088,13 @@ export function SettingsView(): React.JSX.Element {
           )}
 
           <ToggleRow
+            label="每轮重复注入系统提示词"
+            desc="默认关闭：只在初始化/新会话首条消息发送一次，避免重复占用上下文；平台会清空历史时再打开"
+            checked={s.injectSystemPromptEveryTurn}
+            onChange={(v) => patch({ injectSystemPromptEveryTurn: v })}
+          />
+
+          <ToggleRow
             label="自动压缩上下文"
             desc="会话变长时让 AI 生成可交接的摘要，替换掉早期原文"
             checked={s.autoCompact}

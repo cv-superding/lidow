@@ -90,6 +90,14 @@ describe('loop 的看门狗必须能判死本轮', () => {
     expect(withCompact.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('系统提示词默认只在初始化/首轮注入，重复注入由设置开关控制', () => {
+    // 回归：此前每轮都前置完整系统提示词，网页对话里刷屏并浪费上下文
+    expect(src).toContain('injectSystemPromptEveryTurn')
+    expect(src).toContain('promptSentBefore')
+    expect(src).toContain('repeatPrompt || !promptSentBefore')
+    expect(src).toContain('systemPromptSent: true')
+  })
+
   it('自动续接必须走 createSession 依赖（routed store 没有 create）', () => {
     // 回归：deps.store 是按会话路由的门面，只有 get/appendTurn/patch/update。
     // 之前直接调 store.create → “this.deps.store.create is not a function”，

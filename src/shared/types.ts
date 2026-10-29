@@ -58,6 +58,11 @@ export interface SessionMeta {
   parentSessionId?: string
   /** 已压缩轮次数量（这些轮次已被摘要替代） */
   compactedTurns: number
+  /**
+   * 系统提示词是否已在这个网页对话里发过。
+   * 网页版会保留同一对话的历史，每轮重复注入只会污染上下文。
+   */
+  systemPromptSent?: boolean
   archived?: boolean
   /**
    * 平台侧对话 URL（如 DeepSeek 的 /a/chat/s/<uuid>）。
@@ -272,6 +277,8 @@ export interface AppSettings {
   /** 自动压缩阈值（字符数） */
   compactThreshold: number
   autoCompact: boolean
+  /** 每轮重复注入系统提示词（默认关闭：只在初始化/新会话首条消息发一次） */
+  injectSystemPromptEveryTurn: boolean
   /** 看门狗：SSE 流静默超过该毫秒数判定卡住，自动发「请继续」催 AI */
   watchdog: {
     enabled: boolean
