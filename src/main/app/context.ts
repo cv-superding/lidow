@@ -28,7 +28,7 @@ import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform
 import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
-import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
+import type { AppSettings, FileNode, ProjectInfo, Session } from '@shared/types'
 import { HOOKS, buildHookSource } from '@main/providers/hooks'
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -408,8 +408,8 @@ export class AppContext {
         // 之前只看当前绑定会话的轮次，新建空会话后会误判成未初始化（实测反复弹窗）。
         // 绑定会话时按项目判断；尚未绑定（新开网页/新窗口）则显示初始化入口，
         // 让用户能把这个新对话接到当前项目（项目已有历史也允许再开一个）。
-        initialized:
-          this.settings.get().pureMode || (session ? this.projectInitialized(session.projectId) : false)
+        // 新网页/新会话必须给初始化入口；只有当前会话确实已有对话/已初始化才压掉
+        initialized: this.settings.get().pureMode || (session ? this.sessionInitialized(session) : false)
       })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
@@ -602,7 +602,9 @@ export class AppContext {
     this.overlay.sendCmd(sessionId, {
       kind: 'set-project',
       projectRoot: ownProject?.root ?? null,
-      initialized: pure || (ownProject ? this.projectInitialized(ownProject.id) : session.turns.length > 0)
+      // 页面级判断：新窗口/新对话（空会话）即使项目已有历史，也要出初始化入口；
+      // 已有 providerUrl/轮次/已发过系统提示词的会话才不再提示。
+      initialized: pure || this.sessionInitialized(session)
     })
     // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
@@ -812,6 +814,11 @@ export class AppContext {
       this.overlay.sendCmdToWebContents(wc, { kind: 'reset-first-run' })
     }
     Logger.info('project', `项目回到未初始化状态: ${project.root} targets=${targets.size}`)
+  }
+
+  /** 当前会话是否已有真实对话/初始化痕迹（用于页面级是否还要弹初始化入口） */
+  private sessionInitialized(session: Session): boolean {
+    return session.turns.length > 0 || Boolean(session.providerUrl) || Boolean(session.systemPromptSent)
   }
 
   /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
