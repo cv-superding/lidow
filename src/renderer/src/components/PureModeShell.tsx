@@ -38,7 +38,13 @@ function relTime(ts: number): string {
  * ⑤ 底部用户区
  * 主区由 AppShell 常驻挂载的 WebTabs 提供——切换模式不重建 webview，登录态与对话进度保留。
  */
-export function PureModeShell(): React.JSX.Element {
+export function PureModeShell({
+  web = false,
+  onLogin
+}: {
+  web?: boolean
+  onLogin?: () => void
+} = {}): React.JSX.Element {
   const sessions = useStore((s) => s.sessions)
   const activeSession = useStore((s) => s.activeSession)
   const providers = useStore((s) => s.providers)
@@ -146,26 +152,30 @@ export function PureModeShell(): React.JSX.Element {
           <span className="flex-1 text-left">新建任务</span>
           <span className="text-[10.5px] font-normal opacity-60">Ctrl N</span>
         </button>
-        <button
-          className={`${navBtn} ${pureView === 'tasks' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
-          style={{ color: pureView === 'tasks' ? 'var(--text)' : 'var(--text-dim)' }}
-          onClick={() => setPureView('tasks')}
-        >
-          <span className="flex w-4 justify-center">
-            <IconHistory size={15} />
-          </span>
-          <span className="flex-1 truncate text-left">自动化</span>
-        </button>
-        <button
-          className={`${navBtn} ${pureView === 'plugins' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
-          style={{ color: pureView === 'plugins' ? 'var(--text)' : 'var(--text-dim)' }}
-          onClick={() => setPureView('plugins')}
-        >
-          <span className="flex w-4 justify-center">
-            <IconPlugin size={15} />
-          </span>
-          <span className="flex-1 truncate text-left">插件市场</span>
-        </button>
+        {!web && (
+          <>
+            <button
+              className={`${navBtn} ${pureView === 'tasks' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
+              style={{ color: pureView === 'tasks' ? 'var(--text)' : 'var(--text-dim)' }}
+              onClick={() => setPureView('tasks')}
+            >
+              <span className="flex w-4 justify-center">
+                <IconHistory size={15} />
+              </span>
+              <span className="flex-1 truncate text-left">自动化</span>
+            </button>
+            <button
+              className={`${navBtn} ${pureView === 'plugins' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
+              style={{ color: pureView === 'plugins' ? 'var(--text)' : 'var(--text-dim)' }}
+              onClick={() => setPureView('plugins')}
+            >
+              <span className="flex w-4 justify-center">
+                <IconPlugin size={15} />
+              </span>
+              <span className="flex-1 truncate text-left">插件市场</span>
+            </button>
+          </>
+        )}
       </div>
 
       <div className="divider mx-3 my-1.5" />
@@ -294,25 +304,38 @@ export function PureModeShell(): React.JSX.Element {
         >
           L
         </span>
-        <button
-          className="min-w-0 flex-1 truncate rounded-[var(--r-sm)] px-1.5 py-1 text-left text-[11.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-          style={{ color: 'var(--text-dim)' }}
-          title="退出纯净模式，回到完整工作台"
-          onClick={() => void setPure(false)}
-        >
-          退出纯净模式
-        </button>
-        <button className="btn btn-ghost btn-icon btn-sm" title="设置" onClick={() => setPureView('settings')}>
-          <IconSettings size={14} />
-        </button>
-        <button
-          className="btn btn-ghost btn-icon btn-sm"
-          title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
-          style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
-          onClick={() => toggleAux('files')}
-        >
-          <IconFile size={14} />
-        </button>
+        {web ? (
+          <>
+            <span className="min-w-0 flex-1 truncate px-1.5 text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+              Lidow Web
+            </span>
+            <button className="btn btn-sm btn-outline" onClick={onLogin}>
+              登录平台
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              className="min-w-0 flex-1 truncate rounded-[var(--r-sm)] px-1.5 py-1 text-left text-[11.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+              style={{ color: 'var(--text-dim)' }}
+              title="退出纯净模式，回到完整工作台"
+              onClick={() => void setPure(false)}
+            >
+              退出纯净模式
+            </button>
+            <button className="btn btn-ghost btn-icon btn-sm" title="设置" onClick={() => setPureView('settings')}>
+              <IconSettings size={14} />
+            </button>
+            <button
+              className="btn btn-ghost btn-icon btn-sm"
+              title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
+              style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
+              onClick={() => toggleAux('files')}
+            >
+              <IconFile size={14} />
+            </button>
+          </>
+        )}
       </div>
     </div>
   )

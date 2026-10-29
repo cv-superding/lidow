@@ -1,17 +1,14 @@
-# syntax=docker/dockerfile:1
-
 # ---------- 构建：Linux 解包目录（内置 Electron，运行时不再需要 Node） ----------
 FROM node:22-bookworm-slim AS build
 
 WORKDIR /src
 # electron-builder 会自行下载对应 Linux 版 Electron，npm 阶段不需要再下一份
-ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1 \
+    NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
 # 国内网络可 --build-arg APT_MIRROR=mirrors.aliyun.com
 ARG APT_MIRROR=deb.debian.org
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
       [ -f "$f" ] && sed -i "s|deb.debian.org|${APT_MIRROR}|g" "$f"; \
     done \
   && apt-get -o Acquire::Retries=10 update \
@@ -19,13 +16,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
   && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --fetch-retries=5 --fetch-retry-mintimeout=2000 --fetch-retry-maxtimeout=30000
 
 COPY . .
 RUN npm run build \
   && ./node_modules/.bin/electron-builder --linux dir --config electron-builder.yml --publish never
 
-# ---------- 运行：Xvfb + noVNC 提供完整 Electron 桌面 ----------
+# ---------- 运行：隐藏 Electron 宿主 + 原生 Web 界面 ----------
 FROM debian:bookworm-slim
 
 # 国内网络可 --build-arg APT_MIRROR=mirrors.aliyun.com
@@ -39,19 +36,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8 \
     TZ=Asia/Shanghai \
     LIDOW_SCREEN=1360x860x24 \
-    LIDOW_VNC_PORT=6080 \
+    LIDOW_WEB_PORT=6080 \
+    LIDOW_WEB_SERVER=1 \
+    LIDOW_HOST_VISIBLE=1 \
     LIDOW_PROJECT_DIR=/workspace \
     LIDOW_DISABLE_UPDATE=1
 
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
-    for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+RUN for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
       [ -f "$f" ] && sed -i "s|deb.debian.org|${APT_MIRROR}|g" "$f"; \
     done \
   && apt-get -o Acquire::Retries=10 update \
   && apt-get install -y --no-install-recommends -o Acquire::Retries=10 \
     ca-certificates curl tini gosu jq procps tzdata \
-    xvfb x11vnc openbox novnc websockify dbus-x11 \
+    xvfb dbus-x11 \
     libgtk-3-0 libnss3 libxss1 libxtst6 libgbm1 libdrm2 libxkbcommon0 \
     libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libpango-1.0-0 \
     libcairo2 libasound2 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
@@ -80,7 +77,7 @@ VOLUME ["/home/lidow/.config/Lidow", "/home/lidow/.lidow", "/workspace"]
 EXPOSE 6080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null \
+  CMD curl -fsS http://127.0.0.1:6080/healthz >/dev/null \
   && pgrep -f '^/opt/lidow/' >/dev/null || exit 1
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/lidow-entrypoint"]

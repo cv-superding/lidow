@@ -7,7 +7,7 @@ git clone <repo> && cd lidow
 npm install
 npm run dev          # 开发模式（热更新）
 npm run dist:win     # 打包 Windows 安装包 + 便携版
-npm run dist:mac     # 打包 macOS dmg
+npm run dist:mac     # 打包 macOS universal dmg + zip（Intel + Apple Silicon）
 ```
 
 依赖 Node ≥ 20.19。首次启动会创建 `%APPDATA%/lidow/`（Windows）作为数据目录。

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { formatObservations, parseToolCalls, toolProtocolPrompt } from '@main/bridge/parser'
+import {
+  formatObservations,
+  looksLikeActionRequest,
+  looksLikePlanOnlyReply,
+  looksLikeToolCapabilityDenial,
+  parseToolCalls,
+  toolProtocolPrompt
+} from '@main/bridge/parser'
 
 describe('parseToolCalls', () => {
   it('解析单工具块并清除原文', () => {
@@ -62,6 +69,34 @@ describe('parseToolCalls', () => {
     const r = parseToolCalls('```lidow\n{"input":{}}\n```')
     expect(r.calls).toHaveLength(0)
     expect(r.malformed).toHaveLength(1)
+  })
+})
+
+describe('计划型回复检测', () => {
+  it('识别只说明计划、没有工具调用的短回复', () => {
+    expect(looksLikePlanOnlyReply('我先查看这个仓库的内容，并确认 Lidow 的 skill 安装规则。')).toBe(true)
+    expect(looksLikePlanOnlyReply('Let me check the repository first.')).toBe(true)
+  })
+
+  it('识别“我需要继续/只能给指导”这类计划停顿', () => {
+    expect(looksLikePlanOnlyReply('我需要继续读 README，看看技能的目录结构，以及是否有 install.sh 等。')).toBe(true)
+    expect(looksLikePlanOnlyReply('还需要先确认 Lidow 的 skills 目录位置。')).toBe(true)
+  })
+
+  it('识别模型否认本地工具能力', () => {
+    expect(looksLikeToolCapabilityDenial('当前工具集受限（没有 bash/write）。所以我只能给出安装指导。')).toBe(true)
+    expect(looksLikeToolCapabilityDenial('我没有文件系统访问权限，只能说明步骤。')).toBe(true)
+    expect(looksLikeToolCapabilityDenial('已经安装完成，技能位于 .lidow/skills。')).toBe(false)
+  })
+
+  it('不把问句或完成答复当成计划', () => {
+    expect(looksLikePlanOnlyReply('我先看一下，你希望装到哪个目录？')).toBe(false)
+    expect(looksLikePlanOnlyReply('任务已完成，文件已写入 index.html。')).toBe(false)
+  })
+
+  it('只在执行型用户任务上触发催促', () => {
+    expect(looksLikeActionRequest('安装一下这个 skills {https://github.com/x/y}')).toBe(true)
+    expect(looksLikeActionRequest('你在干嘛')).toBe(false)
   })
 })
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, shell, nativeTheme, webContents } from 'electron'
+import { app, BrowserWindow, shell, nativeTheme, session as electronSession, webContents } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
@@ -10,7 +10,14 @@ import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { Logger } from '@main/infra/log'
 import { isAbsoluteProjectPath } from '@shared/path'
-import type { DomAdapter, McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
+import type {
+  DomAdapter,
+  McpServerConfig,
+  ProviderDescriptor,
+  QuickCommand,
+  SkillDraft,
+  StopLevel
+} from '@shared/types'
 
 
 /** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
@@ -53,7 +60,10 @@ export function registerHandlers(
     if (!isAbsoluteProjectPath(r, process.platform === 'win32' ? 'win32' : 'posix')) {
       throw new Error('无效的项目路径: ' + r)
     }
-    return ctx.openProject(r)
+    const opened = ctx.openProject(r)
+    // 多客户端（桌面 + Web）场景：其他渲染层也要同步项目切换
+    ctx.emit({ type: 'projects-changed', sessionId: '' })
+    return opened
   })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
   R('removeProject', (projectId: string) => ctx.removeProject(String(projectId)))
@@ -110,6 +120,48 @@ export function registerHandlers(
   R('updateProviderAdapter', (projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']) =>
     ctx.providerRegistryOf(String(projectId)).update(String(providerId), { adapter })
   )
+  /**
+   * Web 版登录态：浏览器拿不到系统目录对话框，也没有可操作的网页窗口。
+   * 允许把平台登录后的 Cookie 直接写进对应 partition，服务端隐藏宿主随即生效。
+   */
+  R('importProviderCookies', async (providerId: string, cookieText: string, accountId?: string) => {
+    const project = ctx.activeProject()
+    if (!project) throw new Error('请先初始化项目')
+    const reg = ctx.providerRegistryOf(project.id)
+    const provider = reg.get(String(providerId))
+    if (!provider) throw new Error(`未知平台: ${String(providerId)}`)
+    const pairs = parseCookieInput(String(cookieText ?? ''))
+    if (pairs.length === 0) throw new Error('没有解析到有效 Cookie')
+    const partition = reg.partitionOf(String(providerId), accountId ? String(accountId) : undefined)
+    const origin = new URL(provider.home).origin
+    const jar = electronSession.fromPartition(partition)
+    let imported = 0
+    for (const c of pairs) {
+      try {
+        await jar.cookies.set({
+          url: origin,
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path || '/',
+          secure: c.secure ?? origin.startsWith('https:'),
+          expirationDate: c.expirationDate ?? Math.floor(Date.now() / 1000) + 365 * 86400
+        })
+        imported++
+      } catch (e) {
+        Logger.warn('provider', `Cookie 写入失败 ${c.name}: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+    // 已经打开的宿主页面需要重载才能用新登录态
+    for (const wc of webContents.getAllWebContents()) {
+      try {
+        if (wc.getType() === 'webview' && wc.session === jar) wc.reload()
+      } catch {
+        /* 页面正在销毁 */
+      }
+    }
+    return { imported }
+  })
 
   // ---------- 会话 ----------
   R('listSessions', (projectId: string, providerId?: string) =>
@@ -219,6 +271,7 @@ export function registerHandlers(
     const project = findProjectOfSession(ctx, String(sessionId))
     if (project) ctx.sessionStoreOf(project).rename(String(sessionId), String(title))
   })
+  R('startProjectSession', (sessionId: string) => ctx.startProjectSession(String(sessionId)))
   R('compactSession', (sessionId: string) => {
     ctx.loop.compactNow(String(sessionId))
     return ctx.sessionOf(String(sessionId))
@@ -387,11 +440,53 @@ export function registerHandlers(
   R('openPathInSystem', (path: string) => void shell.openPath(String(path)))
 
   // ---------- 生态 ----------
-  R('listSkills', () => import('@main/ecosystem/skills').then((m) => m.listSkills(ctx.activeProject()?.root)))
-  R('listAgents', () => import('@main/ecosystem/skills').then((m) => m.listAgents(ctx.activeProject()?.root)))
-  R('listRules', () => import('@main/ecosystem/skills').then((m) => m.listRules(ctx.activeProject()?.root)))
+  const skillImports = () => import('@main/ecosystem/skills')
+  R('listSkills', () => skillImports().then((m) => m.listSkills(ctx.activeProject()?.root)))
+  R('getSkillDir', (scope: 'project' | 'user') =>
+    skillImports().then((m) => m.skillsDirForScope(scope === 'project' ? 'project' : 'user', ctx.activeProject()?.root))
+  )
+  R('createSkill', (input: SkillDraft) =>
+    skillImports().then((m) => m.createSkill(input, ctx.activeProject()?.root))
+  )
+  R('updateSkill', (path: string, input: SkillDraft) =>
+    skillImports().then((m) => m.updateSkill(String(path), input, ctx.activeProject()?.root))
+  )
+  R('setSkillEnabled', (path: string, enabled: boolean) =>
+    skillImports().then((m) => m.setSkillEnabled(String(path), Boolean(enabled), ctx.activeProject()?.root))
+  )
+  R('trashSkill', (path: string) =>
+    skillImports().then((m) => m.trashSkill(String(path), ctx.activeProject()?.root))
+  )
+  R('listSkillTrash', () => skillImports().then((m) => m.listSkillTrash(ctx.activeProject()?.root)))
+  R('restoreSkillTrash', (id: string) =>
+    skillImports().then((m) => m.restoreSkillTrash(String(id), ctx.activeProject()?.root))
+  )
+  R('purgeSkillTrash', (id: string) =>
+    skillImports().then((m) => m.purgeSkillTrash(String(id), ctx.activeProject()?.root))
+  )
+  R('installSkillsFromGitHub', (url: string, scope: 'project' | 'user', category?: string) =>
+    import('@main/ecosystem/skillInstall').then((m) =>
+      m.installSkillsFromGitHub(
+        { url: String(url), scope: scope === 'project' ? 'project' : 'user', category: category ? String(category) : undefined },
+        ctx.activeProject()?.root
+      )
+    )
+  )
+  R('listExternalSkills', () => skillImports().then((m) => m.listExternalSkills(ctx.activeProject()?.root)))
+  R('importExternalSkills', (paths: string[], scope: 'project' | 'user', category?: string) =>
+    skillImports().then((m) =>
+      m.importExternalSkills(
+        Array.isArray(paths) ? paths.map(String) : [],
+        scope === 'project' ? 'project' : 'user',
+        ctx.activeProject()?.root,
+        category ? String(category) : undefined
+      )
+    )
+  )
+  R('listAgents', () => skillImports().then((m) => m.listAgents(ctx.activeProject()?.root)))
+  R('listRules', () => skillImports().then((m) => m.listRules(ctx.activeProject()?.root)))
   R('readSkill', (path: string) =>
-    import('@main/ecosystem/skills').then((m) => m.readSkill(String(path), ctx.activeProject()?.root))
+    skillImports().then((m) => m.readSkill(String(path), ctx.activeProject()?.root))
   )
   R('listMemory', () => ctx.memory.list())
   R('addMemory', (title: string, content: string, tags: string[]) =>
@@ -571,7 +666,7 @@ export function registerHandlers(
     // 弹窗只会藏在后面；退出后新会话需要正常提示一次初始化。
     if (ctx.lastSessionId) ctx.configureOverlay(ctx.lastSessionId)
   })
-  R('checkUpdate', () => ctx.updateCheck())
+  R('checkUpdate', (manual?: boolean) => ctx.updateCheck(Boolean(manual)))
   R('getUpdateState', () => import('@main/app/platform').then((m) => m.getUpdateState()))
   R('downloadUpdate', () =>
     import('@main/app/platform').then((m) => m.downloadAndInstallUpdate())
@@ -579,6 +674,50 @@ export function registerHandlers(
   R('listTemplates', () => ctx.templates())
   R('applyTemplate', (templateId: string, root: string) => ctx.applyTemplate(String(templateId), String(root)))
   R('pushToSync', (text: string) => ctx.pushSync(String(text)))
+}
+
+interface CookieInput {
+  name: string
+  value: string
+  domain?: string
+  path?: string
+  secure?: boolean
+  expirationDate?: number
+}
+
+/** 支持浏览器 DevTools 的 Cookie 请求头，也支持导出的 JSON Cookie 数组 */
+function parseCookieInput(raw: string): CookieInput[] {
+  const text = raw.trim()
+  if (!text) return []
+  if (text.startsWith('[')) {
+    try {
+      const arr = JSON.parse(text) as unknown
+      if (!Array.isArray(arr)) return []
+      return arr
+        .map((item) => item as Record<string, unknown>)
+        .filter((item) => typeof item.name === 'string' && item.name && 'value' in item)
+        .map((item) => ({
+          name: String(item.name),
+          value: String(item.value ?? ''),
+          domain: typeof item.domain === 'string' && item.domain ? item.domain : undefined,
+          path: typeof item.path === 'string' && item.path ? item.path : undefined,
+          secure: typeof item.secure === 'boolean' ? item.secure : undefined,
+          expirationDate: typeof item.expirationDate === 'number' ? item.expirationDate : undefined
+        }))
+    } catch {
+      return []
+    }
+  }
+  const out: CookieInput[] = []
+  for (const part of text.split(/;\s*/)) {
+    const i = part.indexOf('=')
+    if (i <= 0) continue
+    const name = part.slice(0, i).trim()
+    const value = part.slice(i + 1).trim()
+    if (!name || /^(path|domain|expires|max-age|samesite|secure|httponly)$/i.test(name)) continue
+    out.push({ name, value })
+  }
+  return out
 }
 
 function findProjectOfSession(ctx: AppContext, sessionId: string): string | null {

@@ -65,6 +65,48 @@ export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
     }
   }
 
+  const installSkill: ToolDef = {
+    name: 'installSkill',
+    description:
+      '从 GitHub 安装技能到 Lidow（无需 bash/git/代理命令）。支持仓库根地址或 /tree/<branch>/<目录>；自动下载含 SKILL.md 的技能目录。',
+    parameters: {
+      url: { type: 'string', description: 'GitHub 仓库地址', required: true },
+      scope: { type: 'string', description: 'project（当前项目）或 user（用户级），默认 project' },
+      category: { type: 'string', description: '技能分类，默认仓库名' }
+    },
+    dangerLevel: 'safe',
+    async run(input, ctx) {
+      const url = str(input, 'url').trim()
+      if (!url) return { ok: false, output: '', error: 'url 不能为空' }
+      const scope = str(input, 'scope').trim() === 'user' ? 'user' : 'project'
+      const root = ctx.projectRoot || refs.projectRoot()
+      if (scope === 'project' && !root) return { ok: false, output: '', error: '当前没有打开项目' }
+      try {
+        const { installSkillsFromGitHub } = await import('@main/ecosystem/skillInstall')
+        const result = await installSkillsFromGitHub(
+          { url, scope, category: str(input, 'category').trim() || undefined },
+          root
+        )
+        if (result.installed.length === 0) {
+          return {
+            ok: false,
+            output: '',
+            error: `没有安装技能${result.skipped.length ? `：${result.skipped.join('；')}` : ''}`
+          }
+        }
+        const lines = result.installed.map((s) => `${s.name} → ${s.path}`)
+        return {
+          ok: true,
+          output:
+            `已安装 ${result.installed.length} 个技能：\n${lines.join('\n')}` +
+            (result.skipped.length ? `\n跳过：${result.skipped.join('；')}` : '')
+        }
+      } catch (e) {
+        return { ok: false, output: '', error: `安装失败：${e instanceof Error ? e.message : String(e)}` }
+      }
+    }
+  }
+
   const planSubmit: ToolDef = {
     name: 'planSubmit',
     description: '提交分步任务计划草稿给用户确认（复杂任务建议先拆解）。用户确认后按步骤执行。',
@@ -92,5 +134,5 @@ export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
     }
   }
 
-  return [remember, forgetMemory, readSkillTool, planSubmit]
+  return [remember, forgetMemory, readSkillTool, installSkill, planSubmit]
 }

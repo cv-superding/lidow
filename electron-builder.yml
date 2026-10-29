@@ -25,12 +25,18 @@ asar: true
 extraResources:
   - from: templates
     to: templates
+  - from: build/icon.png
+    to: icon.png
+  - from: build/icon.ico
+    to: icon.ico
+  - from: out/web
+    to: web
 
 win:
   target:
     - nsis
     - portable
-  icon: build/icon.png
+  icon: build/icon.ico
 
 nsis:
   oneClick: false

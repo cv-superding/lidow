@@ -4,11 +4,13 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import hljs from 'highlight.js'
-import { useStore, type ReviewFile } from '../store'
+import { useStore, useProject, WEB_MODE, type ReviewFile } from '../store'
 import { api } from '../api'
+import { waitWebviewWcId, webviewWcId } from '../webviews'
 import { stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
+import { PureToolbar } from './TitleBar'
 import type { ChatTurn, SkillMeta, ToolResult } from '@shared/types'
 import {
   IconArrowUp,
@@ -23,7 +25,8 @@ import {
   IconEye,
   IconChevronDown,
   IconClose,
-  IconDiff
+  IconDiff,
+  IconFolder
 } from './icons'
 
 const SLASH_COMMANDS = [
@@ -448,7 +451,12 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const [slashIndex, setSlashIndex] = useState(0)
   const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
   const projectId = useStore((s) => s.activeProjectId)
+  const project = useProject(useStore())
   const [skills, setSkills] = useState<SkillMeta[]>([])
+  const [initOpen, setInitOpen] = useState(false)
+  const [initPicking, setInitPicking] = useState(false)
+  const [initStarting, setInitStarting] = useState(false)
+  const [initName, setInitName] = useState('')
 
   // 打开斜杠菜单时重新扫描技能/快捷指令：新装的技能和刚保存的指令不需要重启软件
   useEffect(() => {
@@ -522,6 +530,72 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     return tab?.providerId ?? st.providers[0]?.id
   }
 
+  const pickProjectDir = async (): Promise<void> => {
+    if (initPicking) return
+    setInitPicking(true)
+    try {
+      // 浏览器拿不到系统目录对话框：Web 版直接输入服务端容器内路径
+      const dir = WEB_MODE
+        ? window.prompt('容器内工作目录（例如 /workspace）', project?.root ?? '/workspace')
+        : await api.pickDirectory()
+      if (dir) await useStore.getState().openProject(dir)
+    } catch (e) {
+      useStore.getState().notice(`选择目录失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setInitPicking(false)
+    }
+  }
+
+  const finishInit = async (): Promise<void> => {
+    if (!project || initStarting) return
+    setInitStarting(true)
+    try {
+      const st = useStore.getState()
+      let session = st.activeSession
+      if (!session) {
+        const pid = preferredProviderId()
+        if (!pid) {
+          useStore.getState().notice('请先选择一个 AI 平台', 'warn')
+          return
+        }
+        await st.createSession(pid)
+        session = useStore.getState().activeSession
+      }
+      if (!session) return
+
+      const title = initName.trim().slice(0, 40)
+      if (title) {
+        await api.renameSession(session.id, title)
+        useStore.setState((cur) => ({
+          activeSession:
+            cur.activeSession?.id === session.id ? { ...cur.activeSession, title, titleLocked: true } : cur.activeSession,
+          sessions: cur.sessions.map((s) => (s.id === session.id ? { ...s, title } : s))
+        }))
+      }
+
+      // 等 webview attach 并完成绑定：初始化提示词必须发进这条新对话
+      const tabs = useStore.getState().tabs
+      const tab = tabs.find((t) => t.sessionId === session.id) ?? tabs.find((t) => t.providerId === session.providerId)
+      if (tab) {
+        const wcId = webviewWcId(tab.id)
+        if (wcId <= 0) await waitWebviewWcId(tab.id, 60)
+      }
+
+      setInitOpen(false)
+      useStore.getState().notice('正在初始化网页会话…')
+      const ok = await api.startProjectSession(session.id)
+      if (!ok) {
+        useStore.getState().notice('网页还没准备好，初始化未完成：可稍后在网页模式重试', 'warn')
+        return
+      }
+      window.setTimeout(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus(), 60)
+    } catch (e) {
+      useStore.getState().notice(`初始化失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setInitStarting(false)
+    }
+  }
+
   const submit = async (): Promise<void> => {
     const text = input.trim()
     if (!text) return
@@ -579,7 +653,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         .map((q) => ({ key: `q_${q.id}`, trigger: `/${q.trigger}`, label: q.name, template: q.template })),
       // 技能也作为斜杠命令暴露；输入后由 AI 调 readSkill 读取正文（渐进披露，不塞满上下文）
       ...skills
-        .filter((s) => s.name.trim())
+        .filter((s) => s.name.trim() && s.enabled !== false)
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((s) => ({
           key: `skill_${s.path}`,
@@ -622,6 +696,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中'}
           </span>
         )}
+        <PureToolbar web={WEB_MODE} />
       </div>
 
       {/* 消息区 */}
@@ -663,24 +738,58 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 )}
               </div>
 
-              {/* 快捷起手式 */}
               {mode === 'pure' && (
-                <div className="grid w-full max-w-[560px] grid-cols-2 gap-2">
-                  {QUICK_STARTS.map((q) => (
-                    <button
-                      key={q.title}
-                      className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
-                      onClick={() => {
-                        setInput(q.prompt)
-                        document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
-                      }}
+                <div className="flex w-full max-w-[560px] flex-col gap-3">
+                  {/* 初始化项目：新任务空态的主入口，点击弹出目录确认弹窗 */}
+                  <button
+                    className="group flex w-full items-center gap-3 rounded-[var(--r-xl)] border p-4 text-left transition-colors duration-[130ms]"
+                    style={{
+                      borderColor: 'color-mix(in srgb, var(--accent) 38%, var(--border))',
+                      background: 'var(--accent-soft)'
+                    }}
+                    onClick={() => {
+                      setInitName(
+                        activeSession?.title && activeSession.title !== '新会话' ? activeSession.title : ''
+                      )
+                      setInitOpen(true)
+                    }}
+                  >
+                    <span
+                      className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[11px]"
+                      style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
                     >
-                      <span className="text-[12px] font-medium">{q.title}</span>
-                      <span className="line-clamp-2 text-[11px] leading-[1.55]" style={{ color: 'var(--text-hint)' }}>
-                        {q.desc}
+                      <IconFolder size={17} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[13px] font-semibold">初始化项目</span>
+                      <span className="mt-0.5 block truncate text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                        {project?.root ?? '选择一个工作目录，AI 才能读写本地文件'}
                       </span>
-                    </button>
-                  ))}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-0.5 text-[11.5px]" style={{ color: 'var(--accent)' }}>
+                      {project ? '更换' : '选择目录'}
+                      <IconChevronRight size={12} />
+                    </span>
+                  </button>
+
+                  {/* 快捷起手式 */}
+                  <div className="grid w-full grid-cols-2 gap-2">
+                    {QUICK_STARTS.map((q) => (
+                      <button
+                        key={q.title}
+                        className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
+                        onClick={() => {
+                          setInput(q.prompt)
+                          document.querySelector<HTMLTextAreaElement>('textarea')?.focus()
+                        }}
+                      >
+                        <span className="text-[12px] font-medium">{q.title}</span>
+                        <span className="line-clamp-2 text-[11px] leading-[1.55]" style={{ color: 'var(--text-hint)' }}>
+                          {q.desc}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -932,6 +1041,100 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           </div>
         </div>
       </div>
+
+      {/* 初始化项目弹窗：选择/更换工作目录，确认后回到对话输入 */}
+      {initOpen && (
+        <div
+          className="fixed inset-0 z-[76] flex items-center justify-center px-6"
+          style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !initPicking) setInitOpen(false)
+          }}
+        >
+          <div
+            className="anim-pop w-full max-w-[460px] overflow-hidden rounded-[18px]"
+            style={{
+              background: 'var(--surface-raised)',
+              border: '1px solid var(--border-strong)',
+              boxShadow: '0 24px 64px rgba(0,0,0,.28)'
+            }}
+          >
+            <div className="flex items-center gap-2.5 border-b px-5 py-4" style={{ borderColor: 'var(--border-soft)' }}>
+              <span
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
+                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+              >
+                <IconFolder size={16} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="text-[14px] font-semibold">第一步：初始化项目</div>
+                <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                  AI 需要一个工作目录才能读写你的文件
+                </div>
+              </div>
+              <button
+                className="btn btn-sm btn-ghost btn-icon"
+                title="关闭"
+                disabled={initPicking}
+                onClick={() => setInitOpen(false)}
+              >
+                <IconClose size={12} />
+              </button>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                选定目录后再开始对话；之后也可以在左侧项目菜单中切换。
+              </div>
+              <div
+                className="rounded-[var(--r-md)] border px-3 py-2.5 font-mono text-[11.5px] break-all"
+                style={{
+                  borderColor: 'var(--border-soft)',
+                  background: 'var(--surface-sunken)',
+                  color: project ? 'var(--text)' : 'var(--warning)'
+                }}
+              >
+                {project?.root ?? '尚未选择目录'}
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                  会话名称（可选）
+                </span>
+                <input
+                  className="field h-9"
+                  maxLength={40}
+                  placeholder="例如：修复登录问题；留空则自动命名"
+                  value={initName}
+                  onChange={(e) => setInitName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      void finishInit()
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <div
+              className="flex items-center justify-end gap-2 border-t px-5 py-3"
+              style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
+            >
+              <button className="btn btn-sm btn-ghost" disabled={initPicking} onClick={() => setInitOpen(false)}>
+                取消
+              </button>
+              <button className="btn btn-sm btn-outline" disabled={initPicking} onClick={() => void pickProjectDir()}>
+                {initPicking ? '选择中…' : project ? '更换目录' : '选择目录'}
+              </button>
+              <button
+                className="btn btn-sm btn-primary"
+                disabled={!project || initPicking || initStarting}
+                onClick={() => void finishInit()}
+              >
+                {initStarting ? '初始化中…' : '开始对话'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

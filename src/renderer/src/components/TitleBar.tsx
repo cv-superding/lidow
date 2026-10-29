@@ -50,8 +50,8 @@ export function WindowControls(): React.JSX.Element {
   )
 }
 
-/** 纯模式右上工具条：新建 / 任务 / 文件 / 终端 / 设置（Qoder 同款胶囊） */
-function PureToolbar(): React.JSX.Element {
+/** 纯模式会话头右侧工具条：新建 / 任务 / 文件 / 终端 / 设置（Qoder 同款胶囊） */
+export function PureToolbar({ web = false }: { web?: boolean } = {}): React.JSX.Element {
   const auxPanel = useStore((s) => s.auxPanel)
   const toggleAux = useStore((s) => s.toggleAux)
   const setPureView = useStore((s) => s.setPureView)
@@ -70,7 +70,7 @@ function PureToolbar(): React.JSX.Element {
   }
   return (
     <div
-      className="mr-2 flex items-center gap-0.5 rounded-full p-0.5"
+      className="flex items-center gap-0.5 rounded-full p-0.5"
       style={{
         background: 'var(--surface)',
         border: '1px solid var(--border)',
@@ -104,21 +104,22 @@ function PureToolbar(): React.JSX.Element {
       >
         <IconTerminal size={14} />
       </button>
-      <button className={btn} style={idle} title="设置" onClick={() => setPureView('settings')}>
-        <IconSettings size={14} />
-      </button>
+      {!web && (
+        <button className={btn} style={idle} title="设置" onClick={() => setPureView('settings')}>
+          <IconSettings size={14} />
+        </button>
+      )}
     </div>
   )
 }
 
-/** 纯模式顶部拖拽条：左侧留白可拖拽，右侧工具条 + 窗口控件 */
+/** 纯模式顶部拖拽条：左侧留白可拖拽，右侧只保留窗口控件 */
 export function DragStrip(): React.JSX.Element {
   return (
     <div
       className="flex h-9 shrink-0 items-center justify-end border-b"
       style={{ borderColor: 'var(--border)', background: 'var(--sidebar)', WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <PureToolbar />
       <WindowControls />
     </div>
   )

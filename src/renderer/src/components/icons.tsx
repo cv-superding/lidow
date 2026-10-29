@@ -385,6 +385,24 @@ export function IconEye({ size, className }: P): React.JSX.Element {
   )
 }
 
+export function IconEdit({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 13h10" />
+      <path d="m9.8 2.8 2 2L6 10.6l-2.5.5.5-2.5 5.8-5.8Z" />
+    </svg>
+  )
+}
+
+export function IconCopy({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+      <path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2" />
+    </svg>
+  )
+}
+
 /** 手（变更前确认） */
 export function IconHand({ size, className }: P): React.JSX.Element {
   return (

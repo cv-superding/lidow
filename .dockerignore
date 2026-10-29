@@ -20,3 +20,9 @@ test
 docs
 README.md
 LICENSE
+
+.web-demo
+.ui-demo
+.skills-demo
+dist-*
+.icon-demo

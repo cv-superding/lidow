@@ -1,6 +1,6 @@
 {
   "name": "lidow",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Lidow — 零 Token 成本内嵌网页版 AI Agent 桌面端",
   "main": "./out/main/index.js",
   "type": "commonjs",
@@ -9,16 +9,17 @@
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && vite build --config vite.web.config.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "lint": "eslint . --max-warnings 0",
     "format": "prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "electron-vite preview",
-    "dist:win": "electron-vite build && electron-builder --win --config electron-builder.yml",
-    "dist:mac": "electron-vite build && electron-builder --mac --config electron-builder.yml",
-    "dist:linux": "electron-vite build && electron-builder --linux dir --config electron-builder.yml --publish never"
+    "dist:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "dist:mac": "npm run build && electron-builder --mac --universal --config electron-builder.yml",
+    "dist:linux": "npm run build && electron-builder --linux dir --config electron-builder.yml --publish never",
+    "build:web": "vite build --config vite.web.config.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.32.2",

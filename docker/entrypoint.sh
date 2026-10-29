@@ -7,7 +7,7 @@ PUID="${PUID:-1000}"
 PGID="${PGID:-1000}"
 DISPLAY_NUM="${LIDOW_DISPLAY:-:99}"
 SCREEN="${LIDOW_SCREEN:-1360x860x24}"
-VNC_PORT="${LIDOW_VNC_PORT:-6080}"
+WEB_PORT="${LIDOW_WEB_PORT:-6080}"
 
 seed_profile() {
   mkdir -p "$CONFIG_DIR" "$PROJECT_DIR"
@@ -24,7 +24,7 @@ seed_profile() {
       > "$CONFIG_DIR/projects.json"
   fi
   if [ ! -f "$CONFIG_DIR/settings.json" ]; then
-    printf '%s\n' '{"theme":"graphite","desktopPet":false,"pureMode":false}' > "$CONFIG_DIR/settings.json"
+    printf '%s\n' '{"theme":"graphite","desktopPet":false,"pureMode":true}' > "$CONFIG_DIR/settings.json"
   fi
 }
 
@@ -47,13 +47,10 @@ chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
 APP_PID=""
 XVFB_PID=""
-OPENBOX_PID=""
-X11VNC_PID=""
-WEBSOCKIFY_PID=""
 
 cleanup() {
   trap - EXIT INT TERM
-  for pid in "$APP_PID" "$WEBSOCKIFY_PID" "$X11VNC_PID" "$OPENBOX_PID" "$XVFB_PID"; do
+  for pid in "$APP_PID" "$XVFB_PID"; do
     if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; fi
   done
   wait 2>/dev/null || true
@@ -61,6 +58,11 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 export DISPLAY="$DISPLAY_NUM"
+# Web 版：Electron 窗口只作为隐藏的 AI 网页宿主，用户只访问 6080 的原生网页界面
+export LIDOW_WEB_SERVER=1
+export LIDOW_HOST_VISIBLE=1
+export LIDOW_WEB_PORT="$WEB_PORT"
+
 echo "[lidow] starting Xvfb ${DISPLAY} (${SCREEN})"
 Xvfb "$DISPLAY" -screen 0 "$SCREEN" -ac +extension GLX +render -noreset &
 XVFB_PID=$!
@@ -74,37 +76,6 @@ if ! kill -0 "$XVFB_PID" 2>/dev/null; then
   exit 1
 fi
 
-# 轻量窗口管理器：原生文件对话框/焦点切换更稳定
-if command -v openbox >/dev/null 2>&1; then
-  openbox >/tmp/openbox.log 2>&1 &
-  OPENBOX_PID=$!
-fi
-
-VNC_ARGS=(-display "$DISPLAY" -forever -shared -localhost -rfbport 5900 -noxdamage -repeat -o /tmp/x11vnc.log)
-if [ -n "${LIDOW_VNC_PASSWORD:-}" ]; then
-  mkdir -p "$HOME/.vnc"
-  x11vnc -storepasswd "$LIDOW_VNC_PASSWORD" "$HOME/.vnc/passwd" >/dev/null 2>&1
-  VNC_ARGS+=(-rfbauth "$HOME/.vnc/passwd")
-else
-  VNC_ARGS+=(-nopw)
-fi
-echo "[lidow] starting x11vnc"
-x11vnc "${VNC_ARGS[@]}" &
-X11VNC_PID=$!
-
-echo "[lidow] noVNC listening on 0.0.0.0:${VNC_PORT}"
-NOVNC_WEB="${LIDOW_NOVNC_WEB:-/usr/share/novnc}"
-if [ ! -f "$NOVNC_WEB/vnc.html" ]; then
-  found="$(find /usr/share -name vnc.html -print -quit 2>/dev/null || true)"
-  if [ -n "$found" ]; then NOVNC_WEB="$(dirname "$found")"; fi
-fi
-if [ ! -f "$NOVNC_WEB/vnc.html" ] || ! command -v websockify >/dev/null 2>&1; then
-  echo "[lidow] noVNC/websockify not installed correctly" >&2
-  exit 1
-fi
-websockify --web="$NOVNC_WEB" "$VNC_PORT" 127.0.0.1:5900 &
-WEBSOCKIFY_PID=$!
-
 APP_BIN="${LIDOW_APP_BIN:-}"
 if [ -z "$APP_BIN" ]; then
   APP_BIN="$(find /opt/lidow -maxdepth 1 -type f -perm -u+x \( -iname 'lidow*' -o -iname 'electron' \) -print -quit)"
@@ -117,7 +88,7 @@ fi
 APP_ARGS=(--no-sandbox --disable-dev-shm-usage --disable-gpu-sandbox --ozone-platform=x11)
 if [ "${LIDOW_ENABLE_GPU:-0}" != "1" ]; then APP_ARGS+=(--disable-gpu); fi
 
-echo "[lidow] starting app: $APP_BIN"
+echo "[lidow] starting app host: $APP_BIN"
 if command -v dbus-run-session >/dev/null 2>&1; then
   dbus-run-session -- "$APP_BIN" "${APP_ARGS[@]}" &
 else
@@ -125,5 +96,9 @@ else
 fi
 APP_PID=$!
 
-echo "[lidow] open http://<host>:${VNC_PORT}/vnc.html?autoconnect=true&resize=scale"
+if [ -n "${LIDOW_WEB_TOKEN:-}" ]; then
+  echo "[lidow] open http://<host>:${WEB_PORT}/?token=${LIDOW_WEB_TOKEN}"
+else
+  echo "[lidow] open http://<host>:${WEB_PORT}/"
+fi
 wait "$APP_PID"

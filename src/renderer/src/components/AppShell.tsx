@@ -8,6 +8,7 @@ import { RightDock } from './RightDock'
 import { HelpPanel } from './HelpPanel'
 import { UpdatePrompt } from './UpdatePrompt'
 import { WhalePet } from './WhalePet'
+import { SkillsView } from './SkillsView'
 import {
   SessionsView,
   FilesView,
@@ -17,7 +18,6 @@ import {
   KnowledgeView,
   AuditView,
   SettingsView,
-  SkillsView,
   AgentsView,
   McpView,
   QuickCommandsView,
@@ -505,7 +505,7 @@ function PureModeSuggestion(): React.JSX.Element | null {
 }
 
 /** 删除会话：本地记录与网页端对话一起删除 */
-function SessionDeleteDialog(): React.JSX.Element | null {
+export function SessionDeleteDialog(): React.JSX.Element | null {
   const req = useStore((s) => s.sessionDelete)
   const cancel = useStore((s) => s.cancelSessionDelete)
   const perform = useStore((s) => s.performSessionDelete)

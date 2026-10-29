@@ -70,6 +70,8 @@ export interface SessionMeta {
    * 子代理的对话里，父会话后续消息会发进错误的上下文。
    */
   providerUrl?: string
+  /** 用户手动命名过：网页自动标题不再覆盖 */
+  titleLocked?: boolean
 }
 
 export interface Session extends SessionMeta {
@@ -136,6 +138,51 @@ export interface SkillMeta {
   scope: 'project' | 'user'
   path: string
   body?: string
+  /** 分类目录（.lidow/skills/<category>/<name>/SKILL.md） */
+  category?: string
+  /** 关闭后仍保留文件，但不进入 AI 摘要和斜杠菜单 */
+  enabled?: boolean
+}
+
+export interface SkillDraft {
+  name: string
+  description: string
+  body: string
+  scope: 'project' | 'user'
+  category?: string
+}
+
+export interface SkillTrashItem {
+  id: string
+  name: string
+  description: string
+  scope: 'project' | 'user'
+  /** 原技能目录/文件路径 */
+  path: string
+  trashPath: string
+  category?: string
+  deletedAt: number
+}
+
+export interface GitHubSkillInstallResult {
+  repo: string
+  installed: { name: string; path: string }[]
+  skipped: string[]
+}
+
+/** 其他 Agent/CLI 已有技能（只读扫描，导入后复制到 Lidow） */
+export interface ExternalSkillMeta {
+  name: string
+  description: string
+  source: string
+  sourceId: string
+  path: string
+  category?: string
+}
+
+export interface ExternalSkillImportResult {
+  imported: { name: string; path: string }[]
+  skipped: string[]
 }
 
 export interface AgentMeta {

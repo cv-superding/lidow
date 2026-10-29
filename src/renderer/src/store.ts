@@ -27,6 +27,14 @@ import type {
 /** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
 export type AuxPanel = 'files' | 'tasks' | 'terminal' | 'review'
 
+/**
+ * Web 版（Docker 原生网页界面）：浏览器里没有 Electron webview，
+ * provider 页面由服务端隐藏宿主负责创建/绑定，这里只跑会话与对话 UI。
+ */
+export const WEB_MODE =
+  typeof window !== 'undefined' &&
+  Boolean((window as unknown as { __LIDOW_WEB__?: boolean }).__LIDOW_WEB__ === true)
+
 /** 审阅面板里的单个文件改动 */
 export interface ReviewFile {
   path: string
@@ -580,6 +588,11 @@ export const useStore = create<LidowState>((set, get) => ({
       confirmRequest: null
     })
     await get().refreshSessions()
+    if (WEB_MODE) {
+      const ok = await api.hostAttachSession(s.id)
+      if (!ok) get().notice('服务端网页宿主未就绪，AI 页面可能还未打开', 'warn')
+      return
+    }
     await get().openProviderTab(providerId, s.id, account)
   },
 
@@ -610,8 +623,12 @@ export const useStore = create<LidowState>((set, get) => ({
     // 否则纯净模式直接发送会报「网页未连接」（loop 找不到 channel）。
     if (s) {
       try {
-        // 旧会话没有 accountId 时按默认分区打开，不能落到 accounts[0] 的新账号
-        await get().openProviderTab(s.providerId, s.id, s.accountId ?? DEFAULT_ACCOUNT_ID)
+        if (WEB_MODE) {
+          await api.hostAttachSession(s.id)
+        } else {
+          // 旧会话没有 accountId 时按默认分区打开，不能落到 accounts[0] 的新账号
+          await get().openProviderTab(s.providerId, s.id, s.accountId ?? DEFAULT_ACCOUNT_ID)
+        }
       } catch {
         /* 平台未配置时忽略，发送时还会再试 */
       }
@@ -620,6 +637,10 @@ export const useStore = create<LidowState>((set, get) => ({
 
 
   async openProviderTab(providerId, sessionId, accountId) {
+    if (WEB_MODE) {
+      if (sessionId) void api.hostAttachSession(sessionId)
+      return
+    }
     const { providers } = get()
     const provider = providers.find((p) => p.id === providerId)
     if (!provider) return
@@ -769,6 +790,17 @@ export const useStore = create<LidowState>((set, get) => ({
       activeSession = get().activeSession
       if (!activeSession) return
     }
+    if (WEB_MODE) {
+      // 服务端宿主已在 createSession/openSession 时绑定好网页，直接交给主进程循环
+      set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
+      try {
+        await api.sendPrompt(activeSession.id, text)
+      } catch (e) {
+        set({ pendingReplySessionId: '' })
+        throw e
+      }
+      return
+    }
     let { activeTabId, tabs } = get()
     let tab = tabs.find((t) => t.id === activeTabId)
     // 活动标签必须属于当前会话的平台（多账号时还要属于同一个账号）；
@@ -842,9 +874,11 @@ export const useStore = create<LidowState>((set, get) => ({
     const cur = get().updateState
     // main 正在下载/已下载：重复 check 只会打断流程
     if (cur.phase === 'checking' || cur.phase === 'downloading' || cur.phase === 'downloaded') return
+    // 用户主动检查时重新展示提示，避免之前点过「稍后」后看不到结果
+    if (manual) set({ updateDismissedVersion: '' })
     set({ updateState: { ...cur, phase: 'checking', manual, message: '' } })
     try {
-      const r = await api.checkUpdate()
+      const r = await api.checkUpdate(manual)
       const latest = get().updateState
       // 事件可能已把状态推进到 available：不要被旧的回包覆盖
       if (latest.phase === 'downloading' || latest.phase === 'downloaded') return
@@ -872,10 +906,11 @@ export const useStore = create<LidowState>((set, get) => ({
   async downloadUpdate() {
     const cur = get().updateState
     if (cur.phase === 'downloading' || cur.phase === 'downloaded') return
-    set({ updateState: { ...cur, phase: 'downloading', percent: 0 } })
+    // 用户点过更新才进入下载：失败必须弹错误，不能被自动检查的 manual=false 隐藏
+    set({ updateState: { ...cur, phase: 'downloading', percent: 0, manual: true } })
     try {
       const r = await api.downloadUpdate()
-      if (!r.ok) set({ updateState: { ...get().updateState, phase: 'error', message: r.message } })
+      if (!r.ok) set({ updateState: { ...get().updateState, phase: 'error', manual: true, message: r.message } })
       else if (get().updateState.phase !== 'downloaded') {
         // 便携版不会真的下载/安装：回退到 available，避免进度条永远停在 0%
         set({ updateState: { ...get().updateState, phase: cur.portable ? 'available' : 'downloaded' } })
@@ -883,7 +918,12 @@ export const useStore = create<LidowState>((set, get) => ({
       }
     } catch (e) {
       set({
-        updateState: { ...get().updateState, phase: 'error', message: e instanceof Error ? e.message : String(e) }
+        updateState: {
+          ...get().updateState,
+          phase: 'error',
+          manual: true,
+          message: e instanceof Error ? e.message : String(e)
+        }
       })
     }
   },
@@ -978,6 +1018,15 @@ export const useStore = create<LidowState>((set, get) => ({
             if (target && get().activeTabId === target.id) set({ activeSession: sess })
           })
           .catch(() => undefined)
+        break
+      }
+      case 'host-open-session': {
+        // 仅服务端隐藏宿主处理：为 Web 客户端打开对应平台页面并绑定会话
+        if (WEB_MODE) break
+        void (async () => {
+          const sess = await api.getSession(e.sessionId).catch(() => null)
+          if (sess) await get().openProviderTab(sess.providerId, sess.id, sess.accountId ?? DEFAULT_ACCOUNT_ID)
+        })()
         break
       }
       case 'session-updated': {

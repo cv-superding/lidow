@@ -29,9 +29,11 @@ jobs:
       - name: Build Windows (installer + portable)
         if: matrix.os == 'windows-latest'
         run: npx electron-builder --win nsis portable --config electron-builder.yml --publish never
-      - name: Build macOS (dmg + zip)
+      - name: Build macOS (universal dmg + zip)
         if: matrix.os == 'macos-latest'
-        run: npx electron-builder --mac --config electron-builder.yml --publish never
+        # macos-latest 是 arm64 runner；--universal 同时打 x64 + arm64，
+        # 避免 Intel Mac 下载到只能跑 Apple Silicon 的包。
+        run: npx electron-builder --mac --universal --config electron-builder.yml --publish never
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:

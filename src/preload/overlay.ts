@@ -1079,8 +1079,9 @@ function renderGoogleLoginNotice(): void {
   const existing = document.getElementById(id)
   const onGoogle = /(^|\.)accounts\.google\./i.test(location.hostname)
   const pageText = (document.body?.innerText ?? '').slice(0, 5000)
-  const blocked =
-    onGoogle && /此浏览器或应用可能不安全|browser or app may not be secure|无法登录|disallowed_useragent/i.test(pageText)
+  // 报错页可能被平台承载在 chatgpt.com 等域名下，不能只依赖 hostname
+  const blockedText = /此浏览器或应用可能不安全|browser or app may not be secure|disallowed_useragent/i.test(pageText)
+  const blocked = blockedText || (onGoogle && /无法登录|sign in|登录/i.test(pageText))
   if (!blocked) {
     existing?.remove()
     return
@@ -1128,9 +1129,9 @@ function renderGoogleLoginNotice(): void {
     '<div class="gb-badge">!</div>' +
     '<div class="gb-body">' +
     '<div class="gb-title">Google 登录被阻止</div>' +
-    '<div class="gb-text">Google 不允许在应用内浏览器完成登录。请返回后改用邮箱/密码登录，或在系统浏览器中打开登录页。</div>' +
+    '<div class="gb-text">Google 不允许在应用内浏览器完成登录。请返回上一步，在平台登录页改用邮箱/验证码；系统浏览器只用于查看/登录，登录态不会自动同步回 Lidow。</div>' +
     '<div class="gb-actions">' +
-    '<button class="gb-btn ghost" data-act="back">返回上一页</button>' +
+    '<button class="gb-btn ghost" data-act="back">返回上一步（改用邮箱）</button>' +
     '<button class="gb-btn primary" data-act="external">在系统浏览器打开</button>' +
     '</div>' +
     '</div>' +

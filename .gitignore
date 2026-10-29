@@ -3,6 +3,7 @@ out/
 dist/
 dist-local*/
 dist-linux*/
+dist-update-test/
 dist-e2e/
 coverage/
 *.local

@@ -16,10 +16,10 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-139%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
-[![Docker](https://img.shields.io/badge/Docker-noVNC%20Desktop-2496ED?logo=docker&logoColor=white)](docs/docker.md)
+[![Docker](https://img.shields.io/badge/Docker-Native%20Web%20UI-2496ED?logo=docker&logoColor=white)](docs/docker.md)
 
 `Electron 45` · `TypeScript strict` · `React 19` · `TailwindCSS 4` · `GPL-3.0`
 
@@ -55,7 +55,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心�
 ## 核心特性
 
 **Agent 内核**
-- 全工具集（19 个）：read / write / edit（保换行 + diff 卡片）/ glob / grep / bash / pwsh / webFetch / webSearch / mysql / deleteFile / todoWrite / injectJS / clipboard / screenshot / sysinfo / mcpCall / kbSearch / remember
+- 全工具集（20 个）：read / write / edit（保换行 + diff 卡片）/ glob / grep / bash / pwsh / webFetch / webSearch / mysql / deleteFile / todoWrite / injectJS / clipboard / screenshot / sysinfo / mcpCall / kbSearch / remember / installSkill（GitHub 技能直装）
 - 三层停止：面板按钮 + 悬浮球右键，分别中断网页生成 / 工具执行 / 自动循环
 - 稳定性：90s SSE 看门狗、自动重试、上下文自动压缩（可手动）、tok/s 实时显示、填入读回校验 + 发送重试
 - 会话血缘：多窗口并发严格隔离（修复上游 #24），支持分叉、自动命名、压缩摘要、导出 Markdown；本地与网页端删除双向同步
@@ -83,8 +83,9 @@ Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心�
 - 多端同步：飞书 / 企业微信 / 钉钉群机器人推送
 - 鲸鱼娘桌宠：待机呼吸 / 工作状态联动（思考、完成、出错、待确认）/ 点击回应与气泡 / 右键投喂、调大小、复位、隐藏 / 可拖动、可关闭
 - 内置自动更新：启动自动检查、应用内下载进度条、下载完成自动重启安装（便携版引导下载页）
-- **Docker 远程桌面**：多阶段镜像内置 Xvfb + noVNC，浏览器即可使用完整 Electron 界面；配置、用户技能与项目分层持久化
+- **Docker 原生 Web 版**：浏览器直接打开 Lidow 网页界面（不是 VNC/远程桌面）；服务端隐藏 Chromium 宿主驱动 AI 网页，项目、会话、工具流与登录态持久化
 - 管理页：工作区 / 会话 / 文件 / 任务 / 技能 / 子代理 / MCP / 插件 / 快捷指令 / 记忆 / 知识库 / 审计 / 设置（搜索、筛选、统计与空态操作齐备）
+- **技能中心**：项目 / 用户 / 回收站分级管理，启用开关即时生效；支持从 GitHub 仓库安装、从 Claude Code / Codex / Cursor / Qoder 等其他 Agent 目录（含软链接技能）一键导入，新建、编辑、删除与恢复齐全
 
 ## 快速开始
 
@@ -94,34 +95,40 @@ npm install
 npm run dev        # 开发模式
 npm test           # 单元测试
 npm run dist:win   # Windows 安装包 + 便携版
-npm run dist:mac   # macOS dmg
+npm run dist:mac   # macOS universal dmg + zip（Intel + Apple Silicon）
 npm run dist:linux # Linux 解包目录（Docker 构建也用它）
 ```
+
+macOS 包未做 Apple 签名/公证；首次打开如被 Gatekeeper 拦截，在 Finder 里右键 App →「打开」。
+
 
 1. 启动后选择一个工作目录（或从模板初始化）
 2. 选择平台标签页，登录你的网页账号（每账号独立分区，互不干扰）
 3. 在右侧 Harness 面板输入任务，确认 AI 的工具调用，收结果
 
-## Docker 部署（远程桌面）
+## Docker 部署（原生 Web 版）
 
-Lidow 是桌面应用，Docker 镜像通过 **Xvfb + x11vnc + noVNC** 运行完整界面，不是重新实现的 Web 版：
+浏览器直接打开的就是 Lidow 原生网页界面，不是 VNC 画面：
 
 ```bash
 mkdir -p workspace
-cp .env.example .env        # 可选：端口 / VNC 密码 / PUID
+cp .env.example .env        # 可选：端口 / 访问令牌 / PUID
 docker compose up -d --build
 ```
 
-打开 `http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale`。
-`./workspace` 已挂载为容器内 `/workspace` 并自动加入项目列表；首次进入后选择平台登录即可。
+打开 `http://127.0.0.1:6080/`。`./workspace` 已挂载为容器内 `/workspace` 并自动加入项目列表。
 
-默认只监听本机；远程访问请设置 `LIDOW_BIND_ADDR=0.0.0.0` 和 `LIDOW_VNC_PASSWORD`，
-并放在 HTTPS/VPN 之后。数据卷、中文输入、GPU、登录风控等说明见 **[Docker 部署文档](docs/docker.md)**。
+首次使用点左下角 **登录平台**：在自己的浏览器登录对应 AI 网站，复制 Cookie 请求头粘贴导入；
+服务端隐藏的 Chromium 会带着这份登录态打开 AI 网页，对话、工具调用与流式回复都在原生 Web 界面呈现。
+Google OAuth 会被平台拒绝，请用邮箱/验证码登录。
+
+默认只监听本机；远程访问请设置 `LIDOW_BIND_ADDR=0.0.0.0` 和 `LIDOW_WEB_TOKEN`，
+访问时带 `?token=...`，并放在 HTTPS/VPN 之后。数据卷、登录、GPU 等说明见 **[Docker 部署文档](docs/docker.md)**。
 
 ## 文档
 
 - [使用手册](docs/usage.md)（5 分钟上手 + 全视图说明）
-- [Docker 部署](docs/docker.md)（远程桌面、持久化、密码与常见问题）
+- [Docker 部署](docs/docker.md)（原生 Web UI、登录态导入、持久化与常见问题）
 - [架构设计](docs/architecture.md)
 - [Provider 开发](docs/provider-dev.md)（自定义平台 / 选择器调试）
 - [插件开发](docs/plugin-dev.md)

@@ -63,6 +63,12 @@ let updateState: UpdateState = { phase: 'idle', portable: isPortable() }
 let updateEmitter: ((state: UpdateState) => void) | null = null
 let updaterWired = false
 let autoCheckTimer: NodeJS.Timeout | null = null
+let autoCheckInterval: NodeJS.Timeout | null = null
+let autoRetryTimer: NodeJS.Timeout | null = null
+let focusCheckBound = false
+let lastCheckStartedAt = 0
+const AUTO_CHECK_INTERVAL_MS = 15 * 60_000
+const FOCUS_CHECK_MIN_MS = 5 * 60_000
 /** Docker 镜像版本固定，应用内自动更新不可用；通过重建镜像升级 */
 const UPDATES_DISABLED = process.env.LIDOW_DISABLE_UPDATE === '1'
 
@@ -134,6 +140,11 @@ export async function checkForUpdate(
   if (updateState.phase === 'downloading' || updateState.phase === 'downloaded') {
     return { hasUpdate: true, version: updateState.version, url: RELEASES_URL, portable: isPortable() }
   }
+  // 已有检查在跑：不要并发发起第二个请求
+  if (updateState.phase === 'checking') {
+    return { hasUpdate: false, version: updateState.version, url: RELEASES_URL, portable: isPortable() }
+  }
+  lastCheckStartedAt = Date.now()
   publishUpdate({ phase: 'checking', manual, message: '' })
   try {
     await wireUpdater(autoUpdater)
@@ -150,7 +161,15 @@ export async function checkForUpdate(
     }
   } catch (e) {
     Logger.warn('updater', `检查更新失败: ${String(e)}`)
-    publishUpdate({ phase: 'error', message: e instanceof Error ? e.message : String(e) })
+    publishUpdate({ phase: 'error', manual, message: e instanceof Error ? e.message : String(e) })
+    // 启动时网络可能还没就绪：自动检查失败后延迟再试一次，不打扰用户
+    if (!manual && !autoRetryTimer) {
+      autoRetryTimer = setTimeout(() => {
+        autoRetryTimer = null
+        void checkForUpdate(false)
+      }, 2 * 60_000)
+      autoRetryTimer.unref?.()
+    }
     return { hasUpdate: false, portable: isPortable() }
   }
 }
@@ -182,7 +201,7 @@ export async function downloadAndInstallUpdate(): Promise<{ ok: boolean; message
   }
 }
 
-/** 启动后延迟自动检查一次（打包版；不打断首屏加载） */
+/** 启动后延迟自动检查一次（打包版；不打断首屏加载），之后周期性检查并响应窗口聚焦 */
 export function scheduleAutoUpdateCheck(delayMs = 8000): void {
   if (UPDATES_DISABLED || !app.isPackaged || autoCheckTimer) return
   autoCheckTimer = setTimeout(() => {
@@ -190,6 +209,24 @@ export function scheduleAutoUpdateCheck(delayMs = 8000): void {
     void checkForUpdate(false)
   }, delayMs)
   autoCheckTimer.unref?.()
+
+  // 应用可能长时间开着：每 15 分钟检查一次，避免发布新版本后必须手动点检查
+  if (!autoCheckInterval) {
+    autoCheckInterval = setInterval(() => {
+      if (Date.now() - lastCheckStartedAt >= AUTO_CHECK_INTERVAL_MS) void checkForUpdate(false)
+    }, 60_000)
+    autoCheckInterval.unref?.()
+  }
+
+  // 从后台切回来时补查一次（5 分钟内查过就跳过）
+  if (!focusCheckBound) {
+    focusCheckBound = true
+    app.on('browser-window-focus', () => {
+      if (UPDATES_DISABLED || !app.isPackaged) return
+      if (Date.now() - lastCheckStartedAt < FOCUS_CHECK_MIN_MS) return
+      void checkForUpdate(false)
+    })
+  }
 }
 
 /** 项目模板库：内置 templates/ 目录扫描 */

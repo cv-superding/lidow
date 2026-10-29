@@ -99,6 +99,7 @@ function isGenericTitlePart(part: string, providerName: string): boolean {
     GENERIC_CHAT_TITLES.has(p) ||
     p === providerName.toLowerCase() ||
     p.includes('探索未至之境') ||
+    p.includes('into the unknown') ||
     p.includes('抖音旗下')
   )
 }
@@ -174,6 +175,8 @@ export class AppContext {
   private wcProviders = new Map<number, { providerId: string; accountId?: string }>()
   /** 本地删除网页对话进行中的 URL：忽略 overlay 反向回调，避免同名事件重复删/竞态 */
   private webChatDeletesInFlight = new Map<string, number>()
+  /** Google 登录提示节流（iframe/主页面可能连续导航） */
+  private lastGoogleLoginNoticeAt = 0
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
   private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
@@ -398,7 +401,9 @@ export class AppContext {
         }
       }
       const cleanTitle = cleanChatTitle(title, descriptor?.name ?? session.providerId)
-      const nextTitle = cleanTitle && cleanTitle !== session.title ? cleanTitle : session.title
+      // 用户手动命名的会话保持原名，网页按首条消息自动生成的标题不覆盖
+      const nextTitle =
+        session.titleLocked || !cleanTitle || cleanTitle === session.title ? session.title : cleanTitle
       const nextUrl = shouldRecordUrl ? url : session.providerUrl
       if (nextUrl === session.providerUrl && nextTitle === session.title) return
       this.sessionStoreOf(session.projectId).update(sessionId, (x) => ({
@@ -442,6 +447,23 @@ export class AppContext {
         this.overlay.disposeWebContents(wc.id)
         this.wcProviders.delete(wc.id)
       })
+      // Google 登录失败有时发生在平台承载的子页面/弹层里，overlay 未必能注入；
+      // 主进程侧再兜底提示一次，避免用户只看到 Google 的报错页。
+      if (wc.getType() === 'webview') {
+        const warnGoogle = (url: string): void => {
+          if (!/accounts\.google\.com|google\.com\/(?:signin|o\/oauth)/i.test(url)) return
+          if (Date.now() - this.lastGoogleLoginNoticeAt < 20_000) return
+          this.lastGoogleLoginNoticeAt = Date.now()
+          this.emit({
+            type: 'notice',
+            sessionId: '',
+            level: 'warn',
+            message: 'Google 不允许在应用内浏览器完成登录：请返回平台登录页改用邮箱/验证码。'
+          })
+        }
+        wc.on('did-navigate', (_event, url) => warnGoogle(url))
+        wc.on('did-frame-navigate', (_event, url) => warnGoogle(url))
+      }
       // 嵌入式 webview 环境漂白：UA 去除 Electron 标识，对齐真实 Chrome（缓解平台"使用环境异常"误判）
       if (wc.getType() === 'webview') {
         try {
@@ -1008,12 +1030,12 @@ export class AppContext {
    * 发送的是标准的系统提示词（含工具协议、目录树、规则），AI 收到后即进入
    * Lidow Agent 状态；用户在网页里直接接着问就能操作本地文件。
    */
-  private async sendInitPrompt(webContentsId: number): Promise<void> {
+  private async sendInitPrompt(webContentsId: number): Promise<boolean> {
     try {
       const project = this.activeProject()
       if (!project) {
         Logger.warn('project', '初始化提示词：没有活动项目，跳过')
-        return
+        return false
       }
       // 找到该 webview 对应的会话；没有会话就现建一个（首次引导场景）
       let sessionId = this.overlay.sessionOfWebContents?.(webContentsId) ?? ''
@@ -1073,17 +1095,32 @@ export class AppContext {
       })
       initStore.update(sessionId, (x) => ({ ...x, systemPromptSent: true }))
       this.emit({ type: 'session-updated', sessionId })
-      // 初始化完成：询问是否切到纯净模式（稍后也可从左侧栏进入）
-      this.emit({
-        type: 'ui-pure-suggestion',
-        sessionId,
-        webContentsId,
-        providerId: this.sessionOf(sessionId)?.providerId
-      })
+      // 初始化完成：询问是否切到纯净模式（已经在纯净模式里就不再重复弹）
+      if (!this.settings.get().pureMode) {
+        this.emit({
+          type: 'ui-pure-suggestion',
+          sessionId,
+          webContentsId,
+          providerId: this.sessionOf(sessionId)?.providerId
+        })
+      }
       Logger.info('project', `已发送初始化提示词 session=${sessionId} len=${sys.length}`)
+      return true
     } catch (e) {
       Logger.warn('project', `发送初始化提示词失败：${e instanceof Error ? e.message : String(e)}`)
+      return false
     }
+  }
+
+  /**
+   * 纯净模式初始化：给已绑定的会话发首条系统提示词。
+   * 网页平台只有出现第一条消息才会把新对话写进侧栏历史，
+   * 所以“初始化完成”必须实际发一条，网页端列表才会与本地同步出现。
+   */
+  async startProjectSession(sessionId: string): Promise<boolean> {
+    const wcId = this.overlay.wcIdOfSession(sessionId)
+    if (wcId === undefined) return false
+    return this.sendInitPrompt(wcId)
   }
 
   /**
@@ -1492,8 +1529,8 @@ export class AppContext {
     return this.sync.pushAll(text)
   }
 
-  async updateCheck(): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
-    return checkForUpdate(true)
+  async updateCheck(manual = false): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
+    return checkForUpdate(manual)
   }
 
   /** 服务端权威 token 消耗（按平台累计） */

@@ -119,6 +119,8 @@ export class SessionStore {
       // providerUrl 必须同步进索引：list() 读的是 index，
       // 漏了它切会话时就拿不到「回到原对话」的导航目标
       meta.providerUrl = next.providerUrl
+      meta.titleLocked = next.titleLocked
+      meta.systemPromptSent = next.systemPromptSent
       this.saveIndex()
     }
     this.writeSession(next)
@@ -137,7 +139,7 @@ export class SessionStore {
   }
 
   rename(sessionId: string, title: string): void {
-    this.update(sessionId, (s) => ({ ...s, title }))
+    this.update(sessionId, (s) => ({ ...s, title, titleLocked: true }))
   }
 
   delete(sessionId: string): void {

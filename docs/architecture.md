@@ -49,5 +49,5 @@
 ## 构建与发布
 
 - `electron-vite` 四产物：`out/main` `out/preload/index.js` `out/preload/overlay.js` `out/renderer/`
-- `electron-builder`：Windows NSIS + 便携版、macOS dmg（`.github/workflows/release.yml`）
+- `electron-builder`：Windows NSIS + 便携版、macOS universal dmg + zip（Intel + Apple Silicon，`.github/workflows/release.yml`）
 - 打包文件清单显式白名单（修复上游 #45）；CI 三平台跑 typecheck/lint/test/build

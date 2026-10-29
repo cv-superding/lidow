@@ -1,5 +1,9 @@
 @import 'tailwindcss';
 
+/* Web 版以 src/web 为 Vite root，必须显式把复用的 renderer 组件纳入扫描 */
+@source "./**/*.{ts,tsx}";
+@source "../../web/**/*.{ts,tsx}";
+
 /* ============================================================================
    Lidow 设计系统 v2 —— 中性灰基底 + 单一主色点缀 + 明确层级
    参考 Open WebUI / Chatbox 的成熟做法：

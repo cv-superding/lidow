@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useProject, useStore } from '../store'
 import { api } from '../api'
-import type { AgentMeta, AppSettings, InstalledPlugin, MarketPlugin, ProjectInfo, QuickCommand, SkillMeta, TaskItem } from '@shared/types'
+import type { AgentMeta, AppSettings, InstalledPlugin, MarketPlugin, ProjectInfo, QuickCommand, TaskItem } from '@shared/types'
 import {
   IconPlus,
   IconRefresh,
@@ -11,7 +11,6 @@ import {
   IconFolderOpen,
   IconFile,
   IconSearch,
-  IconBulb,
   IconHand,
   IconGlobe,
   IconSpark
@@ -20,7 +19,7 @@ import {
 /** 统一页面骨架：标题区 + 滚动内容
  *  只做纯淡入、不做位移：此前 anim-view（fadeUp 上移 6px）叠外层淡入，
  *  切页时整块内容先上移再落位，就是用户感到的"顿一下"。 */
-function Page({
+export function Page({
   title,
   subtitle,
   children,
@@ -56,7 +55,7 @@ function Page({
 }
 
 /** 空状态：图标 + 标题 + 说明 + 可选操作，居中虚线卡片 */
-function Empty({
+export function Empty({
   icon,
   title,
   hint,
@@ -1308,73 +1307,6 @@ export function AuditView(): React.JSX.Element {
 }
 
 // ---------------------------------------------------------------- 技能 / 子代理 / MCP / 快捷指令
-
-export function SkillsView(): React.JSX.Element {
-  const project = useStore((s) => useProject(s))
-  const projectId = project?.id
-  const [skills, setSkills] = useState<SkillMeta[]>([])
-  const refresh = (): void => void api.listSkills().then(setSkills)
-  useEffect(() => {
-    void api.listSkills().then(setSkills)
-  }, [projectId])
-  const dir = project ? `${project.root}/.lidow/skills` : ''
-
-  return (
-    <Page
-      title="技能"
-      subtitle={`${skills.length} 个 · 放在项目 .lidow/skills 或用户 ~/.lidow/skills`}
-      actions={
-        <>
-          {dir && (
-            <button className="btn btn-outline btn-sm" onClick={() => void api.revealPath(dir)}>
-              <IconFolder size={12} /> 打开目录
-            </button>
-          )}
-          <button className="btn btn-sm btn-ghost btn-icon" title="刷新" onClick={refresh}>
-            <IconRefresh size={13} />
-          </button>
-        </>
-      }
-    >
-      {skills.length === 0 ? (
-        <Empty
-          icon={<IconBulb size={18} />}
-          title="还没有技能"
-          hint="在 .lidow/skills/<技能名>/SKILL.md（或平铺的 .md）放 name + description + 正文；重新打开会话后 AI 会用 readSkill 读取，技能也会出现在输入框 / 菜单。"
-          action={
-            dir ? (
-              <button className="btn btn-primary btn-sm" onClick={() => void api.revealPath(dir)}>
-                打开技能目录
-              </button>
-            ) : undefined
-          }
-        />
-      ) : (
-        <div className="space-y-1.5">
-          {skills.map((s) => (
-            <div key={s.path} className="card flex items-start gap-3 px-4 py-3">
-              <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--r-sm)]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-                <IconBulb size={14} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[12.5px] font-medium">{s.name}</span>
-                  <span className="badge">{s.scope === 'project' ? '项目' : '用户'}</span>
-                </div>
-                <div className="mt-0.5 text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                  {s.description || '（无描述）'}
-                </div>
-                <div className="mt-1 truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-                  {s.path}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </Page>
-  )
-}
 
 export function AgentsView(): React.JSX.Element {
   const project = useStore((s) => useProject(s))

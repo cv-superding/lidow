@@ -14,7 +14,12 @@ import type {
   QuickCommand,
   Session,
   SessionMeta,
+  SkillDraft,
   SkillMeta,
+  SkillTrashItem,
+  GitHubSkillInstallResult,
+  ExternalSkillMeta,
+  ExternalSkillImportResult,
   AgentMeta,
   RuleEntry,
   TaskItem,
@@ -53,6 +58,12 @@ export interface LidowApi {
   /** 删除项目内所有 0 轮次会话（保留 keepSessionId），返回清理数 */
   cleanupEmptySessions(projectId: string, keepSessionId?: string): Promise<number>
   renameSession(sessionId: string, title: string): Promise<void>
+  /** 纯净模式初始化：向网页端发送首条系统提示词，让新对话出现在平台侧栏 */
+  startProjectSession(sessionId: string): Promise<boolean>
+  /** Web 版：让服务端隐藏宿主打开/绑定该会话的网页 */
+  hostAttachSession(sessionId: string): Promise<boolean>
+  /** Web 版：导入平台 Cookie（浏览器 DevTools 的 Cookie 请求头或 JSON 数组） */
+  importProviderCookies(providerId: string, cookieText: string, accountId?: string): Promise<{ imported: number }>
   compactSession(sessionId: string): Promise<Session>
 
   // Agent 循环
@@ -71,6 +82,25 @@ export interface LidowApi {
 
   // Skills / Agents / Rules
   listSkills(): Promise<SkillMeta[]>
+  getSkillDir(scope: 'project' | 'user'): Promise<string>
+  createSkill(input: SkillDraft): Promise<SkillMeta>
+  updateSkill(path: string, input: SkillDraft): Promise<SkillMeta>
+  setSkillEnabled(path: string, enabled: boolean): Promise<SkillMeta[]>
+  trashSkill(path: string): Promise<SkillTrashItem>
+  listSkillTrash(): Promise<SkillTrashItem[]>
+  restoreSkillTrash(id: string): Promise<SkillTrashItem>
+  purgeSkillTrash(id: string): Promise<void>
+  installSkillsFromGitHub(
+    url: string,
+    scope: 'project' | 'user',
+    category?: string
+  ): Promise<GitHubSkillInstallResult>
+  listExternalSkills(): Promise<ExternalSkillMeta[]>
+  importExternalSkills(
+    paths: string[],
+    scope: 'project' | 'user',
+    category?: string
+  ): Promise<ExternalSkillImportResult>
   listAgents(): Promise<AgentMeta[]>
   listRules(): Promise<RuleEntry[]>
   readSkill(path: string): Promise<string>
@@ -161,7 +191,7 @@ export interface LidowApi {
   overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
-  checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
+  checkUpdate(manual?: boolean): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
   /** 当前更新状态（启动时自动检查的结果可能早于渲染层订阅） */
   getUpdateState(): Promise<UpdateState>
   /** 下载并安装更新（便携版打开 Releases 页） */
@@ -201,6 +231,8 @@ export type LidowEvent =
   | { type: 'ui-pure-suggestion'; sessionId: string; webContentsId?: number; providerId?: string }
   /** 网页侧会话标题变化（平台自动命名/用户重命名），只更新元数据，不清流式文本 */
   | { type: 'session-title'; sessionId: string; title: string }
+  /** 仅发给服务端隐藏宿主渲染器：为 Web 客户端打开/绑定 provider 页面 */
+  | { type: 'host-open-session'; sessionId: string }
   /** 网页端对话被删除：渲染层移除对应会话（纯净模式列表同步） */
   | { type: 'session-deleted'; sessionId: string; title: string }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */

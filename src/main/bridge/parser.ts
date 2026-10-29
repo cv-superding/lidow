@@ -223,6 +223,37 @@ export function looksLikeWildToolIntent(reply: string): boolean {
   return WILD_TOOL_RE.test(reply)
 }
 
+const PLAN_ONLY_RE =
+  /(^|[。！？\n])\s*(我先|先让我|我先来|先看看|先检查|先读取|先确认|先打开|先下载|先安装|接下来我|然后我|随后我|我将|我会|我准备|我打算|我需要(先|继续|再|进一步)|我还需要|还需要|下一步|首先|I'll|I will|Let me|First,?\s+I|I need to|Next,?\s+I)/i
+const ACTION_REQUEST_RE =
+  /(安装|创建|新增|修改|编辑|删除|修复|运行|执行|检查|读取|写入|下载|克隆|搜索|添加|更新|实现|重构|生成|打开|install|create|edit|delete|fix|run|check|read|write|download|clone|search|add|update|implement|build)/i
+/** 模型声称自己没有工具、只能给指导：这是能力误判，必须纠偏 */
+const TOOL_DENIAL_RE =
+  /(没有|不具备|缺少|无|无法使用|不能使用|工具集受限|工具受限).{0,20}(bash|write|edit|read|工具|tool|终端|命令)|只能.{0,12}(指导|说明|建议|告诉)|cannot.{0,20}(use|access).{0,12}tool|no.{0,8}tools?/i
+
+/**
+ * 只说明了「我接下来要做什么」、但没有下发工具调用的短回复。
+ * 它不能当成任务完成：用户看到的就是 AI 说完计划就停住。
+ */
+export function looksLikePlanOnlyReply(reply: string): boolean {
+  const text = (reply ?? '').replace(/\s+/g, ' ').trim()
+  if (!text || text.length > 800) return false
+  if (/[?？]\s*$/.test(text)) return false
+  // 已经汇报完成/修改结果的不再催促
+  if (/(已完成|完成了|已修改|已写入|已创建|已删除|成功|all done|completed|done)/i.test(text)) return false
+  return PLAN_ONLY_RE.test(text)
+}
+
+/** 用户这条任务看起来是执行型请求（而不是闲聊/提问） */
+export function looksLikeActionRequest(text: string): boolean {
+  return ACTION_REQUEST_RE.test(text ?? '')
+}
+
+/** 回复在否认本地工具能力（“我没有 bash”“只能给安装指导”） */
+export function looksLikeToolCapabilityDenial(reply: string): boolean {
+  return TOOL_DENIAL_RE.test(reply ?? '')
+}
+
 /** 构造给 AI 的观察结果消息 */
 export function formatObservations(results: { name: string; ok: boolean; output: string; error?: string }[]): string {
   const body = results

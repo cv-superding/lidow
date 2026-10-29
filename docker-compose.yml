@@ -11,14 +11,14 @@ services:
     stop_grace_period: 15s
     shm_size: "1gb"
     ports:
-      # 默认只监听本机；远程访问请设置 LIDOW_BIND_ADDR=0.0.0.0 并配置 VNC 密码
-      - "${LIDOW_BIND_ADDR:-127.0.0.1}:${LIDOW_VNC_PORT:-6080}:6080"
+      # 默认只监听本机；远程访问请设置 LIDOW_BIND_ADDR=0.0.0.0 并配置 LIDOW_WEB_TOKEN
+      - "${LIDOW_BIND_ADDR:-127.0.0.1}:${LIDOW_WEB_PORT:-6080}:6080"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
       LIDOW_SCREEN: ${LIDOW_SCREEN:-1360x860x24}
-      LIDOW_VNC_PASSWORD: ${LIDOW_VNC_PASSWORD:-}
+      LIDOW_WEB_TOKEN: ${LIDOW_WEB_TOKEN:-}
       LIDOW_ENABLE_GPU: ${LIDOW_ENABLE_GPU:-0}
     volumes:
       # 应用设置、日志、记忆、插件配置
@@ -31,7 +31,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://127.0.0.1:6080/vnc.html >/dev/null && pgrep -f '^/opt/lidow/' >/dev/null"
+          "curl -fsS http://127.0.0.1:6080/healthz >/dev/null && pgrep -f '^/opt/lidow/' >/dev/null"
         ]
       interval: 30s
       timeout: 5s

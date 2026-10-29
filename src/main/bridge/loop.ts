@@ -2,7 +2,14 @@ import type { AppSettings, ChatTurn, Session, StopLevel, ToolCall, ToolResult } 
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext } from '@main/tools/types'
-import { formatObservations, looksLikeWildToolIntent, parseToolCalls } from './parser'
+import {
+  formatObservations,
+  looksLikeActionRequest,
+  looksLikePlanOnlyReply,
+  looksLikeToolCapabilityDenial,
+  looksLikeWildToolIntent,
+  parseToolCalls
+} from './parser'
 import { attemptRewrite, extractMemoryMarkers, interceptCheck } from '@main/security/refusal'
 import { Logger } from '@main/infra/log'
 import { backoffDelay, isContextExhausted } from './resilience'
@@ -419,6 +426,8 @@ export class AgentLoop {
     const store = this.deps.store
     let prompt = initialPrompt
     let wildHintCount = 0
+    let planNudgeCount = 0
+    let capabilityNudgeCount = 0
     // 上下文耗尽会自动续接到新会话：此后所有落盘/发送/事件都以新 id 为准
     let activeSid = sessionId
     const collect = async (p: string): Promise<string> => {
@@ -518,6 +527,53 @@ export class AgentLoop {
             message: 'AI 用了不支持的调用格式，已自动纠正并重试'
           })
           prompt = FORMAT_FIX_PROMPT + this.lastUserTextOf(activeSid)
+          continue
+        }
+        const userTask = this.lastUserTextOf(activeSid)
+        // 模型误判自己没有工具、只给“安装指导”：先把真实工具清单重新塞给它。
+        // DeepSeek 网页版会被平台自带的 search/open 等工具提示带偏，这一步是必要的。
+        if (
+          capabilityNudgeCount === 0 &&
+          looksLikeActionRequest(userTask) &&
+          looksLikeToolCapabilityDenial(reply)
+        ) {
+          capabilityNudgeCount++
+          Logger.info('loop', `AI 否认工具能力，重发工具清单纠偏 session=${activeSid.slice(-6)}`)
+          this.deps.emit({
+            type: 'notice',
+            sessionId: activeSid,
+            level: 'info',
+            message: 'AI 误以为没有本地工具，已重新注入工具清单并催促执行'
+          })
+          prompt =
+            '你运行在 Lidow 中，拥有下列本地工具，不要声称“没有 bash/write/工具”，也不要只给安装指导。\n' +
+            '请直接执行用户任务；需要工具时按 lidow 协议输出 JSON 工具块。安装 GitHub 技能可直接调用 installSkill。\n\n' +
+            '## 可用工具（参数见系统提示）\n' +
+            this.deps.tools.names().join('、') +
+            '\ninstallSkill 参数：url（必填）、scope（project/user）、category（可选）\n\n# 用户任务\n\n' +
+            userTask
+          continue
+        }
+        // 只说了「我先看看/接下来我查一下」却没有工具调用：这是模型把计划当成了完成。
+        // 执行型任务自动催一轮，否则用户看到 AI 说完计划就停在原地。
+        if (
+          planNudgeCount === 0 &&
+          looksLikeActionRequest(userTask) &&
+          looksLikePlanOnlyReply(reply)
+        ) {
+          planNudgeCount++
+          Logger.info('loop', `AI 仅给出计划，自动催促执行 session=${activeSid.slice(-6)}`)
+          this.deps.emit({
+            type: 'notice',
+            sessionId: activeSid,
+            level: 'info',
+            message: 'AI 只说明了计划，已自动催促继续执行'
+          })
+          prompt =
+            '请直接执行你刚才说明的下一步，不要只说明计划；需要工具时按 lidow 协议输出工具调用块。\n' +
+            '如果你认为缺少权限或工具，请先检查上面的系统提示与可用工具清单，不要直接下结论。\n\n' +
+            '# 用户任务\n\n' +
+            userTask
           continue
         }
         // 纯答复，任务完成：窗口失焦时系统通知（用户切走了也能知道干完了）
