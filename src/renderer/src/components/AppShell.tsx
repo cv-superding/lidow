@@ -557,7 +557,8 @@ export function AppShell(): React.JSX.Element {
         </div>
       )}
 
-      {confirmRequest && <ConfirmOverlay />}
+      {/* 确认浮层：纯净模式下 ChatPanel 自带内联确认卡，这里不重复渲染 */}
+      {confirmRequest && !(pureMode && pureView === 'home') && <ConfirmOverlay />}
 
       {/* 通知浮层 */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">

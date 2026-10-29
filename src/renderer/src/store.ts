@@ -592,11 +592,13 @@ export const useStore = create<LidowState>((set, get) => ({
         })
         break
       case 'tool-confirm-required':
-        // 需要用户确认时自动把面板推到眼前（否则 AI 一直等待而用户看不到审批卡）
-        set({ confirmRequest: { callId: e.callId, reason: e.reason }, pureMode: false, view: 'home', rightOpen: true })
+        // 只记录待确认项，不切视图：纯净模式自带内联确认卡（ChatPanel 内），
+        // 强制 pureMode:false 会把用户踢出正在看的对话界面（实测严重打断）
+        set({ confirmRequest: { callId: e.callId, reason: e.reason } })
         break
       case 'plan-proposed':
-        set({ plan: e.plan, pureMode: false, view: 'home', rightOpen: true })
+        // 计划卡片同样在纯净模式内联呈现，不强制退出
+        set({ plan: e.plan })
         break
       case 'notice': {
         const ts = Date.now()
