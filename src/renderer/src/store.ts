@@ -125,6 +125,9 @@ interface LidowState {
   streamingTps: number
   /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
   thinkingText: string
+  /** 已发送、等待网页开始回复的会话（用于“正在思考”加载态） */
+  pendingReplySessionId: string
+  pendingSince: number
   confirmRequest: { callId: string; reason: string } | null
   plan: TaskPlan | null
   notices: { level: string; message: string; ts: number }[]
@@ -255,6 +258,8 @@ export const useStore = create<LidowState>((set, get) => ({
   streamingText: '',
   streamingTps: 0,
   thinkingText: '',
+  pendingReplySessionId: '',
+  pendingSince: 0,
   confirmRequest: null,
   plan: null,
   notices: [],
@@ -655,10 +660,18 @@ export const useStore = create<LidowState>((set, get) => ({
     } else {
       get().notice('网页尚未就绪，未能绑定会话（请稍后重试发送）', 'warn')
     }
-    await api.sendPrompt(activeSession.id, text)
+    // 首包到达前显示「正在思考」；turn-chunk/think-chunk/tool-start 会清掉
+    if (wcId > 0) set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
+    try {
+      await api.sendPrompt(activeSession.id, text)
+    } catch (e) {
+      set({ pendingReplySessionId: '' })
+      throw e
+    }
   },
 
   async stop(level) {
+    set({ pendingReplySessionId: '' })
     await api.stop(level)
   },
 
@@ -790,7 +803,13 @@ export const useStore = create<LidowState>((set, get) => ({
           set({ streamingText: '', streamingTps: 0, thinkingText: '' })
         }
         void api.getSession(e.sessionId).then((sess) => {
-          if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
+          if (sess && sess.id === s.activeSession?.id) {
+            set({ activeSession: sess })
+            // 回复轮已落盘（assistant），清掉「等待首包」加载态
+            if (sess.turns[sess.turns.length - 1]?.role === 'assistant') {
+              set({ pendingReplySessionId: '' })
+            }
+          }
         })
         void s.refreshSessions()
         break
@@ -798,6 +817,7 @@ export const useStore = create<LidowState>((set, get) => ({
         // 自动续接：主进程已把网页绑定到新会话，视图和标签状态都要跟上，
         // 否则后续消息会重新绑回旧会话、续接后的回复也看不到。
         set((st) => ({
+          pendingReplySessionId: st.pendingReplySessionId === e.fromSessionId ? e.sessionId : st.pendingReplySessionId,
           tabs: st.tabs.map((t) => (t.sessionId === e.fromSessionId ? { ...t, sessionId: e.sessionId } : t))
         }))
         void api.getSession(e.sessionId).then((sess) => {
@@ -809,13 +829,14 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'think-chunk':
         // 子代理/后台会话的思考流不进当前视图（session 过滤，防串台）
         if (e.sessionId !== s.activeSession?.id) break
-        set({ thinkingText: e.think })
+        set({ thinkingText: e.think, pendingReplySessionId: '' })
         break
       case 'turn-chunk':
         if (e.sessionId !== s.activeSession?.id) break
-        set({ streamingText: e.text, streamingTps: e.tps ?? 0 })
+        set({ streamingText: e.text, streamingTps: e.tps ?? 0, pendingReplySessionId: '' })
         break
       case 'tool-start':
+        if (e.sessionId === s.pendingReplySessionId) set({ pendingReplySessionId: '' })
         void api.getSession(e.sessionId).then((sess) => {
           if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
         })
@@ -833,6 +854,8 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'notice': {
         const ts = Date.now()
         set({ notices: [...s.notices.slice(-20), { level: e.level, message: e.message, ts }] })
+        // 任务被忽略时不会产生回复轮：清掉等待态，避免「正在思考」永久停留
+        if (e.level === 'warn' && e.message.includes('已有任务在执行')) set({ pendingReplySessionId: '' })
         get().scheduleNoticeRemoval(ts)
         break
       }

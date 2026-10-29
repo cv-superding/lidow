@@ -632,6 +632,37 @@ textarea.field {
 .anim-breathe {
   animation: breathe 1.8s var(--ease-in-out) infinite;
 }
+/* 「正在思考」三点：依次呼吸，避免首包前界面看起来卡死 */
+@keyframes pendingDot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+.pending-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.pending-dots span {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: pendingDot 1.2s infinite ease-in-out;
+}
+.pending-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.pending-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
 .anim-expand {
   animation: slideDown var(--dur) var(--ease-emph) both;
   overflow: hidden;

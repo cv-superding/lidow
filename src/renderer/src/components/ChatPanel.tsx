@@ -262,6 +262,38 @@ function ChangeCard({ results, running }: { results: ToolResult[]; running: bool
   )
 }
 
+/** 首包等待态：对齐 Qoder 的「正在思考」 */
+function PendingIndicator({ since }: { since: number }): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(t)
+  }, [])
+  const start = since || now
+  const secs = Math.max(0, Math.floor((now - start) / 1000))
+  return (
+    <div
+      className="anim-fade flex items-center gap-2 self-start rounded-[var(--r-lg)] border px-3 py-[7px] text-[12px]"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
+    >
+      <span className="anim-breathe inline-flex" style={{ color: 'var(--accent)' }}>
+        <IconSpark size={14} />
+      </span>
+      <span>正在思考</span>
+      <span className="pending-dots">
+        <span />
+        <span />
+        <span />
+      </span>
+      {secs >= 1 && (
+        <span className="tabular-nums" style={{ color: 'var(--text-hint)' }}>
+          {secs}s
+        </span>
+      )}
+    </div>
+  )
+}
+
 function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   const isUser = turn.role === 'user'
   const isSystem = turn.role === 'system'
@@ -384,6 +416,8 @@ function PermissionPicker(): React.JSX.Element {
 
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
+  const pendingReplySessionId = useStore((s) => s.pendingReplySessionId)
+  const pendingSince = useStore((s) => s.pendingSince)
   const streamingText = useStore((s) => s.streamingText)
   const streamingTps = useStore((s) => s.streamingTps)
   const thinkingText = useStore((s) => s.thinkingText)
@@ -435,6 +469,14 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     return turns.flatMap((t) => t.toolResults ?? [])
   }, [turns])
   const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
+  // 已发送但首包还没到：显示「正在思考」，避免看起来卡死
+  const waiting = Boolean(
+    activeSession &&
+      pendingReplySessionId === activeSession.id &&
+      allTurns[allTurns.length - 1]?.role === 'user' &&
+      !streamingText &&
+      !thinkingText
+  )
   // 工具批次执行中（turn.status=streaming 且已有结果）：停止按钮应中止工具而不是生成
   const lastTurn = turns[turns.length - 1]
   const toolRunning = Boolean(
@@ -605,6 +647,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {turns.map((t) => (
             <TurnItem key={t.id} turn={t} />
           ))}
+          {waiting && <PendingIndicator since={pendingSince} />}
           {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
           {taskChangeResults.length > 0 && (
             <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
