@@ -95,6 +95,7 @@ npm run dist:mac   # macOS dmg
 - [cuckoo-code](https://github.com/wangyongpeng90/cuckoo-code)：架构基座与选择器实测来源
 - [lingya](https://github.com/cymylive/lingya)：安全 MOD、webSearch、多端同步思路来源
 - [dsh-webin](https://github.com/cv-superding/dsh-webin)：DSH 网页化运行与接入参考
+- [dsh-deepseek-web-login](https://github.com/cv-superding/dsh-deepseek-web-login)：DeepSeek 网页登录态与接入方式参考
 
 Lidow 以 GPL-3.0 发布，继承并回馈上游开源生态。
 
