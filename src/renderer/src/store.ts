@@ -35,6 +35,15 @@ export interface ReviewFile {
   del: number
 }
 
+export interface SessionDeleteRequest {
+  id: string
+  title: string
+  providerId: string
+  providerName: string
+  /** 当前只对 DeepSeek 做了网页端删除适配 */
+  canDeleteWeb: boolean
+}
+
 export type ViewId =
   | 'home'
   | 'projects'
@@ -121,6 +130,8 @@ interface LidowState {
   pureView: ViewId
   /** 项目初始化完成后的「是否进入纯净模式」建议弹窗 */
   pureSuggestion: boolean
+  /** 删除会话确认：是否同时删除网页端对话 */
+  sessionDelete: SessionDeleteRequest | null
   streamingText: string
   streamingTps: number
   /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
@@ -167,6 +178,9 @@ interface LidowState {
   setPure(on: boolean): void
   setPureView(v: ViewId): void
   dismissPureSuggestion(): void
+  requestSessionDelete(s: SessionMeta): void
+  cancelSessionDelete(): void
+  performSessionDelete(deleteWeb: boolean): Promise<void>
   applyTheme(s: AppSettings): void
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
@@ -255,6 +269,7 @@ export const useStore = create<LidowState>((set, get) => ({
   pureMode: false,
   pureView: 'home',
   pureSuggestion: false,
+  sessionDelete: null,
   streamingText: '',
   streamingTps: 0,
   thinkingText: '',
@@ -367,6 +382,48 @@ export const useStore = create<LidowState>((set, get) => ({
   },
   dismissPureSuggestion() {
     set({ pureSuggestion: false })
+  },
+  requestSessionDelete(s) {
+    const providerName = get().providers.find((p) => p.id === s.providerId)?.name ?? s.providerId
+    set({
+      sessionDelete: {
+        id: s.id,
+        title: s.title,
+        providerId: s.providerId,
+        providerName,
+        canDeleteWeb: s.providerId === 'deepseek'
+      }
+    })
+  },
+  cancelSessionDelete() {
+    set({ sessionDelete: null })
+  },
+  async performSessionDelete(deleteWeb) {
+    const req = get().sessionDelete
+    if (!req) return
+    set({ sessionDelete: null })
+    if (deleteWeb) get().notice('正在删除会话并同步网页端…')
+    try {
+      const res = await api.deleteSession(req.id, deleteWeb)
+      set((st) => ({
+        ...(st.activeSession?.id === req.id
+          ? {
+              activeSession: null,
+              plan: null,
+              streamingText: '',
+              streamingTps: 0,
+              thinkingText: '',
+              pendingReplySessionId: '',
+              confirmRequest: null
+            }
+          : {}),
+        tabs: st.tabs.map((t) => (t.sessionId === req.id ? { ...t, sessionId: '' } : t))
+      }))
+      await get().refreshSessions()
+      get().notice(res.message ?? '会话已删除', res.webDeleted === false && deleteWeb ? 'warn' : 'info')
+    } catch (e) {
+      get().notice(`删除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
   },
   setPure(on) {
     // 进入纯净模式时回到对话主区；同时关掉初始化后的模式建议弹窗
@@ -777,6 +834,13 @@ export const useStore = create<LidowState>((set, get) => ({
     switch (e.type) {
       case 'update-state':
         set({ updateState: e.state })
+        break
+      case 'session-title':
+        set((st) => ({
+          sessions: st.sessions.map((m) => (m.id === e.sessionId ? { ...m, title: e.title } : m)),
+          activeSession:
+            st.activeSession?.id === e.sessionId ? { ...st.activeSession, title: e.title } : st.activeSession
+        }))
         break
       case 'ui-pure-suggestion': {
         // 已在纯净模式里就不用再问一次

@@ -50,6 +50,7 @@ export function PureModeShell(): React.JSX.Element {
   const toggleAux = useStore((s) => s.toggleAux)
   const sidebarWidth = useStore((s) => s.sidebarWidth)
   const setSidebarWidth = useStore((s) => s.setSidebarWidth)
+  const requestSessionDelete = useStore((s) => s.requestSessionDelete)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
@@ -82,13 +83,6 @@ export function PureModeShell(): React.JSX.Element {
     await useStore.getState().createSession(pid)
     const created = useStore.getState().activeSession
     if (created) await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
-  }
-
-  const deleteSession = async (id: string): Promise<void> => {
-    await api.deleteSession(id)
-    if (activeSession?.id === id) useStore.setState({ activeSession: null })
-    await useStore.getState().refreshSessions()
-    useStore.getState().notice('会话已删除')
   }
 
   if (!sidebarOpen) {
@@ -282,7 +276,7 @@ export function PureModeShell(): React.JSX.Element {
                   style={{ color: 'var(--danger)' }}
                   onClick={(e) => {
                     e.stopPropagation()
-                    void deleteSession(s.id)
+                    requestSessionDelete(s)
                   }}
                 >
                   <IconClose size={11} />

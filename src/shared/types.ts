@@ -386,7 +386,7 @@ export interface OverlayCommand {
 
 export type OverlayEvent =
   | { type: 'ready' }
-  | { type: 'nav'; url: string }
+  | { type: 'nav'; url: string; title?: string }
   | { type: 'login-state'; loggedIn: boolean }
   | { type: 'stream-start' }
   | { type: 'stream-chunk'; text: string }

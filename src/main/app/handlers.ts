@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, nativeTheme } from 'electron'
+import { app, BrowserWindow, dialog, shell, nativeTheme, webContents } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
@@ -6,6 +6,8 @@ import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
 import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
+import { deleteDeepSeekChat } from '@main/bridge/webChatDelete'
+import { Logger } from '@main/infra/log'
 import type { DomAdapter, McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
 
@@ -140,13 +142,41 @@ export function registerHandlers(
     }
     return removed
   })
-  R('deleteSession', (sessionId: string) => {
+  R('deleteSession', async (sessionId: string, deleteWebChat?: boolean) => {
     const sid = String(sessionId)
+    const session = ctx.sessionOf(sid)
+    const project = findProjectOfSession(ctx, sid)
+    const wcId = ctx.overlay.wcIdOfSession(sid)
     // 先停掉正在跑的任务：否则循环后续 appendTurn 会写进已删除的会话
     ctx.loop.stop(sid, 'all')
+
+    let webDeleted: boolean | undefined
+    let message = '本地会话已删除（网页端历史保留，页面已切到新对话）'
+    if (deleteWebChat) {
+      if (!session?.providerUrl || wcId === undefined) {
+        webDeleted = false
+        message = '本地会话已删除；网页端未连接或没有可定位的对话地址'
+      } else if (session.providerId !== 'deepseek') {
+        webDeleted = false
+        message = '本地会话已删除；当前平台暂不支持从 Lidow 删除网页端对话'
+      } else {
+        const wc = webContents.fromId(wcId)
+        const res = wc
+          ? await deleteDeepSeekChat(wc, session.providerUrl, session.title)
+          : { ok: false, reason: '网页已关闭' }
+        webDeleted = res.ok
+        message = res.ok
+          ? '会话已删除（含网页端对话）'
+          : `本地会话已删除；网页端删除失败：${res.reason ?? '未知原因'}`
+        Logger.info('session', `网页端删除 session=${sid.slice(-6)} ok=${res.ok}${res.reason ? ` reason=${res.reason}` : ''}`)
+      }
+    }
+
+    // 离开被删除的对话：否则网页仍停留在已删除会话，甚至继续接管后续消息
+    if (wcId !== undefined) ctx.overlay.sendCmdToWebContents(wcId, { kind: 'new-chat' })
     ctx.overlay.unbindSession(sid)
-    const project = findProjectOfSession(ctx, sid)
     if (project) ctx.sessionStoreOf(project).delete(sid)
+    return { webDeleted, message }
   })
   R('renameSession', (sessionId: string, title: string) => {
     const project = findProjectOfSession(ctx, String(sessionId))

@@ -57,7 +57,7 @@ export class OverlayManager {
   /** 网页内「延续上个对话」：压缩旧会话并把摘要发进新对话 */
   onContinueProject?: (webContentsId: number) => void
   /** 页面导航（会话已绑定时）——建立会话 ↔ 平台对话 URL 映射 */
-  onNav?: (sessionId: string, url: string) => void
+  onNav?: (sessionId: string, url: string, title?: string) => void
 
   /** 网页开关状态（深度思考 / 智能搜索）上报 */
   onToggleState?: (think: boolean, search: boolean) => void
@@ -341,7 +341,7 @@ export class OverlayManager {
       case 'nav': {
         // 页面导航：会话 ↔ 平台对话 URL 的映射在此建立（换绑回原对话的依据）
         const sid = this.sessionOfWebContents(sender.id)
-        if (sid) this.onNav?.(sid, payload.url)
+        if (sid) this.onNav?.(sid, payload.url, payload.title)
         break
       }
       case 'login-state': {

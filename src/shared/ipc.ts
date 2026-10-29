@@ -48,7 +48,8 @@ export interface LidowApi {
   listSessions(projectId: string, providerId?: string): Promise<SessionMeta[]>
   getSession(sessionId: string): Promise<Session | null>
   createSession(projectId: string, providerId: string, parentSessionId?: string, accountId?: string): Promise<Session>
-  deleteSession(sessionId: string): Promise<void>
+  /** 删除会话；deleteWebChat=true 时尽力同步删除网页端对话 */
+  deleteSession(sessionId: string, deleteWebChat?: boolean): Promise<{ webDeleted?: boolean; message?: string }>
   /** 删除项目内所有 0 轮次会话（保留 keepSessionId），返回清理数 */
   cleanupEmptySessions(projectId: string, keepSessionId?: string): Promise<number>
   renameSession(sessionId: string, title: string): Promise<void>
@@ -198,6 +199,8 @@ export type LidowEvent =
   | { type: 'update-state'; state: UpdateState }
   /** 项目初始化完成：询问是否切到纯净模式（可稍后从左侧栏进入） */
   | { type: 'ui-pure-suggestion'; sessionId: string }
+  /** 网页侧会话标题变化（平台自动命名/用户重命名），只更新元数据，不清流式文本 */
+  | { type: 'session-title'; sessionId: string; title: string }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }

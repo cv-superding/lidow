@@ -71,6 +71,40 @@ const DEFAULT_SETTINGS: AppSettings = {
 }
 
 /** 循环所需的会话存储门面：按会话所属项目动态路由（修复上游 #24 串扰的根） */
+/** 平台首页/新对话的通用标题：不能拿来覆盖会话名 */
+const GENERIC_CHAT_TITLES = new Set([
+  '新会话',
+  '新对话',
+  'new chat',
+  'deepseek',
+  '探索未至之境',
+  'chatgpt',
+  'claude',
+  '豆包',
+  '通义千问',
+  '文心一言',
+  'kimi',
+  '智谱清言'
+])
+
+/**
+ * 网页标题 → 会话名：去掉平台后缀（如「读文件 - DeepSeek」），过滤首页通用标题。
+ * 平台会按内容自动命名，用户也可能在网页侧重命名，Lidow 侧栏应跟随网页。
+ */
+function cleanChatTitle(raw: string | undefined, providerName: string): string {
+  let t = (raw ?? '').replace(/\s+/g, ' ').trim()
+  if (!t) return ''
+  const parts = t.split(/\s+[-|·]\s+/)
+  if (parts.length > 1) {
+    const tail = parts[parts.length - 1]!.toLowerCase()
+    if (tail.includes(providerName.toLowerCase()) || tail.includes('deepseek')) {
+      t = parts.slice(0, -1).join(' - ').trim()
+    }
+  }
+  if (!t || GENERIC_CHAT_TITLES.has(t.toLowerCase())) return ''
+  return t.slice(0, 60)
+}
+
 function routedSessionFacade(resolve: (sessionId: string) => SessionStore): LoopSessionStore {
   return {
     appendTurn: (id, t) => resolve(id).appendTurn(id, t),
@@ -303,22 +337,34 @@ export class AppContext {
     this.overlay.onContinueProject = (webContentsId) => void this.continueProjectInNewChat(webContentsId)
     // 记录会话 ↔ 平台对话 URL：换绑 webview 时才能导航回正确的对话。
     // 没有这个映射，子代理/自动续接切回父会话后页面停在别人的对话里。
-    this.overlay.onNav = (sessionId, url) => {
+    this.overlay.onNav = (sessionId, url, title) => {
       const session = this.sessionOf(sessionId)
       if (!session) {
         Logger.info('nav', `未绑定会话的导航（忽略）: ${url.slice(0, 60)}`)
         return
       }
-      if (url === session.providerUrl) return
+      const descriptor = this.providerRegistryOf(session.projectId).get(session.providerId)
+      const home = descriptor?.home ?? ''
+      const loginPage = /\/sign_?in|\/login/i.test(url)
+      const onHome = Boolean(home) && url.split('#')[0] === home
       // 登录页/首页不算对话页，不覆盖已记录的对话 URL
-      if (/\/sign_?in|\/login/i.test(url)) return
-      const provider = this.projects
-        .map((p) => this.providerRegistries.get(p.id))
-        .find((r) => r && r.get(session.providerId))
-      const home = provider?.get(session.providerId)?.home ?? ''
-      if (home && url.split('#')[0] === home) return
-      this.sessionStoreOf(session.projectId).update(sessionId, (x) => ({ ...x, providerUrl: url }))
-      Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
+      const shouldRecordUrl = !loginPage && !onHome && url !== session.providerUrl
+      const cleanTitle = cleanChatTitle(title, descriptor?.name ?? session.providerId)
+      const nextTitle = cleanTitle && cleanTitle !== session.title ? cleanTitle : session.title
+      const nextUrl = shouldRecordUrl ? url : session.providerUrl
+      if (nextUrl === session.providerUrl && nextTitle === session.title) return
+      this.sessionStoreOf(session.projectId).update(sessionId, (x) => ({
+        ...x,
+        providerUrl: nextUrl,
+        title: nextTitle
+      }))
+      if (shouldRecordUrl) {
+        Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
+      }
+      if (nextTitle !== session.title) {
+        Logger.info('nav', `会话标题同步自网页: ${session.title} → ${nextTitle}`)
+        this.emit({ type: 'session-title', sessionId, title: nextTitle })
+      }
     }
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()

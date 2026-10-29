@@ -460,6 +460,8 @@ function setupFloatingBall(): void {
 
 /** 上次上报的 URL：会话 ↔ 平台对话的映射靠它建立（换绑回原对话全靠它） */
 let lastNavUrl = ''
+/** 平台对话标题：网页版会按内容自动命名，Lidow 侧栏需要同步 */
+let lastPageTitle = ''
 
 /**
  * 立即求值一次登录态（不等 4 秒轮询）。
@@ -501,10 +503,16 @@ function evaluateLoginNow(): void {
 
 setInterval(() => {
   const url = String(location.href)
-  if (url !== lastNavUrl) {
+  const pageTitle = (document.title ?? '').trim()
+  const urlChanged = url !== lastNavUrl
+  const titleChanged = pageTitle !== lastPageTitle
+  if (urlChanged || titleChanged) {
     lastNavUrl = url
-    send({ type: 'nav', url })
-
+    lastPageTitle = pageTitle
+    // 标题也要上报：平台会按内容自动命名/用户会重命名，侧栏必须对齐网页
+    send({ type: 'nav', url, title: pageTitle })
+  }
+  if (urlChanged) {
     // 这里绝不重置 dismissed。
     // 反例（实测反复踩中）：初始化发完第一条消息后页面会从 / 跳到 /a/chat/s/<id>，
     // 这是同一次会话的正常跳转。任何基于「URL 变了」的重置都会导致

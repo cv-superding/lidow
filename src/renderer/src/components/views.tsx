@@ -235,6 +235,7 @@ export function SessionsView(): React.JSX.Element {
   const providers = useStore((s) => s.providers)
   const refreshSessions = useStore((s) => s.refreshSessions)
   const setView = useStore((s) => s.setView)
+  const requestSessionDelete = useStore((s) => s.requestSessionDelete)
   const [query, setQuery] = useState('')
   const [providerFilter, setProviderFilter] = useState('')
   const [newProvider, setNewProvider] = useState('')
@@ -256,17 +257,9 @@ export function SessionsView(): React.JSX.Element {
   const compacted = sessions.filter((s) => s.compactedTurns > 0).length
   const platformCount = new Set(sessions.map((s) => s.providerId)).size
 
-  const remove = (id: string, title: string): void => {
-    if (!window.confirm(`删除会话「${title}」？该操作不可撤销。`)) return
-    void api.deleteSession(id).then(() => {
-      // 标签页可能还挂着被删会话：清掉绑定，避免后续发送复用不存在的会话
-      useStore.setState((st) => ({
-        ...(st.activeSession?.id === id ? { activeSession: null, plan: null } : {}),
-        tabs: st.tabs.map((t) => (t.sessionId === id ? { ...t, sessionId: '' } : t))
-      }))
-      useStore.getState().notice('会话已删除')
-      void refreshSessions()
-    })
+  const remove = (id: string): void => {
+    const session = sessions.find((s) => s.id === id)
+    if (session) requestSessionDelete(session)
   }
   const exportMd = (id: string): void => {
     void api
@@ -414,7 +407,7 @@ export function SessionsView(): React.JSX.Element {
                 <button
                   className="btn btn-sm btn-ghost"
                   style={{ color: 'var(--danger)' }}
-                  onClick={() => remove(s.id, s.title)}
+                  onClick={() => remove(s.id)}
                 >
                   删除
                 </button>

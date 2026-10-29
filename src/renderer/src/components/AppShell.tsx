@@ -35,7 +35,8 @@ import {
   IconTerminal,
   IconSidebarToggle,
   IconPanelRight,
-  IconFolderColor
+  IconFolderColor,
+  IconTrash
 } from './icons'
 import { WindowControls, DragStrip } from './TitleBar'
 
@@ -492,6 +493,61 @@ function PureModeSuggestion(): React.JSX.Element | null {
   )
 }
 
+/** 删除会话：选择只删本地，或同时删除网页端对话 */
+function SessionDeleteDialog(): React.JSX.Element | null {
+  const req = useStore((s) => s.sessionDelete)
+  const cancel = useStore((s) => s.cancelSessionDelete)
+  const perform = useStore((s) => s.performSessionDelete)
+  if (!req) return null
+  return (
+    <div
+      className="fixed inset-0 z-[75] flex items-center justify-center px-6"
+      style={{ background: 'rgba(9,12,18,.44)', backdropFilter: 'blur(2px)' }}
+    >
+      <div
+        className="anim-pop w-full max-w-[430px] rounded-[var(--r-xl)] p-5"
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow-lg)' }}
+      >
+        <div className="flex items-start gap-3">
+          <span
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
+            style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+          >
+            <IconTrash size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[14px] font-semibold">删除会话</div>
+            <div className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+              本地会话「{req.title}」将从 Lidow 删除。
+            </div>
+            <div
+              className="mt-2.5 rounded-[var(--r-md)] px-2.5 py-2 text-[11.5px] leading-relaxed"
+              style={{ background: 'var(--bg-active)', color: 'var(--text-hint)' }}
+            >
+              {req.canDeleteWeb
+                ? `也可以同时删除 ${req.providerName} 网页端对话：Lidow 会在网页侧边栏中定位该对话并点击删除，此操作不可恢复。无论选哪种，删除后网页都会切到新对话。`
+                : `当前平台暂不支持从 Lidow 删除网页端对话，只会删除本地记录并让网页切到新对话。`}
+            </div>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button className="btn btn-sm btn-ghost" onClick={cancel}>
+                取消
+              </button>
+              <button className="btn btn-sm btn-outline" onClick={() => void perform(false)}>
+                仅删除本地
+              </button>
+              {req.canDeleteWeb && (
+                <button className="btn btn-sm btn-danger" onClick={() => void perform(true)}>
+                  同时删除网页端
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /** 危险操作确认浮层 */
 function ConfirmOverlay(): React.JSX.Element {
   const { confirmRequest, answerConfirm } = useStore()
@@ -627,6 +683,9 @@ export function AppShell(): React.JSX.Element {
 
       {/* 初始化完成 → 询问是否进入纯净模式 */}
       <PureModeSuggestion />
+
+      {/* 删除会话 → 是否同步删除网页端对话 */}
+      <SessionDeleteDialog />
 
       {/* 确认浮层：纯净模式下 ChatPanel 自带内联确认卡，这里不重复渲染 */}
       {confirmRequest && !(pureMode && pureView === 'home') && <ConfirmOverlay />}
