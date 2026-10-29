@@ -3,6 +3,7 @@ import { api } from './api'
 import type { LidowEvent } from '@shared/ipc'
 import type {
   AppSettings,
+  DomAdapter,
   McpToolInfo,
   MemoryEntry,
   PluginManifest,
@@ -42,6 +43,8 @@ interface WebTab {
   sessionId: string
   /** webview attach 后记录的 webContentsId（重绑会话时必需） */
   wcId?: number
+  /** 无会话时也要下发的平台适配器（登录态轮询与首次引导都依赖它） */
+  adapter?: DomAdapter
   connected: boolean
   loggedIn: boolean
 }
@@ -90,6 +93,10 @@ interface LidowState {
   mcpTools: McpToolInfo[]
   installedPlugins: PluginManifest[]
   marketResults: MarketPlugin[]
+  /** 市场搜索失败原因（网络不通等），空态时必须可见而不是无声无息 */
+  marketWarning: string
+  /** 内置精选插件（本地直装） */
+  builtinPlugins: MarketPlugin[]
   kbs: KnowledgeBase[]
   audits: AuditEntry[]
   quickCmds: QuickCommand[]
@@ -196,6 +203,8 @@ export const useStore = create<LidowState>((set, get) => ({
   mcpTools: [],
   installedPlugins: [],
   marketResults: [],
+  marketWarning: '',
+  builtinPlugins: [],
   kbs: [],
   audits: [],
   quickCmds: [],
@@ -211,6 +220,10 @@ export const useStore = create<LidowState>((set, get) => ({
     if (state.projects.length > 0) {
       await get().refreshProviders()
       await get().refreshSessions()
+    } else {
+      // 没有项目也要有平台列表：空态里要能选平台先进 AI 页面，
+      // 初始化引导由 overlay 注入在网页里（cuckoo 同款）
+      await get().refreshProviders()
     }
   },
 
@@ -290,8 +303,9 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async refreshProviders() {
     const project = useProject(get())
-    if (!project) return
-    set({ providers: await api.listProviders(project.id) })
+    // 没有项目也拉一次：空态里要能选平台先进 AI 页面（引导在网页里弹），
+    // 主进程对无 projectId 的请求返回内置平台表。
+    set({ providers: await api.listProviders(project?.id ?? '') })
   },
 
   async refreshSessions() {
@@ -372,6 +386,7 @@ export const useStore = create<LidowState>((set, get) => ({
       overlayPath: info.overlayPath,
       home: info.home,
       sessionId: sessionId ?? '',
+      adapter: info.adapter,
       connected: false,
       loggedIn: false
     }
@@ -415,7 +430,9 @@ export const useStore = create<LidowState>((set, get) => ({
     if (webContentsId > 0) {
       await api.bindSession(sessionId, webContentsId)
       // 会话切换 = 换一个网页会话承载：重置页面到新对话（净模式切换会话的关键）
-      if (switched) void api.newChat(sessionId)
+      // 切换会话必须落回该会话自己的对话：有平台侧 URL 导航回去（历史完整恢复），
+      // 只发 newChat 的话旧会话永远是空的 —— 上下文全丢
+      if (switched) void api.landSession(sessionId)
     } else {
       // 没有 wcId 就等于没绑定：主进程收不到 bindSession，hook 不注入，
       // 网页里无论发什么都到不了 lidow（AI 会说「我没有工作目录」）。
@@ -527,6 +544,11 @@ export const useStore = create<LidowState>((set, get) => ({
   async refreshAll() {
     const s = get()
     await Promise.all([
+      // 项目列表一并刷新：网页内引导初始化后（projects-changed）下拉才有新项目
+      (async () => {
+        const st = await api.getAppState()
+        set({ projects: st.projects, activeProjectId: st.activeProjectId })
+      })(),
       s.refreshSessions(),
       (async () => set({ skills: await api.listSkills(), agents: await api.listAgents(), rules: await api.listRules() }))(),
       (async () => set({ memoryList: await api.listMemory() }))(),
@@ -545,17 +567,23 @@ export const useStore = create<LidowState>((set, get) => ({
     const s = get()
     switch (e.type) {
       case 'session-updated':
-        set({ streamingText: '', streamingTps: 0 }) // 流已落盘，清除残留流文本（修重复渲染）
+        // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时
+        // 不能把用户眼前正在滚动的流式输出打没
+        if (e.sessionId === s.activeSession?.id) {
+          set({ streamingText: '', streamingTps: 0, thinkingText: '' })
+        }
         void api.getSession(e.sessionId).then((sess) => {
           if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
         })
         void s.refreshSessions()
-          set({ thinkingText: '' })
         break
       case 'think-chunk':
+        // 子代理/后台会话的思考流不进当前视图（session 过滤，防串台）
+        if (e.sessionId !== s.activeSession?.id) break
         set({ thinkingText: e.think })
         break
       case 'turn-chunk':
+        if (e.sessionId !== s.activeSession?.id) break
         set({ streamingText: e.text, streamingTps: e.tps ?? 0 })
         break
       case 'tool-start':
@@ -583,6 +611,10 @@ export const useStore = create<LidowState>((set, get) => ({
       }
       case 'ui-toggle-pure': {
         set({ pureMode: !get().pureMode })
+        break
+      }
+      case 'projects-changed': {
+        void s.refreshAll()
         break
       }
       default:

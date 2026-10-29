@@ -32,8 +32,8 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 - Skill / Agent / Rules 三级体系（项目级 `.lidow/` + 用户级 `~/.lidow/`，渐进式披露）
 - 用户记忆：remember / forgetMemory 工具 + 侧边栏管理
 - MCP：Claude Desktop 配置格式兼容，资源 / 提示 / 工具三组件
-- 插件市场：GitHub + Gitee 双源发现，打包技能/代理/规则/MCP/自定义平台/网页脚本/DSH 服务
-- DSH 兼容宿主：**119 Context 服务全覆盖**（native / 事件桥 / 存储兜底三档，[明细](docs/dsh-coverage.md)）
+- 插件市场：GitHub + Gitee 双源发现（走系统代理，失败原因可见）+ 内置精选本地直装；插件启动即加载（dsh / entry / webScript 三类入口真实生效）
+- DSH 兼容宿主：**119 个 Context 服务名全兼容**——48 个 native 真实映射、14 个事件桥、57 个 KV 兜底（保证插件调用不崩溃、数据可持久化，但非完整实现；[分档明细](docs/dsh-coverage.md)）
 
 **安全**
 - 危险命令复合检测（rm 语义解析、管道注入、变体归一化）+ UI 二次确认

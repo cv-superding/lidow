@@ -81,7 +81,13 @@ function fillEditable(el: HTMLElement, text: string): boolean {
   return ok && (el.textContent?.length ?? 0) > 0
 }
 
-/** 填入后读回校验（≥期望长度 90% 视为成功，防 ProseMirror/受控组件静默丢字） */
+/**
+ * 填入后读回校验。
+ *
+ * 阈值不能按比例：短消息用 90% 会让「在不」只填进「在」也算通过，
+ * AI 收到的就是半句话（实测表现：AI 回「你的消息在'在'之后中断了」）。
+ * 改为先比"去空白后完全相等"，再退一步容忍编辑器对换行/空行的归一化（99% 且仅差空白）。
+ */
 function fillVerified(el: Element, text: string): boolean {
   if (el instanceof HTMLTextAreaElement) {
     el.focus()
@@ -99,7 +105,12 @@ function fillVerified(el: Element, text: string): boolean {
     el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
       ? el.value
       : ((el as HTMLElement).textContent ?? '')
-  return current.length >= Math.floor(text.length * 0.9)
+  if (current === text) return true
+  // 编辑器可能改写空白/换行（ProseMirror 把 \n 变 <p>），比紧凑形式
+  const compact = (s: string): string => s.replace(/\s+/g, '')
+  const want = compact(text)
+  if (!want) return false
+  return compact(current) === want
 }
 
 function pressEnter(el: Element): void {
@@ -415,13 +426,59 @@ function setupFloatingBall(): void {
   document.body.appendChild(menu)
 }
 
-// ---------- 登录态轮询 ----------
+// ---------- 登录态轮询 + 导航上报 ----------
+
+/** 上次上报的 URL：会话 ↔ 平台对话的映射靠它建立（换绑回原对话全靠它） */
+let lastNavUrl = ''
+
+/**
+ * 立即求值一次登录态（不等 4 秒轮询）。
+ *
+ * 用户打开页面/登录成功那一刻必须马上弹初始化模态 —— 依赖轮询最多晚 4 秒，
+ * 实测体验就是「等了一会儿才弹」。DOM 变化、页面加载、路由切换都主动调它。
+ */
+function evaluateLoginNow(): void {
+  if (!adapter) return
+  const url = String(location.href)
+  const onLoginPage = /\/sign_?in\b|\/login\b|\/auth\b|accounts\.google\.com|\/i\/flow\/login/i.test(url)
+  // 登录判据（按可靠性排序）：
+  //  1) URL 在登录页 → 未登录
+  //  2) 聊天输入框存在 → 已登录。这是最稳的信号：各平台登录后必然出现输入框，
+  //     而头像 class 名平台改版就变 —— 实测 DeepSeek 首页已登录却没有任何 avatar 元素，
+  //     只靠 loginFlag 会永远判成未登录，初始化模态因此永不出现
+  //  3) loginFlag 命中 → 已登录（兜底）
+  const nowLoggedIn = onLoginPage
+    ? false
+    : findFirst(adapter.input) !== null ||
+      (adapter.loginFlag.length > 0 && findFirst(adapter.loginFlag) !== null)
+  if (nowLoggedIn !== loggedIn) {
+    loggedIn = nowLoggedIn
+    renderFirstRun()
+  }
+}
 
 setInterval(() => {
-  if (!adapter) return
-  const loggedIn = adapter.loginFlag.length === 0 ? true : findFirst(adapter.loginFlag) !== null
+  const url = String(location.href)
+  if (url !== lastNavUrl) {
+    lastNavUrl = url
+    send({ type: 'nav', url })
+
+    // 这里绝不重置 dismissed。
+    // 反例（实测反复踩中）：初始化发完第一条消息后页面会从 / 跳到 /a/chat/s/<id>，
+    // 这是同一次会话的正常跳转。任何基于「URL 变了」的重置都会导致
+    // 用户刚点完确认又弹一遍。需要再弹时由显式路径触发（见 resetFirstRun）。
+    evaluateLoginNow()
+    renderFirstRun()
+  }
+  if (!adapter) {
+    exposeState({ loggedIn, projectKnown, projectRoot, dismissed: firstRunDismissed, shouldShow: false, reason: 'no-adapter' })
+    return
+  }
+  evaluateLoginNow()
+  // 状态快照：登录态误判时能直接看出是选择器问题还是页面结构变了
+  exposeState({ loggedIn, projectKnown, projectRoot })
   send({ type: 'login-state', loggedIn })
-}, 4000)
+}, 1000)
 
 // ---------- 平台环境提示弹窗自动关闭（仅处理已知警告文本，不触碰其它内容） ----------
 
@@ -490,6 +547,7 @@ function installNetBridge(): void {
               type: 'net-response',
               text: String(detail.text ?? ''),
               status: st,
+              reason: detail.reason === undefined ? undefined : String(detail.reason),
               tokens: typeof tu?.accumulatedTokens === 'number' ? tu.accumulatedTokens : undefined
             })
           } else if (kind === 'error') {
@@ -509,6 +567,188 @@ function installNetBridge(): void {
 // 放到 configure 里会因 preload 已结束而失效 → hook 拿不到 __lidowNet）
 installNetBridge()
 
+// ---------- 首次引导（注入 AI 网页，对齐 cuckoo 的 first-time-dialog）----------
+//
+// 为什么必须注入到网页里而不是放在我们自己的侧栏：
+// 用户第一眼看的是 AI 页面，准备说话的地方就是那个输入框。引导放在侧栏菜单里
+// 等于没放 —— 点开产品的人不会先去读侧栏有没有菜单项。cuckoo 的
+// #cuckoo-first-time-dialog 就是这个位置，这里照做。
+
+/** 当前项目目录；null = 未初始化 */
+let projectRoot: string | null = null
+/** 用户手动关掉过引导：本次页面生命周期内不再弹（cuckoo 同款 close 按钮） */
+let firstRunDismissed = false
+/** 登录态（由轮询更新）：引导必须等登录完成后才出现 */
+let loggedIn = false
+/** 是否已收到过主进程的明确 projectRoot 下发（区分"还没收到"与"确实没有项目"） */
+let projectKnown = false
+
+/** 把引导状态写到 DOM 属性上（隔离世界的 window 主世界读不到，DOM 是共享的） */
+function exposeState(state: Record<string, unknown>): void {
+  try {
+    document.documentElement.setAttribute('data-lidow-firstrun', JSON.stringify(state))
+  } catch {
+    /* ignore */
+  }
+}
+
+function renderFirstRun(): void {
+  const existing = document.getElementById('lidow-first-run')
+  // 显示条件：
+  //  1) 登录已完成 —— 登录页上没有输入框，此时弹引导毫无意义
+  //  2) 用户本次没有手动关掉
+  // 注意：不再以「是否已有项目」为前提。需求是登录成功后无条件强制初始化一次，
+  // 已打开项目的用户也应看到当前目录并确认/更换（此前带着 !projectRoot 判断，
+  // 项目一打开就永不弹，等于功能不存在）。
+  const shouldShow = loggedIn && projectKnown && !firstRunDismissed
+  exposeState({ loggedIn, projectKnown, projectRoot, dismissed: firstRunDismissed, shouldShow })
+  if (!shouldShow) {
+    existing?.remove()
+    return
+  }
+  if (existing) return
+
+  const style = new CSSStyleSheet()
+  style.replaceSync(`
+    /* 强制模态：全屏遮罩 + 居中卡片。之前是右上角浮动小卡片，
+       用户根本不会注意到 —— 初始化是使用前的必要步骤，必须挡住主界面 */
+    #lidow-first-run{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;
+      justify-content:center;background:rgba(9,12,18,.42);backdrop-filter:blur(2px);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+    #lidow-first-run .fr-card{position:relative;width:min(420px,90vw);background:#fff;
+      border:1px solid rgba(16,24,40,.08);border-radius:16px;padding:26px 24px 20px;
+      box-shadow:0 18px 48px rgba(16,24,40,.22);color:#16181d;font-size:13px;line-height:1.6;
+      text-align:center;animation:lidow-fr-in .24s cubic-bezier(.22,1,.36,1);}
+    @keyframes lidow-fr-in{from{opacity:0;transform:translateY(10px) scale(.98);}
+      to{opacity:1;transform:translateY(0) scale(1);}}
+    #lidow-first-run .fr-icon{width:44px;height:44px;margin:0 auto 14px;border-radius:12px;
+      display:flex;align-items:center;justify-content:center;font-size:20px;
+      background:rgba(77,107,254,.12);color:#4d6bfe;}
+    #lidow-first-run .fr-title{font-size:15px;font-weight:600;margin-bottom:8px;}
+    #lidow-first-run .fr-text{margin-bottom:18px;color:#545a67;font-size:12.5px;}
+    #lidow-first-run .fr-dir{margin:0 0 18px;padding:9px 12px;border-radius:9px;
+      background:#f4f6fa;border:1px solid rgba(16,24,40,.06);font-family:Consolas,monospace;
+      font-size:11.5px;color:#2b6a3f;word-break:break-all;text-align:left;}
+    #lidow-first-run .fr-dir.empty{color:#a8661f;background:#fdf6ec;border-color:rgba(168,102,31,.16);}
+    #lidow-first-run .fr-actions{display:flex;gap:9px;}
+    #lidow-first-run .fr-btn{flex:1;padding:10px 16px;border-radius:10px;border:none;
+      background:#4d6bfe;color:#fff;font-size:13px;font-weight:600;cursor:pointer;transition:all .18s;}
+    #lidow-first-run .fr-btn:hover{background:#3b5bdb;box-shadow:0 4px 12px rgba(77,107,254,.32);}
+    #lidow-first-run .fr-btn:disabled{opacity:.6;cursor:not-allowed;}
+    #lidow-first-run .fr-btn.ghost{background:transparent;color:#545a67;border:1px solid rgba(16,24,40,.14);font-weight:500;}
+    #lidow-first-run .fr-btn.ghost:hover{background:rgba(16,24,40,.04);box-shadow:none;}
+    @media (prefers-color-scheme: dark){
+      #lidow-first-run .fr-card{background:#1a1a1a;border-color:rgba(255,255,255,.08);color:#e4e6eb;
+        box-shadow:0 18px 48px rgba(0,0,0,.55);}
+      #lidow-first-run .fr-text{color:#a8adba;}
+      #lidow-first-run .fr-icon{background:rgba(107,131,255,.18);color:#8b9dff;}
+      #lidow-first-run .fr-dir{background:#232323;border-color:rgba(255,255,255,.07);color:#7fd99a;}
+      #lidow-first-run .fr-dir.empty{background:#2a2118;border-color:rgba(200,150,80,.2);color:#e0b070;}
+      #lidow-first-run .fr-btn{background:#6b83ff;}
+      #lidow-first-run .fr-btn:hover{background:#8b9dff;}
+      #lidow-first-run .fr-btn.ghost{background:transparent;color:#a8adba;border-color:rgba(255,255,255,.14);}
+      #lidow-first-run .fr-btn.ghost:hover{background:rgba(255,255,255,.06);}
+    }
+  `)
+  try {
+    void document.adoptedStyleSheets.push(style)
+  } catch {
+    /* 老内核不支持构造式样式表 */
+  }
+
+  const hasDir = Boolean(projectRoot)
+  const box = document.createElement('div')
+  box.id = 'lidow-first-run'
+  box.innerHTML =
+    '<div class="fr-card">' +
+    '<div class="fr-icon">📁</div>' +
+    '<div class="fr-title">第一步：初始化项目</div>' +
+    '<div class="fr-text">AI 需要一个工作目录才能读写你的文件。<br/>选定目录后再开始对话。</div>' +
+    `<div class="fr-dir${hasDir ? '' : ' empty'}">${hasDir ? projectRoot : '尚未选择目录'}</div>` +
+    '<div class="fr-actions">' +
+    `<button class="fr-btn ${hasDir ? 'ghost' : ''}" data-act="pick">${hasDir ? '更换目录' : '选择目录'}</button>` +
+    (hasDir ? '<button class="fr-btn" data-act="confirm">使用此目录，开始</button>' : '') +
+    '</div>' +
+    '</div>'
+
+  // 已有目录：确认即关闭，并让主进程发一轮初始化提示词
+  // （把系统提示词 + 工作目录登记进这个对话，AI 才知道自己能操作本地文件）
+  box.querySelector<HTMLButtonElement>('[data-act="confirm"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const btn = e.currentTarget as HTMLButtonElement
+    btn.disabled = true
+    btn.textContent = '初始化中…'
+    firstRunDismissed = true
+    box.remove()
+    send({ type: 'float-menu-action', action: 'confirm-project' })
+  })
+  box.querySelector<HTMLButtonElement>('[data-act="pick"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const btn = e.currentTarget as HTMLButtonElement
+    btn.disabled = true
+    btn.textContent = '选择目录中…'
+    // 目录选择必须走主进程的对话框：网页侧的 <input type=file> 拿不到真实路径。
+    // 选完后主进程会重新下发 set-project，本浮窗随之消失。
+    send({ type: 'float-menu-action', action: 'init-project' })
+    window.setTimeout(() => {
+      btn.disabled = false
+      btn.textContent = '初始化项目'
+    }, 8000)
+  })
+
+  document.body.appendChild(box)
+}
+
+// ---------- 工具执行遮罩（cuckoo tool-mask 同款）----------
+//
+// 本地工具执行期间在页面顶部盖一条「执行中」横幅 + 停止按钮：
+// 一是明确告知当前状态（此前执行工具页面毫无反馈，用户以为卡了），
+// 二是防误操作（执行中途改输入框会把下一轮上下文搅乱）。
+
+function setupToolMask(): { show: (text: string) => void; hide: () => void } {
+  const existing = document.getElementById('lidow-tool-mask')
+  if (existing) return { show: () => existing.classList.remove('lidow-hidden'), hide: () => existing.classList.add('lidow-hidden') }
+
+  const style = new CSSStyleSheet()
+  style.replaceSync(`
+    #lidow-tool-mask{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:2147483646;
+      display:flex;align-items:center;gap:12px;padding:9px 16px;border-radius:12px;
+      background:rgba(24,24,30,.92);border:1px solid rgba(255,255,255,.12);
+      box-shadow:0 8px 28px rgba(0,0,0,.4);font-family:system-ui,sans-serif;font-size:12.5px;color:#e7e9ee;}
+    #lidow-tool-mask.lidow-hidden{display:none;}
+    #lidow-tool-mask .tm-spin{width:13px;height:13px;border-radius:50%;flex-shrink:0;
+      border:2px solid rgba(141,255,79,.25);border-top-color:#8dff4f;animation:lidow-spin .8s linear infinite;}
+    @keyframes lidow-spin{to{transform:rotate(360deg);}}
+    #lidow-tool-mask .tm-stop{border:none;border-radius:999px;padding:4px 12px;font-size:11.5px;font-weight:600;
+      cursor:pointer;background:transparent;color:#ff7b7b;border:1px solid rgba(255,123,123,.4);transition:all .18s;}
+    #lidow-tool-mask .tm-stop:hover{background:#e5484d;color:#fff;}
+  `)
+  try {
+    void document.adoptedStyleSheets.push(style)
+  } catch {
+    /* ignore */
+  }
+  const box = document.createElement('div')
+  box.id = 'lidow-tool-mask'
+  box.className = 'lidow-hidden'
+  box.innerHTML = '<span class="tm-spin"></span><span id="lidow-tool-mask-text">工具执行中…</span><button class="tm-stop">停止</button>'
+  box.querySelector<HTMLButtonElement>('.tm-stop')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    send({ type: 'float-menu-action', action: 'stop-loop' })
+  })
+  document.body.appendChild(box)
+  return {
+    show: (text: string) => {
+      const t = box.querySelector('#lidow-tool-mask-text')
+      if (t) t.textContent = text
+      box.classList.remove('lidow-hidden')
+    },
+    hide: () => box.classList.add('lidow-hidden')
+  }
+}
+
+let toolMaskCtl: { show: (text: string) => void; hide: () => void } | null = null
+
 // ---------- 命令接收 ----------
 
 ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
@@ -520,11 +760,34 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
         setupFloatingBall()
       }
       break
+    case 'tool-mask':
+      if (!toolMaskCtl) toolMaskCtl = setupToolMask()
+      if (cmd.show) toolMaskCtl.show(cmd.text || '工具执行中…')
+      else toolMaskCtl.hide()
+      break
+    case 'reset-first-run':
+      // 显式重置：主进程在「新建对话/切换会话」时下发。
+      // 只有这条路径能让初始化模态再弹 —— URL 变化一律不重置（防刚确认又弹）。
+      firstRunDismissed = false
+      renderFirstRun()
+      break
+    case 'set-project':
+      projectRoot = cmd.projectRoot || null
+      projectKnown = true
+      // 注意：这里不能重置 firstRunDismissed —— set-project 会在每次 configure
+      // （切会话/重载页面）时下发，重置会让用户关掉的模态反复弹出来。
+      // 只有「刚完成初始化」才需要重新评估，那由主进程在选完目录后单独通知。
+      renderFirstRun()
+      break
     case 'send':
       void doSend(cmd.text ?? '')
       break
     case 'new-chat':
+      // 新建对话 = 用户明确要开一个新会话 → 初始化模态重新弹一次。
+      // 这是唯一会让模态复现的入口，避免「刚确认完又弹」
+      firstRunDismissed = false
       doNewChat()
+      renderFirstRun()
       break
     case 'stop':
       doStop()
@@ -536,5 +799,15 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       break
   }
 })
+
+// 页面内路由变化（首页 ↔ 会话页）：cuckoo 的 updateHomeMode 同款，
+// 只是这里不区分首页 —— 没项目时任何页面都该提示，否则用户不知道缺什么。
+window.addEventListener('popstate', () => renderFirstRun())
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) renderFirstRun()
+})
+
+// 注意：不在这里主动渲染。无项目时由主进程「按 webview」下发 set-project，
+// 避免有项目时先闪一下引导再被 configure 收起。
 
 send({ type: 'ready' })

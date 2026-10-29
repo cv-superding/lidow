@@ -1,6 +1,8 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog, Notification, webContents } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { readFileSync } from 'node:fs'
 import os from 'node:os'
 import { nanoid } from 'nanoid'
 import { JsonStore } from '@main/infra/store'
@@ -12,6 +14,7 @@ import { ProviderRegistry } from '@main/providers/registry'
 import { SessionStore } from '@main/session/store'
 import { OverlayManager } from '@main/bridge/overlayManager'
 import { AgentLoop } from '@main/bridge/loop'
+import { listAgents } from '@main/ecosystem/skills'
 import { MemoryStore } from '@main/ecosystem/memory'
 import { AuditLedger } from '@main/ecosystem/audit'
 import { TaskPlanStore } from '@main/ecosystem/taskPlan'
@@ -106,6 +109,10 @@ export class AppContext {
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
   private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
+  /** 服务端权威 token 消耗（按平台累计，持久化 token-stats.json） */
+  private tokenUsage!: JsonStore<Record<string, number>>
+  /** 插件网页脚本（providerId → code），loadAllPlugins 填充、configure 时注入 */
+  private webScripts = new Map<string, string[]>()
   lastSessionId = ''
 
   init(): void {
@@ -161,6 +168,7 @@ export class AppContext {
     })
 
     this.dshKv = new JsonStore<Record<string, Record<string, unknown>>>(join(userData, 'dsh-kv.json'), {})
+    this.tokenUsage = new JsonStore<Record<string, number>>(join(userData, 'token-stats.json'), {})
     registerRuntimeServices(this.dsh, {
       kv: this.dshKv,
       emit: (event) => this.emit(event as { type: string; sessionId: string }),
@@ -190,6 +198,7 @@ export class AppContext {
 
     this.registerEcosystemTools()
     this.registerMcpTool()
+    this.registerAgentTool()
     this.registerKbTool()
 
     this.loop = new AgentLoop({
@@ -200,6 +209,7 @@ export class AppContext {
       sendToPage: (sessionId, text) => this.overlay.sendToPage(sessionId, text),
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
       interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
+      abandonReply: (sessionId) => this.overlay.abandonReply(sessionId),
       emit: (event) => this.emit(event),
       settings: () => this.settings.get(),
       securityMod: () => {
@@ -217,12 +227,13 @@ export class AppContext {
       systemPromptFor: (sessionId) => this.systemPromptFor(sessionId),
       // 自动续接：新会话需要自己的网页绑定。这里只做主进程侧绑定，
       // 前端会通过 session-updated 事件跟上（切到新会话视图）。
-      rebindToSession: async (sessionId: string) => {
-        const prev = this.lastSessionId
-        if (prev) this.overlay.unbindSession(prev)
-        this.lastSessionId = sessionId
-        this.configureOverlay(sessionId)
-      }
+      rebindToSession: async (sessionId: string) => this.rebindWebview(sessionId),
+      // 工具执行遮罩：本地执行期间盖住网页（防误操作 + 明确状态）
+      toolMask: (sessionId, show, text) => {
+        this.overlay.sendCmd(sessionId, { kind: 'tool-mask', show, text })
+      },
+      // 任务完成通知：仅在窗口失焦时弹系统通知（前台用户看得见，不打扰）
+      notifyDone: (sessionId, snippet) => this.notifyIfHidden(sessionId, snippet)
     })
 
     this.hotkeys = new HotkeyManager(() => this.settings.get().globalHotkeys)
@@ -247,6 +258,12 @@ export class AppContext {
     this.overlay.setPageReplyHandler((sessionId, text) => {
       void this.loop.adoptExternalReply(sessionId, text)
     })
+    // 服务端权威 token 统计（SSE accumulated_token_usage 差值），按平台累计持久化
+    this.overlay.setTokenUsageHandler((sessionId, tokens) => {
+      const session = this.sessionOf(sessionId)
+      const key = session?.providerId ?? 'other'
+      this.tokenUsage.update((d) => ({ ...d, [key]: (d[key] ?? 0) + tokens }))
+    })
     this.overlay.setFloatActionHandler((sessionId, action) => {
       if (action === 'open-panel') {
         // 悬浮球左键单击 → 展开对话面板并把窗口提到前台（回归修复：此前无该分支，点击无任何反应）
@@ -258,6 +275,38 @@ export class AppContext {
       this.loop.stop(sessionId, level)
     })
     this.overlay.onReady = (sessionId) => this.configureOverlay(sessionId)
+    // 登录成功 → 把「有没有工作目录」推给该网页，由 overlay 决定是否弹首次引导。
+    // 这一步必须放在登录之后：登录页没有输入框，那时弹引导用户既看不懂也用不上。
+    this.overlay.onInitProject = (webContentsId) => void this.pickAndOpenProject(webContentsId)
+    // 「使用此目录，开始」：把系统提示词 + 工作目录自动发进这个对话。
+    // 初始化时必须自动输入一段提示词 —— 否则 AI 不知道自己绑定了本地工具，
+    // 会答「我没有文件系统访问权限」。
+    this.overlay.onConfirmProject = (webContentsId) => void this.sendInitPrompt(webContentsId)
+    // 记录会话 ↔ 平台对话 URL：换绑 webview 时才能导航回正确的对话。
+    // 没有这个映射，子代理/自动续接切回父会话后页面停在别人的对话里。
+    this.overlay.onNav = (sessionId, url) => {
+      const session = this.sessionOf(sessionId)
+      if (!session) {
+        Logger.info('nav', `未绑定会话的导航（忽略）: ${url.slice(0, 60)}`)
+        return
+      }
+      if (url === session.providerUrl) return
+      // 登录页/首页不算对话页，不覆盖已记录的对话 URL
+      if (/\/sign_?in|\/login/i.test(url)) return
+      const provider = this.projects
+        .map((p) => this.providerRegistries.get(p.id))
+        .find((r) => r && r.get(session.providerId))
+      const home = provider?.get(session.providerId)?.home ?? ''
+      if (home && url.split('#')[0] === home) return
+      this.sessionStoreOf(session.projectId).update(sessionId, (x) => ({ ...x, providerUrl: url }))
+      Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
+    }
+    this.overlay.onLogin = (webContentsId) => {
+      const root = this.activeProject()?.root ?? null
+      this.overlay.sendCmdToWebContents(webContentsId, { kind: 'set-project', projectRoot: root })
+      // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
+      if (!root) this.focusWindow()
+    }
 
     app.on('web-contents-created', (_e, wc) => {
       wc.on('destroyed', () => this.overlay.disposeWebContents(wc.id))
@@ -275,6 +324,11 @@ export class AppContext {
     })
 
     void this.mcp.connectAll()
+    // 插件运行时：启动即加载所有已启用插件。必须在末尾——
+    // 此前放在构造中段，providerRegistries 还是空的（懒创建），
+    // 无 platform 的网页脚本拿不到任何注入目标；dshKv 也尚未赋值。
+    for (const p of this.projects) this.providerRegistryOf(p.id)
+    void this.loadAllPlugins()
     Logger.info('context', 'AppContext 初始化完成')
   }
 
@@ -284,6 +338,116 @@ export class AppContext {
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
+  }
+
+  /**
+   * 把网页载体切到指定会话（自动续接与子代理共用）。
+   *
+   * webview 每个平台只有一个，靠 bindings 换绑。关键是换绑后页面必须落到
+   * 目标会话「自己的」对话上：有 providerUrl 就导航回去（平台会从服务端
+   * 恢复完整历史），全新会话才开新聊天。否则子代理跑完切回父会话时，
+   * 页面停在子代理的对话里，父会话后续消息全部发进错误上下文。
+   */
+  private async rebindWebview(sessionId: string): Promise<void> {
+    const prev = this.lastSessionId
+    const prevWcId = prev ? this.overlay.wcIdOfSession(prev) : undefined
+    if (prev && prev !== sessionId) this.overlay.unbindSession(prev)
+    this.lastSessionId = sessionId
+    if (prevWcId) this.overlay.bindSession(sessionId, prevWcId)
+    this.configureOverlay(sessionId)
+    if (prev !== sessionId) await this.landSession(sessionId)
+  }
+
+  /**
+   * 让页面落到目标会话「自己的」对话上（cuckoo 的 navigateSession 同款）。
+   * 有 providerUrl → 导航回去（平台从服务端恢复完整历史）；
+   * 全新会话 → 开新聊天。切回旧会话时若不做这一步，页面停在别的对话里，
+   * 后续消息全部发进错误上下文。
+   */
+  async landSession(sessionId: string): Promise<void> {
+    const wcId = this.overlay.wcIdOfSession(sessionId)
+    const wc = wcId ? webContents.fromId(wcId) : undefined
+    if (!wc) return
+    const session = this.sessionOf(sessionId)
+    if (session?.providerUrl && wc.getURL() !== session.providerUrl) {
+      await wc.loadURL(session.providerUrl).catch(() => undefined)
+      return
+    }
+    this.overlay.sendCmd(sessionId, { kind: 'new-chat' })
+  }
+
+  /** 任务完成系统通知：窗口失焦才弹（前台用户看得见结果，不打扰） */
+  private notifyIfHidden(sessionId: string, snippet: string): void {
+    try {
+      const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
+      if (win && win.isFocused()) return
+      if (!Notification.isSupported()) return
+      const session = this.sessionOf(sessionId)
+      new Notification({
+        title: `Lidow 任务完成${session ? `：${session.title.slice(0, 20)}` : ''}`,
+        body: snippet || 'AI 已给出最终答复',
+        silent: false
+      }).show()
+    } catch {
+      /* 通知失败不影响主流程 */
+    }
+  }
+
+  /**
+   * 插件运行时接线。
+   *
+   * 之前的状态：市场能装、能卸，但装上的插件从来没有被执行过 ——
+   * 没有任何代码在启动或安装后遍历插件目录加载 entry/dsh/webScript，
+   * 用户装的是一个"摆设"。这里补齐加载链路：
+   *  - dsh      → DSH host.loadPluginEntry（导出 register(ctx)，ctx 含全部兼容服务）
+   *  - entry    → 动态 import 后调 register(pluginApi)
+   *  - webScript→ 按平台登记，webview configure 时注入页面
+   */
+  async loadAllPlugins(): Promise<void> {
+    this.webScripts.clear()
+    for (const p of this.plugins.list()) {
+      if (!p.enabled) continue
+      try {
+        if (p.dsh) {
+          await this.dsh.loadPluginEntry(join(p.dir, p.dsh))
+          Logger.info('plugins', `DSH 扩展已加载: ${p.id}`)
+        }
+        if (p.entry) {
+          const mod = (await import(pathToFileURL(join(p.dir, p.entry)).href)) as {
+            register?: (api: unknown) => void | Promise<void>
+          }
+          if (typeof mod.register === 'function') {
+            await mod.register({
+              id: p.id,
+              log: (msg: string) => Logger.info(`plugin:${p.id}`, msg),
+              notify: (message: string) => this.emit({ type: 'notice', sessionId: '', level: 'info', message })
+            })
+          }
+          Logger.info('plugins', `插件入口已加载: ${p.id}`)
+        }
+        if (p.webScript) {
+          const code = readFileSync(join(p.dir, p.webScript), 'utf-8')
+          // platform 缺省 = 注入所有平台的网页（此前错误地用了项目 id 当 key，
+          // 无 platform 的脚本永远匹配不上任何 webview）
+          const targets = p.platform
+            ? [p.platform]
+            : [...new Set([...this.providerRegistries.values()].flatMap((r) => r.list().map((x) => x.id)))]
+          for (const id of targets) {
+            const arr = this.webScripts.get(id) ?? []
+            arr.push(code)
+            this.webScripts.set(id, arr)
+          }
+          Logger.info('plugins', `网页脚本已登记: ${p.id} → ${targets.join(',')}`)
+        }
+      } catch (e) {
+        Logger.warn('plugins', `插件 ${p.id} 加载失败: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
+  }
+
+  /** 已启用插件的网页脚本（providerId → code 列表），configure 时注入 webview */
+  webScriptsOf(providerId: string): string[] {
+    return this.webScripts.get(providerId) ?? []
   }
 
   emit(event: { type: string; sessionId: string; [k: string]: unknown }): void {
@@ -297,11 +461,26 @@ export class AppContext {
     const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
     if (!provider) return
     this.overlay.sendCmd(sessionId, { kind: 'configure', adapter: provider.adapter })
+    // 告诉网页侧有没有工作目录：没有就由 overlay 在页面里弹初始化引导
+    // （cuckoo 的 first-time-dialog 同款位置，用户准备说话的地方）。
+    // 用「会话所属项目」而不是全局 activeProject —— 多项目并行时，
+    // 全局值可能指向另一个项目，会让当前会话明明没目录却看不到引导。
+    const ownProject = this.projects.find((p) => p.id === session.projectId)
+    this.overlay.sendCmd(sessionId, {
+      kind: 'set-project',
+      projectRoot: ownProject?.root ?? null
+    })
     // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
     // 这样 AI 也拿得到工具协议与工作目录（否则它会答「我没有文件系统访问权限」）。
     const spec = HOOKS[provider.id]
     if (spec) void this.overlay.injectHook(sessionId, buildHookSource(spec, this.systemPromptFor(sessionId)))
+    // 插件网页脚本：登记后按「页面加载完成」时机注入（直接 executeJs 会在
+    // 页面加载期打在 about:blank 上静默丢失；刷新后也由 did-finish-load 重放）
+    this.overlay.setWebScripts(sessionId, this.webScriptsOf(provider.id))
+    void this.overlay.injectWebScripts(sessionId).catch((e) => {
+      Logger.warn('plugins', `网页脚本注入失败: ${e instanceof Error ? e.message : String(e)}`)
+    })
   }
 
   private registerEcosystemTools(): void {
@@ -366,6 +545,86 @@ export class AppContext {
     this.tools.register(kbSearch)
   }
 
+  /**
+   * 子代理执行器（cuckoo 的 subagent 能力）：
+   * 开一个独立会话、复用当前网页载体跑完子任务，回收最终文本后清理现场。
+   *
+   * 与 cuckoo 开新窗口的实现不同——Lidow 单窗口，子代理在主循环「执行工具」
+   * 的间隙里运行（此时主循环不在等回复，网页空闲），跑完把绑定切回父会话。
+   * agents 目录（项目 .lidow/agents 与用户级）里的代理可用其系统提示词与人设。
+   */
+  private registerAgentTool(): void {
+    const def: ToolDef = {
+      name: 'runAgent',
+      description:
+        '派一个子代理独立完成子任务，返回它的最终答复。' +
+        '适合：并行拆分子问题、隔离探索性工作、避免大量中间输出污染主对话上下文。' +
+        'agent 参数可选，传 agents 目录里的代理名（缺省用通用子代理）。',
+      parameters: {
+        agent: { type: 'string', description: '代理名（agents 目录中定义，可省略）', required: false },
+        task: { type: 'string', description: '要交给子代理完成的任务描述', required: true }
+      },
+      dangerLevel: 'safe',
+      run: async (input) => {
+        const task = String(input.task ?? '').trim()
+        if (!task) return { ok: false, output: '', error: 'task 必填' }
+        const agentName = String(input.agent ?? '').trim()
+
+        const parentSessionId = this.lastSessionId
+        const parent = parentSessionId ? this.sessionOf(parentSessionId) : null
+        const project = parent ? this.projects.find((p) => p.id === parent.projectId) : this.activeProject()
+        if (!project) return { ok: false, output: '', error: '没有可用项目（子代理需要工作目录）' }
+        if (!parentSessionId) return { ok: false, output: '', error: '当前没有活动会话' }
+
+        // 代理定义：项目级优先于用户级
+        let persona = ''
+        if (agentName) {
+          const agent = listAgents(project.root).find((a) => a.name === agentName)
+          if (!agent) {
+            return { ok: false, output: '', error: `未找到代理「${agentName}」，可用：${listAgents(project.root).map((a) => a.name).join(', ') || '（无）'}` }
+          }
+          persona = agent.body ?? ''
+        }
+
+        const providerId = parent!.providerId
+        const child = this.sessionStoreOf(project.id).create(project.id, providerId)
+        this.sessionStoreOf(project.id).update(child.id, (s) => ({
+          ...s,
+          title: `[子代理] ${agentName || '通用'}：${task.slice(0, 18)}`
+        }))
+
+        const prompt = [persona, '---', `任务：${task}`, '', '完成后直接给出最终结果（不要再调用工具）。']
+          .filter(Boolean)
+          .join('\n\n')
+
+        Logger.info('loop', `子代理启动 session=${child.id} agent=${agentName || '通用'} 任务=${task.slice(0, 40)}`)
+        try {
+          // 换绑网页 → 跑子任务 → 切回父会话（工具执行间隙网页本来就空闲）
+          await this.rebindWebview(child.id)
+          await this.loop.run(child.id, prompt)
+          const turns = this.sessionStoreOf(project.id).get(child.id)?.turns ?? []
+          const last = [...turns].reverse().find((t) => t.role === 'assistant')
+          const output = last?.text ?? ''
+          Logger.info('loop', `子代理完成 session=${child.id} 输出 ${output.length} 字`)
+          return {
+            ok: true,
+            output: output ? `【子代理${agentName ? ` ${agentName}` : ''}的最终答复】\n${output.slice(0, 8000)}` : '子代理没有产出文本回复（可能被中断）'
+          }
+        } catch (e) {
+          return { ok: false, output: '', error: `子代理执行失败：${e instanceof Error ? e.message : String(e)}` }
+        } finally {
+          this.overlay.unbindSession(child.id)
+          this.sessionStoreOf(project.id).delete(child.id)
+          if (parentSessionId) {
+            await this.rebindWebview(parentSessionId)
+            this.emit({ type: 'session-updated', sessionId: parentSessionId })
+          }
+        }
+      }
+    }
+    this.tools.register(def)
+  }
+
   // ---------- 项目 ----------
 
   activeProject(): ProjectInfo | null {
@@ -377,8 +636,72 @@ export class AppContext {
     return this.projectStore.get().activeProjectId
   }
 
-  openProject(root: string): ProjectInfo {
-    let p = this.projects.find((x) => x.root === root)
+  /**
+   * 网页内首次引导的「初始化项目」落点：弹目录框 → 打开项目 → 全量同步。
+   * 按 webContentsId 触发（首次使用场景没有会话绑定，configureOverlay 会空转，
+   * 网页浮窗将永远不消失）；选完对所有已连接 webview 广播 set-project。
+   */
+  private async pickAndOpenProject(_webContentsId: number): Promise<void> {
+    try {
+      const res = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+      if (res.canceled || !res.filePaths[0]) return
+      const root = res.filePaths[0]
+      this.openProject(root)
+      // 渲染层据此刷新项目下拉/目录条/会话列表
+      this.emit({ type: 'projects-changed', sessionId: '' })
+      // 所有网页（含发起方）同步新目录 → 浮窗消失；发起方无需会话绑定
+      this.overlay.broadcastCmd({ kind: 'set-project', projectRoot: root })
+      // 当前活动会话如果已绑定，顺带重配（hook 的系统提示词要带上新目录）
+      if (this.lastSessionId) this.configureOverlay(this.lastSessionId)
+      Logger.info('project', `网页引导初始化项目: ${root}`)
+    } catch (e) {
+      Logger.warn('project', `网页引导初始化失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /**
+   * 初始化确认：把系统提示词＋工作目录作为一条消息自动发进当前对话。
+   *
+   * 这是「初始化」的实质内容 —— 只选目录不告诉 AI 什么都白搭。
+   * 发送的是标准的系统提示词（含工具协议、目录树、规则），AI 收到后即进入
+   * Lidow Agent 状态；用户在网页里直接接着问就能操作本地文件。
+   */
+  private async sendInitPrompt(webContentsId: number): Promise<void> {
+    try {
+      const project = this.activeProject()
+      if (!project) {
+        Logger.warn('project', '初始化提示词：没有活动项目，跳过')
+        return
+      }
+      // 找到该 webview 对应的会话；没有会话就现建一个（首次引导场景）
+      let sessionId = this.overlay.sessionOfWebContents?.(webContentsId) ?? ''
+      if (!sessionId) {
+        // 平台取当前 webview 对应的 provider（无则用内置第一个）
+        const reg = this.providerRegistryOf(project.id)
+        const providerId = reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
+        const created = this.sessionStoreOf(project.id).create(project.id, providerId)
+        sessionId = created.id
+        this.overlay.bindSession(sessionId, webContentsId)
+        this.lastSessionId = sessionId
+      }
+      const sys = this.systemPromptFor(sessionId)
+      // 直接经 overlay 发送：此时用户正看着网页，消息要出现在 AI 对话框里
+      await this.overlay.sendToPage(sessionId, sys)
+      this.sessionStoreOf(this.sessionProjectOf(sessionId)).appendTurn(sessionId, {
+        id: `turn_${nanoid(8)}`,
+        role: 'system',
+        text: '[Lidow 初始化] 已发送系统提示词与工作目录',
+        ts: Date.now(),
+        status: 'done'
+      })
+      this.emit({ type: 'session-updated', sessionId })
+      Logger.info('project', `已发送初始化提示词 session=${sessionId} len=${sys.length}`)
+    } catch (e) {
+      Logger.warn('project', `发送初始化提示词失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  openProject(root: string): ProjectInfo {    let p = this.projects.find((x) => x.root === root)
     if (!p) {
       p = { id: `proj_${nanoid(8)}`, name: basename(root), root, createdAt: Date.now(), lastOpenedAt: Date.now() }
       this.projects.push(p)
@@ -653,6 +976,11 @@ export class AppContext {
 
   async updateCheck(): Promise<{ hasUpdate: boolean; version?: string; url?: string }> {
     return checkForUpdate()
+  }
+
+  /** 服务端权威 token 消耗（按平台累计） */
+  tokenStats(): Record<string, number> {
+    return this.tokenUsage.get()
   }
 
   async dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }> {

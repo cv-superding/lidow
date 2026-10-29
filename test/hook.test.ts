@@ -182,3 +182,17 @@ describe('请求体系统提示词注入', () => {
     expect(runXhr('', raw)).toBe(raw)
   })
 })
+
+describe('上下文耗尽检测（cuckoo banner_info 同款）', () => {
+  it('INCOMPLETE 终态 → error/reason=incomplete（DeepSeek 截断）', async () => {
+    const sse = [
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"回答前半"}]}',
+      '',
+      'data: {"p":"response/status","v":"INCOMPLETE"}',
+      ''
+    ].join('\n\n')
+    const cap = await runHook(sse, 64)
+    expect(cap.errors).toHaveLength(1)
+    expect(cap.errors[0]!.reason).toBe('incomplete')
+  })
+})

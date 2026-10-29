@@ -55,6 +55,12 @@ export interface SessionMeta {
   /** 已压缩轮次数量（这些轮次已被摘要替代） */
   compactedTurns: number
   archived?: boolean
+  /**
+   * 平台侧对话 URL（如 DeepSeek 的 /a/chat/s/<uuid>）。
+   * 换绑 webview 时导航回它 —— 没有这个映射，子代理跑完后页面停在
+   * 子代理的对话里，父会话后续消息会发进错误的上下文。
+   */
+  providerUrl?: string
 }
 
 export interface Session extends SessionMeta {
@@ -208,7 +214,8 @@ export interface MarketPlugin {
   stars?: number
   category?: string
   repoUrl: string
-  source: 'github' | 'gitee'
+  /** builtin = 内置精选（本地直装，不走网络） */
+  source: 'github' | 'gitee' | 'builtin'
   installed?: boolean
 }
 
@@ -323,12 +330,32 @@ export interface FileNode {
 }
 
 export interface OverlayCommand {
-  kind: 'send' | 'new-chat' | 'extract' | 'get-input' | 'set-input' | 'clear' | 'stop' | 'configure'
+  kind:
+    | 'send'
+    | 'new-chat'
+    | 'extract'
+    | 'get-input'
+    | 'set-input'
+    | 'clear'
+    | 'stop'
+    | 'configure'
+    | 'set-project'
+    | 'tool-mask'
+    | 'reset-first-run'
   text?: string
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
   /** configure：网络层 hook 源码（注入主世界，拦截 SSE 获取回复，不依赖 DOM） */
   hookSource?: string
+  /**
+   * set-project：当前项目目录（null/空 = 未初始化）。
+   * 网页侧据此决定是否显示「初始化项目」引导浮窗 ——
+   * 与 cuckoo 的 first-time-dialog 同款：引导必须出现在用户准备开口的
+   * 那个输入框附近，而不是我们自己的侧栏菜单里。
+   */
+  projectRoot?: string | null
+  /** tool-mask：是否显示「工具执行中」遮罩（cuckoo 同款，防止执行期间乱点页面） */
+  show?: boolean
 }
 
 export type OverlayEvent =
@@ -343,6 +370,6 @@ export type OverlayEvent =
   /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */
   | { type: 'net-stream'; text: string; think?: string; finished: boolean }
   /** 网络层 hook：一轮回复完整结束（status 区分 stopped/error/finished） */
-  | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; tokens?: number }
+  | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; reason?: string; tokens?: number }
   /** 网络层 hook：请求失败 */
   | { type: 'net-error'; text: string; reason: string }

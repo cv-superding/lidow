@@ -27,7 +27,12 @@ export async function execCommand(
   }
   const readonly = isReadOnly(cmd)
   if (verdict.level === 'confirm' || (ctx.settings.dangerConfirm && !readonly)) {
-    const ok = await ctx.confirm(verdict.reason ?? `执行命令：${cmd}`)
+    // 确认框必须始终带上具体命令：只显示「包含需要确认的操作：xxx」时
+    // 用户根本不知道要执行什么（实测出现空白「执行命令：」的困惑）。
+    const detail = verdict.reason
+      ? `${verdict.reason}\n\n$ ${cmd}`
+      : `执行命令：\n\n$ ${cmd}`
+    const ok = await ctx.confirm(detail)
     if (!ok) return { ok: false, exitCode: null, output: '用户拒绝执行该命令', timedOut: false, durationMs: 0 }
   }
 

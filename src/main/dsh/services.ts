@@ -242,6 +242,28 @@ export function registerRuntimeServices(host: DshHost, deps: DshRuntimeDeps): vo
   }
   S('hookRegistry', 'ext', hookMethods)
   S('extensionPoints', 'ext', hookMethods)
+  // storage / storageDomain：119 名单内的真实 KV 服务（此前缺失，
+  // 名单声称兼容但插件调 ctx.storage 会拿到 undefined —— 覆盖率虚报的实例）
+  S('storage', 'core', {
+    set: (key: string, value: unknown): boolean => {
+      // 值统一包一层对象以匹配 kv 的 Record<string, Record<...>> 形状
+      const v = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : { value }
+      kv.update((d) => ({ ...d, [String(key)]: v }))
+      return true
+    },
+    get: (key: string): unknown => kv.get()[String(key)] ?? null,
+    delete: (key: string): boolean => {
+      if (kv.get()[String(key)] === undefined) return false
+      kv.update((d) => {
+        const next = { ...d }
+        delete next[String(key)]
+        return next
+      })
+      return true
+    },
+    keys: (): string[] => Object.keys(kv.get())
+  })
+  S('storageDomain', 'core', genericStore(kv, 'storageDomain'))
   S('ptcRuntime', 'ext', genericStore(kv, 'ptc'))
   S('typert', 'ext', genericStore(kv, 'typert'))
   S('typertGateway', 'ext', genericStore(kv, 'typertGateway'))

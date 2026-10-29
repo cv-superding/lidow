@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore, useProject } from '../store'
 import { api } from '../api'
-import { InitProjectModal } from './InitProjectModal'
 import { ResizeHandle } from './ResizeHandle'
 import {
   IconPlus,
@@ -154,7 +153,6 @@ export function PureModeShell(): React.JSX.Element {
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
-  const [initOpen, setInitOpen] = useState(false)
   const [, setTick] = useState(0)
 
   const filtered = useMemo(
@@ -254,12 +252,6 @@ export function PureModeShell(): React.JSX.Element {
           <span className="flex-1 text-left">新建任务</span>
           <span className="text-[10.5px] font-normal opacity-60">Ctrl N</span>
         </button>
-        <button className={navBtn} style={{ color: 'var(--text-dim)' }} onClick={() => setInitOpen(true)}>
-          <span className="flex w-4 justify-center">
-            <IconFolder size={15} />
-          </span>
-          <span className="flex-1 truncate text-left">初始化项目</span>
-        </button>
         <button
           className={navBtn}
           style={{
@@ -294,6 +286,21 @@ export function PureModeShell(): React.JSX.Element {
       <div className="flex items-center justify-between px-3 pb-1.5">
         <span className="text-label">任务列表</span>
         <div className="flex items-center gap-0.5">
+          <button
+            className="btn btn-ghost btn-icon btn-sm"
+            title="清理空会话（新建后未发送的）"
+            onClick={() => {
+              if (!project) return
+              void api
+                .cleanupEmptySessions(project.id, activeSession?.id)
+                .then((n) => {
+                  void useStore.getState().refreshSessions()
+                  if (n > 0) useStore.getState().notice(`已清理 ${n} 个空会话`)
+                })
+            }}
+          >
+            <IconClose size={12} />
+          </button>
           <button
             className="btn btn-ghost btn-icon btn-sm"
             title="搜索会话"
@@ -349,10 +356,16 @@ export function PureModeShell(): React.JSX.Element {
               }}
               onClick={() => void switchSession(s.id)}
             >
+              {/* 平台首字徽标：扫读时一眼分辨会话归属（设计惯例：列表行 = 标识 + 标题 + 时间） */}
               <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ background: active ? 'var(--accent)' : 'var(--border-strong)' }}
-              />
+                className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] text-[8.5px] font-bold"
+                style={{
+                  background: active ? 'var(--accent)' : 'var(--accent-soft)',
+                  color: active ? 'var(--on-accent)' : 'var(--accent)'
+                }}
+              >
+                {(providers.find((x) => x.id === s.providerId)?.name ?? '?').slice(0, 1)}
+              </span>
               <span className="min-w-0 flex-1 truncate">{s.title}</span>
               {/* 时间与删除按钮占同一格：用透明度切换而不是 display 切换，
                   否则 hover 时右侧宽度变化会让标题重新截断（视觉上"整行跳一下"） */}
@@ -384,24 +397,6 @@ export function PureModeShell(): React.JSX.Element {
           </div>
         )}
       </div>
-
-      {/* 初始化项目弹窗 */}
-      {initOpen && (
-        <InitProjectModal
-          onClose={() => setInitOpen(false)}
-          onSend={async (text) => {
-            setInitOpen(false)
-            const pid = providerId || activeSession?.providerId || providers[0]?.id
-            if (!pid) {
-              useStore.getState().notice('请先选择一个 AI 平台', 'warn')
-              return
-            }
-            if (!activeSession) await useStore.getState().createSession(pid)
-            setPureView('home')
-            await useStore.getState().sendPrompt(text)
-          }}
-        />
-      )}
 
       {/* ⑤ 底部用户区 */}
       <div className="flex items-center gap-1.5 border-t px-2 py-2" style={{ borderColor: 'var(--border)' }}>

@@ -19,6 +19,12 @@ export interface LoopDeps {
   awaitReply: (sessionId: string, onChunk: (partial: string, tps: number) => void) => Promise<string>
   /** 中断网页侧生成 */
   interruptPage: (sessionId: string) => void
+  /** 放弃当前等待（看门狗判死/超时后清理，避免下一轮报「已有等待中的回复请求」） */
+  abandonReply?: (sessionId: string) => void
+  /** 工具执行遮罩（网页内横幅 + 停止按钮，cuckoo tool-mask 同款） */
+  toolMask?: (sessionId: string, show: boolean, text?: string) => void
+  /** 任务完成系统通知（仅在窗口失焦时真正弹出，由实现方判断） */
+  notifyDone?: (sessionId: string, snippet: string) => void
   /** 事件上报 renderer */
   emit: (event: { type: string; sessionId: string; [k: string]: unknown }) => void
   settings: () => AppSettings
@@ -40,6 +46,15 @@ export interface LoopDeps {
 }
 
 const MAX_TURNS = 40 // 单次任务最大工具循环轮数，防失控
+/** 格式纠偏最大次数（对齐 cuckoo 的 FORMAT_HINT_MAX，防 AI 在两种错误格式间来回切换） */
+const MAX_WILD_HINTS = 10
+
+/** 格式纠偏提示：AI 输出了不支持的调用格式时发回给它 */
+const FORMAT_FIX_PROMPT =
+  '你上一条回复使用了不支持的调用格式（XML / DSML / <invoke>）。\n' +
+  '请严格改用 lidow 协议：只输出如下代码块，块外正常写字，不要在代码块里嵌别的代码块。\n\n' +
+  '```lidow\n{"tool":"write","input":{"path":"相对路径","content":"文件内容"}}\n```\n\n' +
+  '# 用户原始任务\n\n'
 
 /** 压缩时发给 AI 的摘要指令（要求保留决策与未完成事项，而非泛泛概括） */
 const COMPACT_INSTRUCTION =
@@ -62,6 +77,10 @@ interface RunningLoop {
  */
 export class AgentLoop {
   private running = new Map<string, RunningLoop>()
+  /** 正在压缩的会话：压缩也是一轮 AI 对话，看门狗必须挂起，否则会把摘要请求误判为卡死 */
+  private compacting = new Set<string>()
+  /** 已接管的网页侧回复指纹：DOM 与网络层双通道会重复上报同一条回复 */
+  private adoptedRecently = new Map<string, number>()
 
   constructor(private deps: LoopDeps) {}
 
@@ -119,6 +138,9 @@ export class AgentLoop {
       this.handleLoopError(sessionId, err)
     } finally {
       this.running.delete(sessionId)
+      // 任务收尾才是自动压缩的正确时机：此刻没有在途的发送/等待，
+      // 且上一任务留下的长转录正是需要摘要的对象
+      this.maybeCompact(sessionId)
     }
   }
 
@@ -131,6 +153,22 @@ export class AgentLoop {
   async adoptExternalReply(sessionId: string, text: string): Promise<void> {
     if (this.running.has(sessionId)) return
     if (!text.trim()) return
+    // 去重：同一条回复会经两条路到达（DOM stream-end 兜底 + 网络层 net-response），
+    // 重复接管会弹两遍提示、执行两遍工具。按「会话 + 文本指纹 + 时间窗」拦掉。
+    const fingerprint = `${sessionId}:${text.length}:${text.slice(-80)}`
+    const now = Date.now()
+    const prev = this.adoptedRecently.get(fingerprint)
+    if (prev && now - prev < 15_000) {
+      Logger.info('loop', `忽略重复的网页侧回复（两条上报通道）session=${sessionId}`)
+      return
+    }
+    this.adoptedRecently.set(fingerprint, now)
+    // 简单清理，防长期运行无限增长
+    if (this.adoptedRecently.size > 50) {
+      for (const [k, ts] of this.adoptedRecently) {
+        if (now - ts > 60_000) this.adoptedRecently.delete(k)
+      }
+    }
     const state: RunningLoop = { sessionId, stopped: new Set() }
     this.running.set(sessionId, state)
     try {
@@ -149,12 +187,7 @@ export class AgentLoop {
           })
           const sys = this.deps.systemPromptFor(sessionId)
           const fixPrompt =
-            (sys ? sys + '\n\n---\n\n' : '') +
-            '# 格式纠正\n\n你上一条回复使用了不支持的工具调用格式。\n' +
-            '请改用 lidow 协议：只输出如下代码块，不要用 XML / <write> / <invoke>。\n\n' +
-            '```lidow\n{"tool":"write","input":{"path":"相对路径","content":"文件内容"}}\n```\n\n' +
-            '# 用户原始任务\n\n' +
-            this.lastUserTextOf(sessionId)
+            (sys ? sys + '\n\n---\n\n' : '') + FORMAT_FIX_PROMPT + this.lastUserTextOf(sessionId)
           await this.toolLoop(sessionId, state, fixPrompt)
           return
         }
@@ -172,7 +205,8 @@ export class AgentLoop {
       const turn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'assistant',
-        text,
+        // 入库用清理后的文本：方言标签不进转录（与 toolLoop 口径一致）
+        text: parsed.cleanText || text,
         ts: Date.now(),
         status: 'done'
       }
@@ -194,6 +228,7 @@ export class AgentLoop {
       this.handleLoopError(sessionId, err)
     } finally {
       this.running.delete(sessionId)
+      this.maybeCompact(sessionId)
     }
   }
 
@@ -226,6 +261,7 @@ export class AgentLoop {
   private async toolLoop(sessionId: string, state: RunningLoop, initialPrompt: string): Promise<void> {
     const store = this.deps.store
     let prompt = initialPrompt
+    let wildHintCount = 0
     for (let round = 0; round < MAX_TURNS; round++) {
       if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
 
@@ -270,10 +306,13 @@ export class AgentLoop {
         this.deps.captureMemory(marker)
       }
       const intercepted = interceptCheck(reply, this.deps.securityMod().customPatterns) !== null
+      // 先解析一次，后续入库/渲染/执行共用结果。
+      // 入库文本用 cleanText：工具块与平台原生方言都不该给用户看。
+      const parsed = parseToolCalls(reply)
       const turn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'assistant',
-        text: reply,
+        text: parsed.cleanText || reply,
         ts: Date.now(),
         status: intercepted ? 'stopped' : 'done'
       }
@@ -282,23 +321,53 @@ export class AgentLoop {
 
       if (intercepted) break
 
-      // 2. 解析工具调用
-      const parsed = parseToolCalls(reply)
+      // 2. 工具调用
       if (parsed.calls.length === 0) {
         if (parsed.malformed.length > 0) {
           prompt = `你的工具调用块无法解析（JSON 错误），原始内容：\n${parsed.malformed.join('\n---\n')}\n请修正后重新输出工具调用块。`
           continue
         }
-        break // 纯答复，任务完成
+        // 有工具意图但格式完全没法本地还原 → 发一轮纠偏，
+        // 否则用户看到的就是「AI 吐了一屏标签乱码，然后什么都没发生」
+        if (looksLikeWildToolIntent(reply)) {
+          if (wildHintCount++ >= MAX_WILD_HINTS) {
+            Logger.warn('loop', `格式纠偏已达上限 ${MAX_WILD_HINTS} 次，放弃`)
+            this.deps.emit({
+              type: 'notice', sessionId, level: 'warn',
+              message: 'AI 多次使用了不支持的调用格式，已停止自动纠正，请换个说法重新提问'
+            })
+            break
+          }
+          Logger.info('loop', `回复含野生工具格式，发纠偏提示（${wildHintCount}/${MAX_WILD_HINTS}）`)
+          this.deps.emit({
+            type: 'notice', sessionId, level: 'info',
+            message: 'AI 用了不支持的调用格式，已自动纠正并重试'
+          })
+          prompt = FORMAT_FIX_PROMPT + this.lastUserTextOf(sessionId)
+          continue
+        }
+        // 纯答复，任务完成：窗口失焦时系统通知（用户切走了也能知道干完了）
+        this.deps.notifyDone?.(sessionId, parsed.cleanText.slice(0, 120))
+        break
+      }
+      if (parsed.native) {
+        // 平台原生方言也能本地还原并执行，省掉一轮往返
+        Logger.info('loop', `识别到平台原生工具调用 ${parsed.calls.length} 个，直接执行`)
+        wildHintCount = 0
       }
 
-      // 3. 执行工具（带确认门）
+      // 3. 执行工具（带确认门 + 网页内执行遮罩）
+      this.deps.toolMask?.(sessionId, true, `工具执行中（${parsed.calls.length} 个，第 ${round + 1} 轮）…`)
       const results: ToolResult[] = []
-      for (const call of parsed.calls) {
-        if (state.stopped.has('auto-loop')) break
-        const result = await this.executeCall(sessionId, call)
-        results.push(result)
-        this.deps.emit({ type: 'tool-start', sessionId, result })
+      try {
+        for (const call of parsed.calls) {
+          if (state.stopped.has('auto-loop')) break
+          const result = await this.executeCall(sessionId, call)
+          results.push(result)
+          this.deps.emit({ type: 'tool-start', sessionId, result })
+        }
+      } finally {
+        this.deps.toolMask?.(sessionId, false)
       }
       store.patchTurn(sessionId, turn.id, { toolResults: results })
 
@@ -308,8 +377,8 @@ export class AgentLoop {
       prompt = formatObservations(
         results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error }))
       )
-      // 5. 自动压缩检查
-      this.maybeCompact(sessionId)
+      // （自动压缩在任务收尾触发：循环进行中调用只会被 running 守卫推迟，
+      //  而任务结束后没人再查 —— 之前放在这里等于永不触发）
     }
   }
 
@@ -326,6 +395,9 @@ export class AgentLoop {
     // 上下文耗尽续接会把整个批次挪到新会话，所以 sid 需要可变
     let sid = sessionId
     let cur = prompt
+    // 「任务原文」：发送类失败（页面没就绪/输入框填不进）意味着这条消息从未落地，
+    // 重试必须重发原文 —— 否则新会话的第一句话会是「刚才的回复似乎中断了…」这种无上下文的话
+    let originalPrompt = prompt
     let attempt = 0
     let prompt429 = 0
     let continueCount = 0
@@ -338,8 +410,9 @@ export class AgentLoop {
         // 用户主动停止：不要重试
         if (this.running.get(sid)?.stopped.has('generate')) throw err
 
-        // 上下文耗尽：不是普通失败，重试也没用 —— 压缩后带摘要开新会话继续
-        if (isContextExhausted(msg) && this.deps.settings().autoContinue.enabled) {
+        // 上下文耗尽：不是普通失败，重试也没用 —— 压缩后带摘要开新会话继续。
+        // 压缩流程自身也可能收到耗尽信号：此时再续接会无限递归，直接上抛。
+        if (isContextExhausted(msg) && !this.compacting.has(sid) && this.deps.settings().autoContinue.enabled) {
           if (continueCount++ >= 1) throw err // 只续接一次，避免死循环
           const prev = sid
           const next = await this.continueInNewSession(prev)
@@ -349,6 +422,8 @@ export class AgentLoop {
           const handoff = this.deps.settings().autoContinue.handoffPrompt
           sid = next
           cur = [summary, handoff, this.lastUserTextOf(prev)].filter(Boolean).join('\n\n---\n\n')
+          // 交接提示成了这一轮的「任务原文」：后续发送类失败要重发的是它
+          originalPrompt = cur
           continue
         }
 
@@ -371,7 +446,10 @@ export class AgentLoop {
           message: `${is429 ? '平台限流' : '回复失败'}，${Math.round(raw / 1000)} 秒后自动重试（${used}/${max}）`
         })
         await this.sleep(raw)
-        cur = retryCfg.prompt
+        // 发送类失败（页面没就绪/填不进输入框）意味着消息从未落地：重发任务原文，
+        // 而不是把「刚才的回复似乎中断了…」发成一个新对话的第一句
+        const isSendFailure = /输入框填入失败|发送超时|网页未连接|发送失败|webview 已关闭/.test(msg)
+        cur = isSendFailure && cur === originalPrompt ? originalPrompt : retryCfg.prompt
       }
     }
   }
@@ -398,19 +476,32 @@ export class AgentLoop {
       this.deps.emit({ type: 'turn-chunk', sessionId, turnId: 'streaming', text: latestPartial, tps: latestTps })
     }
 
+    // 看门狗需要能主动判死本轮：自己造一个 reject 句柄，与等待回复的 promise 竞速。
+    // 只置标志位不够 —— 等待方是个悬挂的 promise，不 reject 就永远返回不了。
+    let failWatchdog: ((e: Error) => void) | null = null
+    const watchdogPromise = new Promise<never>((_, reject) => {
+      failWatchdog = reject
+    })
+
     const armWatchdog = (): void => {
       if (!wd.enabled || wd.idleMs <= 0) return
+      // 压缩期间挂起：摘要请求走的也是同一网页会话，静默期比普通回复长
+      if (this.compacting.has(sessionId)) return
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
         if (settled) return
         if (wd.maxRetries >= 0 && nudges >= wd.maxRetries) {
-          Logger.warn('loop', `看门狗已达上限 ${wd.maxRetries} 次，不再催继续`)
+          Logger.warn('loop', `看门狗已达上限 ${wd.maxRetries} 次，判定任务中断`)
+          // 催了这么多次仍然没动静 = 这一轮确实死了。必须抛错交给上层重试，
+          // 否则等待方会一直挂到 REPLY_TIMEOUT_MS（10 分钟）才动，用户感觉就是"卡住不动了"
           this.deps.emit({
             type: 'notice',
             sessionId,
             level: 'warn',
-            message: `AI 已 ${wd.maxRetries} 次无响应，任务可能已中断`
+            message: `AI 已 ${wd.maxRetries} 次无响应，转为自动重试`
           })
+          this.deps.interruptPage(sessionId)
+          failWatchdog?.(new Error(`AI 无响应（看门狗催继续 ${wd.maxRetries} 次仍未恢复）`))
           return
         }
         nudges++
@@ -442,7 +533,8 @@ export class AgentLoop {
     armWatchdog()
     try {
       await this.deps.sendToPage(sessionId, prompt)
-      const reply = await chunkPromise
+      // 看门狗判死与正常回复竞速（看门狗只在静默超限时 reject，其余时候永远 pending）
+      const reply = await Promise.race([chunkPromise, watchdogPromise])
       settled = true
       if (idleTimer) clearTimeout(idleTimer)
       if (pendingFlush) {
@@ -457,6 +549,10 @@ export class AgentLoop {
       settled = true
       if (idleTimer) clearTimeout(idleTimer)
       if (pendingFlush) clearTimeout(pendingFlush)
+      // 认输的那一方不消耗另一方：看门狗判死后，原等待仍在 overlay 里挂着，
+      // 会在下一轮 collectReply 报「已有等待中的回复请求」。主动摘掉它。
+      void chunkPromise.catch(() => undefined)
+      this.deps.abandonReply?.(sessionId)
     }
   }
 
@@ -602,12 +698,15 @@ export class AgentLoop {
       message: auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…'
     })
 
+    this.compacting.add(sessionId)
     // 让 AI 写摘要；失败则回退本地摘要（保证压缩这件事一定完成，不卡住用户）
     let summary = ''
     try {
       summary = (await this.collectReply(sessionId, COMPACT_INSTRUCTION + '\n\n' + transcript)).trim()
     } catch (e) {
       Logger.warn('loop', `AI 摘要失败，回退本地摘要：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      this.compacting.delete(sessionId)
     }
     if (!summary) summary = this.buildFallbackSummary(oldTurns)
 

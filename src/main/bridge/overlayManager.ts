@@ -9,7 +9,8 @@ interface Channel {
   webContentsId: number
   streamBuf: string
   chunkResolvers: Set<(partial: string, tps: number) => void>
-  replyResolvers: Set<(text: string) => void>
+  /** 回复结束：正常给文本，失败给 Error（上层据此决定是否重试） */
+  replyResolvers: Set<(text: string | Error) => void>
   sendResolvers: Set<(ok: boolean, err?: string) => void>
   /** 网络层上报的错误原因（供 loop 判断是否重试） */
   netError?: string
@@ -21,6 +22,8 @@ interface Channel {
   domFallbackTimer?: NodeJS.Timeout
   /** did-finish-load 重注入监听是否已绑定 */
   hookBound?: boolean
+  /** 上一轮的服务端累计 token（accumulated_token_usage 是会话累计值，本轮消耗 = 差值） */
+  lastAcc?: number
 }
 
 /**
@@ -38,6 +41,89 @@ export class OverlayManager {
   private onPageReply?: (sessionId: string, text: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
+  /**
+   * 网页登录成功回调（按 webContentsId）。
+   * 用于在「登录完成」这个时机把项目状态推给网页 —— 首次引导必须等登录后才出现。
+   */
+  onLogin?: (webContentsId: number) => void
+  /** 服务端权威 token 消耗（每轮差值）——供主进程累计持久化 */
+  onTokenUsage?: (sessionId: string, deltaTokens: number) => void
+  /** 网页内「初始化项目」点击（按 webContentsId，不依赖会话绑定） */
+  onInitProject?: (webContentsId: number) => void
+  /** 网页内「使用此目录，开始」：确认目录后自动发一轮初始化提示词 */
+  onConfirmProject?: (webContentsId: number) => void
+  /** 页面导航（会话已绑定时）——建立会话 ↔ 平台对话 URL 映射 */
+  onNav?: (sessionId: string, url: string) => void
+
+  /** 会话当前绑定的 webContents id（未绑定为 undefined） */
+  wcIdOfSession(sessionId: string): number | undefined {
+    return this.bindings.get(sessionId)
+  }
+
+  setTokenUsageHandler(fn: (sessionId: string, deltaTokens: number) => void): void {
+    this.onTokenUsage = fn
+  }
+
+  /** 向所有已连接的 webview 广播命令（项目切换后同步 set-project 用） */
+  broadcastCmd(cmd: OverlayCommand): void {
+    for (const ch of this.channels.values()) {
+      const target = webContents.fromId(ch.webContentsId)
+      if (target && !target.isDestroyed()) target.send('lidow:overlay-cmd', cmd)
+    }
+  }
+
+  /**
+   * 插件网页脚本：登记到会话名下并在「页面加载完成」时注入。
+   *
+   * 为什么不能直接 executeJs：configure 到达时页面常还在加载，
+   * 脚本会打在 about:blank 上静默丢失；且页面刷新后主世界脚本全部清空。
+   * 这里与 hook 同一套时机：等 isLoading 翻false 立即注入 + did-finish-load 重放。
+   */
+  private webScriptsBySession = new Map<string, string[]>()
+  private webScriptWc = new Set<number>()
+
+  setWebScripts(sessionId: string, codes: string[]): void {
+    if (codes.length === 0) this.webScriptsBySession.delete(sessionId)
+    else this.webScriptsBySession.set(sessionId, codes)
+  }
+
+  async injectWebScripts(sessionId: string): Promise<void> {
+    const codes = this.webScriptsBySession.get(sessionId)
+    if (!codes || codes.length === 0) return
+    let wcId = this.bindings.get(sessionId)
+    for (let i = 0; i < 50 && !wcId; i++) {
+      await new Promise((r) => setTimeout(r, 200))
+      wcId = this.bindings.get(sessionId)
+    }
+    const target = wcId ? webContents.fromId(wcId) : undefined
+    if (!target || target.isDestroyed()) return
+    if (!this.webScriptWc.has(wcId!)) {
+      this.webScriptWc.add(wcId!)
+      target.on('did-finish-load', () => {
+        // 会话会换绑：重放时按“当前绑到这个 wcId 的会话”取脚本，
+        // 闭包里的 sessionId 是注册时的旧值，重放会注入别人的脚本
+        const currentSid = [...this.bindings.entries()].find(([, w]) => w === wcId)?.[0]
+        const list = currentSid ? this.webScriptsBySession.get(currentSid) : undefined
+        if (!list) return
+        for (const code of list) void target.executeJavaScript(code, true).catch(() => undefined)
+      })
+    }
+    for (let i = 0; i < 50; i++) {
+      if (target.isDestroyed()) return
+      if (!target.isLoading()) {
+        for (const code of codes) {
+          try {
+            await target.executeJavaScript(code, true)
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e)
+            if (msg.includes('disposed')) return
+          }
+        }
+        return
+      }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+  }
 
   constructor() {
     ipcMain.on('lidow:overlay', (event, payload: OverlayEvent) => {
@@ -120,11 +206,33 @@ export class OverlayManager {
           break
         }
         if (payload.status === 'error') {
+          // 失败必须唤醒等待方并抛错，否则 loop 只能干等到 REPLY_TIMEOUT_MS，
+          // 或者被 DOM 兜底把半截文本当成"完整回复" —— 两种表现都是「中断了、
+          // 但没有任何重试」。保留已收到的部分文本供上层记录，错误原因带上细节。
           ch.netError = payload.text
+          const reason = payload.reason ? `（${payload.reason}）` : ''
+          const partial = payload.text ? `，已收到 ${payload.text.length} 字` : ''
+          const err = new Error(`AI 回复中断${reason}${partial}`)
+          for (const r of ch.replyResolvers) r(err)
+          ch.replyResolvers.clear()
+          ch.chunkResolvers.clear()
+          if (ch.domFallbackTimer) {
+            clearTimeout(ch.domFallbackTimer)
+            ch.domFallbackTimer = undefined
+          }
           break
         }
         // finished：以网络层文本为准结束本轮（覆盖 DOM 兜底）
         ch.netText = payload.text
+        // 服务端权威 token：accumulated 是会话累计，本轮消耗 = 本轮 − 上一轮
+        if (typeof payload.tokens === 'number') {
+          const delta = payload.tokens - (ch.lastAcc ?? 0)
+          ch.lastAcc = payload.tokens
+          if (delta > 0) {
+            const sid = this.sessionOfWebContents(sender.id)
+            if (sid) this.onTokenUsage?.(sid, delta)
+          }
+        }
         if (ch.domFallbackTimer) {
           clearTimeout(ch.domFallbackTimer)
           ch.domFallbackTimer = undefined
@@ -144,12 +252,46 @@ export class OverlayManager {
         break
       }
       case 'net-error': {
+        // 网络层失败（HTTP 429 / 流异常 / 业务错误码）：同 error 状态，必须唤醒等待方
         ch.netError = payload.reason
+        const detail = payload.text ? `：${payload.text.slice(0, 200)}` : ''
+        const err = new Error(`AI 请求失败（${payload.reason}）${detail}`)
+        for (const r of ch.replyResolvers) r(err)
+        ch.replyResolvers.clear()
+        ch.chunkResolvers.clear()
+        if (ch.domFallbackTimer) {
+          clearTimeout(ch.domFallbackTimer)
+          ch.domFallbackTimer = undefined
+        }
         break
       }
       case 'float-menu-action': {
+        // 初始化项目不依赖会话绑定：首次使用场景下 webview 还没绑任何会话，
+        // sessionOfWebContents 返回 undefined，走 sessionId 分支会整个断掉 ——
+        // 用户点「初始化项目」毫无反应。按 webContentsId 直达。
+        if (payload.action === 'init-project') {
+          this.onInitProject?.(sender.id)
+          break
+        }
+        if (payload.action === 'confirm-project') {
+          this.onConfirmProject?.(sender.id)
+          break
+        }
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && this.onFloatAction) this.onFloatAction(sessionId, payload.action)
+        break
+      }
+      case 'nav': {
+        // 页面导航：会话 ↔ 平台对话 URL 的映射在此建立（换绑回原对话的依据）
+        const sid = this.sessionOfWebContents(sender.id)
+        if (sid) this.onNav?.(sid, payload.url)
+        break
+      }
+      case 'login-state': {
+        // 登录成功的那一刻 = 该弹初始化引导的时候。
+        // 这里把「有没有工作目录」重新推一次：overlay 会据此在页面里显示引导，
+        // 登录页没有输入框，那时弹引导既看不懂也用不上。
+        if (payload.loggedIn) this.onLogin?.(sender.id)
         break
       }
       case 'ready': {
@@ -212,6 +354,18 @@ export class OverlayManager {
     const ch = this.channelOfSession(sessionId)
     if (!ch) return false
     this.targetOf(ch)?.send('lidow:overlay-cmd', cmd)
+    return true
+  }
+
+  /**
+   * 不按会话、直接按 webview 下发命令。
+   * 用于「还没有会话」的场景：无项目时打开 AI 页面，要把
+   * projectRoot=null 告诉 overlay 让它弹首次引导，但此时没有 sessionId。
+   */
+  sendCmdToWebContents(webContentsId: number, cmd: OverlayCommand): boolean {
+    const target = webContents.fromId(webContentsId)
+    if (!target || target.isDestroyed()) return false
+    target.send('lidow:overlay-cmd', cmd)
     return true
   }
 
@@ -307,7 +461,7 @@ export class OverlayManager {
     }
   }
 
-  /** 等待一轮完整回复（stream-end）；onChunk 提供流式增量 */
+  /** 等待一轮完整回复；失败时 reject（供 loop 的重试引擎接管） */
   async awaitReply(sessionId: string, onChunk: (partial: string, tps: number) => void): Promise<string> {
     // 首次发送时 webview 可能还在 attach：等待通道就绪而不是立即失败
     const ch = await this.waitForChannel(sessionId)
@@ -321,10 +475,11 @@ export class OverlayManager {
         reject(new Error('等待回复超时（页面可能未发送或流未结束）'))
       }, REPLY_TIMEOUT_MS)
 
-      const wrapped = (text: string): void => {
+      const wrapped = (text: string | Error): void => {
         clearTimeout(timer)
         ch.chunkResolvers.delete(onChunk)
-        resolve(text)
+        if (text instanceof Error) reject(text)
+        else resolve(text)
       }
       ch.chunkResolvers.add(onChunk)
       ch.replyResolvers.add(wrapped)
@@ -335,6 +490,22 @@ export class OverlayManager {
     const ch = this.channelOfSession(sessionId)
     if (!ch) return
     this.targetOf(ch)?.send('lidow:overlay-cmd', { kind: 'stop' } satisfies OverlayCommand)
+  }
+
+  /**
+   * 放弃当前等待（看门狗判死 / 上层超时后调用）。
+   * 不清理的话 replyResolvers 会一直非空，下一轮直接报「已有等待中的回复请求」，
+   * 表现就是"第一次中断之后再也不重试了"。
+   */
+  abandonReply(sessionId: string): void {
+    const ch = this.channelOfSession(sessionId)
+    if (!ch) return
+    if (ch.domFallbackTimer) {
+      clearTimeout(ch.domFallbackTimer)
+      ch.domFallbackTimer = undefined
+    }
+    ch.replyResolvers.clear()
+    ch.chunkResolvers.clear()
   }
 
   /** 在网页内执行 JS（injectJS 工具落点），返回求值结果的字符串化 */

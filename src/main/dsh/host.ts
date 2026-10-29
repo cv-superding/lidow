@@ -6,6 +6,7 @@ import type { TaskPlanStore } from '@main/ecosystem/taskPlan'
 import type { CredentialVault } from '@main/infra/vault'
 import type { JobScheduler, Job } from '@main/infra/jobs'
 import { listAgents, listSkills, readSkill } from '@main/ecosystem/skills'
+import { pathToFileURL } from 'node:url'
 
 /**
  * DSH 宿主（DeepSeek Harness 兼容层）。
@@ -257,7 +258,9 @@ export class DshHost {
 
   /** 装载插件提供的 DSH 入口（CommonJS/ESM 模块，导出 register(ctx)） */
   async loadPluginEntry(entryPath: string): Promise<void> {
-    const mod = (await import(entryPath)) as { register?: DshRegistrar }
+    // Windows 绝对路径（C:\...）不能直接 import —— ESM 只认 file:// 协议，
+    // 否则报 "Received protocol 'c:'"（实测内置插件首次加载即踩中）
+    const mod = (await import(pathToFileURL(entryPath).href)) as { register?: DshRegistrar }
     if (typeof mod.register !== 'function') throw new Error('DSH 插件入口缺少 register(ctx)')
     await mod.register(this.contextFor(entryPath))
   }

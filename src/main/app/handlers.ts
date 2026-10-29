@@ -4,8 +4,9 @@ import { isAbsolute, join, resolve } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
+import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
-import type { McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
+import type { DomAdapter, McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
 
 /** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
@@ -66,7 +67,14 @@ export function registerHandlers(
   R('windowIsMaximized', () => BrowserWindow.getFocusedWindow()?.isMaximized() ?? false)
 
   // ---------- Provider / 账号 ----------
-  R('listProviders', (projectId: string) => ctx.providerRegistryOf(String(projectId)).list())
+  R('listProviders', (projectId: string) => {
+    // 没有项目时返回内置平台表：用户需要能先进 AI 页面，引导才会出现在网页里。
+    // 这些描述是只读副本，不带持久化账号（账号属于具体项目）。
+    if (!projectId || projectId === 'undefined') {
+      return BUILT_IN_PROVIDERS.filter((p) => p.enabled).map((p) => ({ ...p, accounts: [] }))
+    }
+    return ctx.providerRegistryOf(String(projectId)).list()
+  })
   R('addProvider', (...args: unknown[]) => {
     const [projectId, desc] = args as [string, { id: string; name: string; home: string; adapter?: Partial<ProviderDescriptor['adapter']> }]
     return ctx.providerRegistryOf(String(projectId)).add(desc)
@@ -94,7 +102,31 @@ export function registerHandlers(
   R('getSession', (sessionId: string) => ctx.sessionOf(String(sessionId)))
   R('createSession', (...args: unknown[]) => {
     const [projectId, providerId, parentSessionId] = args as [string, string, string?]
-    return ctx.sessionStoreOf(String(projectId)).create(String(projectId), String(providerId), parentSessionId)
+    const store = ctx.sessionStoreOf(String(projectId))
+    // 新建前回收同平台的历史空会话（0 轮次）：点一次平台建一次会话，
+    // 用户没发消息就切走的话，列表会被「新会话」堆满（实测堆过 11 个）
+    if (!parentSessionId) {
+      for (const m of store.list()) {
+        if (m.providerId !== String(providerId)) continue
+        if (m.id === ctx.lastSessionId) continue
+        if ((store.get(m.id)?.turns.length ?? 0) === 0) store.delete(m.id)
+      }
+    }
+    return store.create(String(projectId), String(providerId), parentSessionId)
+  })
+  /** 清理空会话（0 轮次）：新建后从未发送的会话会无限堆积 */
+  R('cleanupEmptySessions', (projectId: string, keepSessionId?: string) => {
+    const store = ctx.sessionStoreOf(String(projectId))
+    let removed = 0
+    for (const m of store.list()) {
+      if (m.id === keepSessionId) continue
+      if ((store.get(m.id)?.turns.length ?? 0) === 0) {
+        ctx.overlay.unbindSession(m.id)
+        store.delete(m.id)
+        removed++
+      }
+    }
+    return removed
   })
   R('deleteSession', (sessionId: string) => {
     ctx.overlay.unbindSession(String(sessionId))
@@ -262,25 +294,35 @@ export function registerHandlers(
 
   // ---------- 插件 ----------
   R('listInstalledPlugins', () => ctx.plugins.list())
+  R('listBuiltinPlugins', () => ctx.plugins.listBuiltins())
   R('searchMarket', (query: string, category?: string) =>
     ctx.plugins.searchMarket(String(query ?? ''), category ? String(category) : undefined)
   )
   R('installPlugin', async (id: string) => {
     const [source, repo] = String(id).split(':')
-    await ctx.plugins.install(repo ?? String(id), source === 'gitee' ? 'gitee' : 'github')
+    if (source === 'builtin') {
+      ctx.plugins.installBuiltin(String(repo ?? id))
+    } else {
+      await ctx.plugins.install(repo ?? String(id), source === 'gitee' ? 'gitee' : 'github')
+    }
+    await ctx.loadAllPlugins()
     return ctx.plugins.list()
   })
   R('uninstallPlugin', (id: string) => {
     ctx.plugins.uninstall(String(id))
+    // 已加载的 DSH 服务没有卸载通道，需要重启才彻底失效（如实提示）
+    void ctx.loadAllPlugins()
     return ctx.plugins.list()
   })
   R('togglePlugin', (id: string, enabled: boolean) => {
     ctx.plugins.toggle(String(id), Boolean(enabled))
+    void ctx.loadAllPlugins()
     return ctx.plugins.list()
   })
 
   // ---------- DSH ----------
   R('dshCoverage', () => ctx.dshCoverage())
+  R('getTokenStats', () => ctx.tokenStats())
 
   // ---------- 任务 / 审计 ----------
   R('listAudit', (sessionId?: string, limit?: number) => ctx.audit.list(sessionId ? String(sessionId) : undefined, Number(limit ?? 200)))
@@ -301,14 +343,30 @@ export function registerHandlers(
 
   // ---------- 视图 ----------
   R('attachWebview', (providerId: string, accountId: string) => {
-    const project = ctx.activeProject()
-    if (!project) throw new Error('请先打开项目')
     if (!providerId || typeof providerId !== 'string') throw new Error('attachWebview 缺少 providerId')
+    const overlayPath = join(__dirname, '../preload/overlay.js')
+    const project = ctx.activeProject()
+    // 没有项目时也允许打开 AI 页面：初始化引导由 overlay 注入在网页里
+    // （cuckoo 的 first-time-dialog 同款位置）。挡在外面的话用户永远看不到引导。
+    if (!project) {
+      const p = BUILT_IN_PROVIDERS.find((x) => x.id === String(providerId))
+      if (!p) throw new Error(`未知平台: ${String(providerId)}`)
+      return {
+        // partition 格式必须与 partitionOf 完全一致（persist:lidow-<id>-default），
+        // 否则先无项目登录、后开项目会拿到两个不同分区，登录态凭空丢失
+        partition: `persist:lidow-${p.id}-default`,
+        overlayPath,
+        home: p.home,
+        // 无项目也要下发 adapter：overlay 靠它判断登录态，
+        // 而首次引导必须等"登录完成"才弹
+        adapter: p.adapter
+      }
+    }
     const reg = ctx.providerRegistryOf(project.id)
     if (!reg.get(String(providerId))) throw new Error(`未知平台: ${String(providerId)}`)
     return {
       partition: reg.partitionOf(String(providerId), accountId ? String(accountId) : undefined),
-      overlayPath: join(__dirname, '../preload/overlay.js'),
+      overlayPath,
       home: reg.get(String(providerId))?.home ?? ''
     }
   })
@@ -316,10 +374,37 @@ export function registerHandlers(
     ctx.overlay.bindSession(String(sessionId), Number(webContentsId))
     ctx.configureOverlay(String(sessionId))
   })
+  /**
+   * 还没有会话时（无项目也能进 AI 页面）给网页侧下发运行所需配置：
+   * DOM adapter（登录态轮询依赖它）+ 当前项目目录（决定是否弹首次引导）。
+   * 按 webContentsId 下发，不依赖会话绑定。
+   */
+  /** 让页面落到指定会话自己的对话（有 providerUrl 导航回原对话，否则开新聊天） */
+  R('landSession', (sessionId: string) => ctx.landSession(String(sessionId)))
+  R('syncProjectToWebview', (webContentsId: number, adapter?: unknown, providerId?: string) => {
+    const id = Number(webContentsId)
+    // 渲染层可能还没拿到 adapter（无会话时 tab 记录可能是空的）。
+    // 按 providerId 精确查表，不要随便拿一个平台的 adapter ——
+    // 每个平台的 avatar 选择器不同，用错会导致登录态误判。
+    let ad = adapter as DomAdapter | undefined
+    if (!ad && providerId) {
+      ad = ctx.activeProject()
+        ? ctx.providerRegistryOf(ctx.activeProject()!.id).get(String(providerId))?.adapter
+        : BUILT_IN_PROVIDERS.find((p) => p.id === String(providerId))?.adapter
+    }
+    if (ad) ctx.overlay.sendCmdToWebContents(id, { kind: 'configure', adapter: ad })
+    const root = ctx.activeProject()?.root ?? null
+    return ctx.overlay.sendCmdToWebContents(id, { kind: 'set-project', projectRoot: root })
+  })
   R('setPureMode', (on: boolean) => {
     ctx.settings.set({ pureMode: Boolean(on) })
   })
   R('checkUpdate', () => ctx.updateCheck())
+  R('downloadUpdate', () =>
+    import('@main/app/platform').then((m) =>
+      m.downloadAndInstallUpdate((e) => ctx.emit({ ...e, sessionId: '' }))
+    )
+  )
   R('listTemplates', () => ctx.templates())
   R('applyTemplate', (templateId: string, root: string) => ctx.applyTemplate(String(templateId), String(root)))
   R('pushToSync', (text: string) => ctx.pushSync(String(text)))

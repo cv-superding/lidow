@@ -20,7 +20,7 @@ export interface ProviderHookSpec {
   /** 判定是否为「用户主动停止」请求 */
   isStopStream?: (url: string, method: string) => boolean
   /** 从 SSE 帧对象中提取回复文本（返回增量） */
-  extract: (frame: unknown) => { text?: string; think?: string; finished?: boolean; incomplete?: boolean } | null
+  extract: (frame: unknown) => { text?: string; think?: string; finished?: boolean; incomplete?: boolean; exhausted?: boolean } | null
   /** 从帧对象捕获 token/消息 id（可选） */
   captureMeta?: (frame: unknown) => { accumulatedTokens?: number; msgIds?: unknown } | null
   /**
@@ -36,6 +36,8 @@ interface ExtractResult {
   think?: string
   finished?: boolean
   incomplete?: boolean
+  /** 上下文耗尽（平台侧明确提示开新会话），触发自动续接而非普通重试 */
+  exhausted?: boolean
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
@@ -202,7 +204,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     var reader = body.getReader();
     var decoder = new TextDecoder();
     var frameDecoder = createDecoder();
-    var text = '', think = '', finished = false, incomplete = false, dispatched = false, lastEmit = 0;
+    var text = '', think = '', finished = false, incomplete = false, exhausted = false, dispatched = false, lastEmit = 0;
     var accTokens = null;
 
     function emitStream(force) {
@@ -227,6 +229,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
           if (typeof r.think === 'string' && r.think) think += r.think;
           if (r.finished) finished = true;
           if (r.incomplete) incomplete = true;
+          if (r.exhausted) exhausted = true;
         }
         // token 捕获
         try {
@@ -237,7 +240,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         } catch (e) {}
       }
       emitStream(false);
-      if ((finished || incomplete) && !dispatched) {
+      if ((finished || incomplete || exhausted) && !dispatched) {
         dispatched = true;
         emitStream(true);
         finishDispatch();
@@ -245,9 +248,9 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     }
 
     function finishDispatch() {
-      var status = userStopped ? 'stopped' : incomplete ? 'error' : text.length > 0 ? 'finished' : 'error';
+      var status = userStopped ? 'stopped' : (incomplete || exhausted) ? 'error' : text.length > 0 ? 'finished' : 'error';
       if (status === 'error') {
-        emit('error', { text: text, reason: incomplete ? 'incomplete' : 'empty' });
+        emit('error', { text: text, reason: exhausted ? 'context_exhausted' : incomplete ? 'incomplete' : 'empty' });
       } else {
         emit('response', {
           text: text, finished: status === 'finished', status: status,
@@ -289,7 +292,6 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     }
     pump();
   }
-
   // ---------- fetch 拦截 ----------
   var origFetch = window.fetch;
   window.fetch = function (input, init) {
@@ -358,7 +360,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     // DeepSeek 用 XHR 流式（responseType 可能是 text 或 stream）：
     // progress 事件不可靠，改用 readystatechange + 轮询增量读取。
     var lastLen = 0;
-    var acc = { text: '', think: '', finished: false, incomplete: false, dispatched: false };
+    var acc = { text: '', think: '', finished: false, incomplete: false, exhausted: false, dispatched: false };
     var timer = null;
 
     var frameDecoder = (function () {
@@ -400,17 +402,18 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         if (typeof r.think === 'string' && r.think) acc.think += r.think;
         if (r.finished) acc.finished = true;
         if (r.incomplete) acc.incomplete = true;
+        if (r.exhausted) acc.exhausted = true;
       }
       emit('stream', { text: acc.text, think: acc.think, finished: acc.finished, accumulatedTokens: null });
-      if (acc.finished || acc.incomplete) finish('frame');
+      if (acc.finished || acc.incomplete || acc.exhausted) finish('frame');
     }
 
     function finish(why) {
       if (acc.dispatched) return;
       acc.dispatched = true;
       if (timer) { clearInterval(timer); timer = null; }
-      var status = userStopped ? 'stopped' : acc.incomplete ? 'error' : acc.text.length > 0 ? 'finished' : 'error';
-      if (status === 'error') emit('error', { text: acc.text, reason: acc.incomplete ? 'incomplete' : 'empty' });
+      var status = userStopped ? 'stopped' : (acc.incomplete || acc.exhausted) ? 'error' : acc.text.length > 0 ? 'finished' : 'error';
+      if (status === 'error') emit('error', { text: acc.text, reason: acc.exhausted ? 'context_exhausted' : acc.incomplete ? 'incomplete' : 'empty' });
       else emit('response', { text: acc.text, finished: status === 'finished', status: status, tokenUsage: null });
     }
 
@@ -429,6 +432,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
           if (typeof r.think === 'string' && r.think) acc.think += r.think;
           if (r.finished) acc.finished = true;
           if (r.incomplete) acc.incomplete = true;
+          if (r.exhausted) acc.exhausted = true;
         }
         finish('done');
       }
@@ -446,6 +450,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         if (typeof r2.think === 'string' && r2.think) acc.think += r2.think;
         if (r2.finished) acc.finished = true;
         if (r2.incomplete) acc.incomplete = true;
+        if (r2.exhausted) acc.exhausted = true;
       }
       finish('load');
     });
@@ -473,9 +478,20 @@ export const CHATGPT_HOOK: ProviderHookSpec = {
   id: 'chatgpt',
   isCompletion: (url, method) => method.toUpperCase() === 'POST' && /\/backend-api\/(conversation|f\/conversation)/.test(url),
   extract: (frame) => {
-    const f = frame as { message?: { author?: { role?: string }; content?: { parts?: unknown[] }; status?: string }; error?: unknown }
+    const f = frame as {
+      message?: { author?: { role?: string }; content?: { parts?: unknown[] }; status?: string }
+      error?: unknown
+      // cuckoo 同款：上下文耗尽横幅在 conversation_detail_metadata 节点里
+      type?: string
+      banner_info?: { name?: string; call_to_action?: unknown }
+    }
     if (!f || typeof f !== 'object') return null
     if (f.error) return null
+    // 上下文耗尽：call_to_action 含 continue_in_new_chat → 触发自动续接（而非普通重试）
+    if (f.type === 'conversation_detail_metadata' && f.banner_info) {
+      const ctas = Array.isArray(f.banner_info.call_to_action) ? f.banner_info.call_to_action : []
+      if (ctas.includes('continue_in_new_chat')) return { exhausted: true }
+    }
     const msg = f.message
     if (msg?.author?.role === 'assistant' && Array.isArray(msg.content?.parts)) {
       const text = msg.content.parts.filter((x) => typeof x === 'string').join('')

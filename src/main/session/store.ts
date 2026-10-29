@@ -26,6 +26,22 @@ export class SessionStore {
       const raw: unknown = JSON.parse(readFileSync(this.indexPath, 'utf-8'))
       const arr = Array.isArray(raw) ? (raw as SessionMeta[]) : []
       this.index = new Map(arr.map((m) => [m.id, m]))
+      // 回填：早期版本的 update() 只把 title/时间写进索引，providerUrl 只落在会话文件里。
+      // 不回填的话老会话切回来时永远找不到导航目标（表现为「切回旧会话上下文是空的」）。
+      let repaired = false
+      for (const [id, meta] of this.index) {
+        if (meta.providerUrl !== undefined) continue
+        try {
+          const s = JSON.parse(readFileSync(this.fileOf(id), 'utf-8')) as Session
+          if (s.providerUrl) {
+            meta.providerUrl = s.providerUrl
+            repaired = true
+          }
+        } catch {
+          /* 会话文件缺失/损坏：跳过 */
+        }
+      }
+      if (repaired) this.saveIndex()
     } catch {
       this.index = new Map()
     }
@@ -94,6 +110,9 @@ export class SessionStore {
       meta.updatedAt = next.updatedAt
       meta.compactedTurns = next.compactedTurns
       meta.archived = next.archived
+      // providerUrl 必须同步进索引：list() 读的是 index，
+      // 漏了它切会话时就拿不到「回到原对话」的导航目标
+      meta.providerUrl = next.providerUrl
       this.saveIndex()
     }
     this.writeSession(next)

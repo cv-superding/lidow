@@ -41,6 +41,13 @@ export class HotkeyManager {
   }
 }
 
+const RELEASES_URL = 'https://github.com/cv-superding/lidow/releases'
+
+/** 便携版无法自更新（electron-updater 已知限制）：引导去 Releases 页手动下载 */
+export function isPortable(): boolean {
+  return Boolean(process.env.PORTABLE_EXECUTABLE_DIR)
+}
+
 /** 应用内自动更新（electron-updater，GitHub Releases；开发环境静默跳过） */
 export async function checkForUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string }> {
   if (!app.isPackaged) return { hasUpdate: false }
@@ -49,12 +56,52 @@ export async function checkForUpdate(): Promise<{ hasUpdate: boolean; version?: 
     const result = await autoUpdater.checkForUpdates()
     const update = result?.updateInfo
     if (update && update.version !== app.getVersion()) {
-      return { hasUpdate: true, version: update.version, url: `https://github.com/lidow-ai/lidow/releases` }
+      return { hasUpdate: true, version: update.version, url: RELEASES_URL }
     }
     return { hasUpdate: false }
   } catch (e) {
     Logger.warn('updater', `检查更新失败: ${String(e)}`)
     return { hasUpdate: false }
+  }
+}
+
+/**
+ * 下载更新并退出安装。
+ * - 安装版：electron-updater 下载 → 进度经事件上抛 → quitAndInstall
+ * - 便携版 / 开发环境：打开 Releases 页（便携版无法原地替换自身）
+ */
+export async function downloadAndInstallUpdate(
+  emit: (event: { type: string; [k: string]: unknown }) => void
+): Promise<{ ok: boolean; message: string }> {
+  if (!app.isPackaged || isPortable()) {
+    const { shell } = await import('electron')
+    await shell.openExternal(RELEASES_URL)
+    return { ok: true, message: '便携版请在浏览器中下载最新版（已打开 Releases 页）' }
+  }
+  try {
+    const { autoUpdater } = await import('electron-updater')
+    autoUpdater.on('download-progress', (p) => {
+      emit({
+        type: 'notice',
+        sessionId: '',
+        level: 'info',
+        message: `更新下载中 ${Math.round(p.percent)}%`
+      })
+    })
+    autoUpdater.on('update-downloaded', () => {
+      emit({
+        type: 'notice',
+        sessionId: '',
+        level: 'info',
+        message: '更新下载完成，即将重启安装…'
+      })
+      setTimeout(() => void autoUpdater.quitAndInstall(), 1500)
+    })
+    await autoUpdater.downloadUpdate()
+    return { ok: true, message: '更新下载中，完成后将自动重启安装' }
+  } catch (e) {
+    Logger.warn('updater', `下载更新失败: ${String(e)}`)
+    return { ok: false, message: `下载失败：${e instanceof Error ? e.message : String(e)}` }
   }
 }
 

@@ -6,6 +6,7 @@ import rehypeKatex from 'rehype-katex'
 import hljs from 'highlight.js'
 import { useStore } from '../store'
 import { api } from '../api'
+import { stripToolArtifacts } from '../textClean'
 import { ToolCard } from './ToolCard'
 import type { ChatTurn } from '@shared/types'
 import { IconArrowUp, IconStop, IconChevronRight, IconSpark, IconCheck } from './icons'
@@ -17,8 +18,7 @@ const SLASH_COMMANDS = [
   { cmd: '/memory', desc: '让 AI 记住当前要点' }
 ]
 
-/** 与主进程 parser 同款：识别 lidow 工具块围栏 */
-const FENCE_RE = /```(?:lidow|tool)(?:\w*)\s*\n[\s\S]*?```/g
+/** 与主进程 parser 同款：识别 lidow 工具块围栏（渲染侧清理见 ../textClean） */
 
 /** 空态快捷起手式：点一下把提示词填进输入框 */
 const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
@@ -46,7 +46,7 @@ const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
 
 function TurnBody({ text }: { text: string }): React.JSX.Element {
   // 工具调用块由下方 ToolCard 可视化表达，正文里不再重复展示原始 JSON
-  const cleaned = text.replace(FENCE_RE, '').trim()
+  const cleaned = stripToolArtifacts(text)
   if (!cleaned) return <></>
   return (
     <div className="markdown-body">
@@ -161,6 +161,8 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
   )
 }
 
+/** 首次使用引导：由 overlay 注入到 AI 网页里（见 preload/overlay.ts），此处不再实现 */
+
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const streamingText = useStore((s) => s.streamingText)
@@ -267,7 +269,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const empty = turns.length === 0 && !streamingText
 
   return (
-    <div className="flex h-full flex-col" style={{ background: 'var(--bg)' }}>
+    <div className="relative flex h-full flex-col" style={{ background: 'var(--bg)' }}>
       {/* 会话头 */}
       <div
         className="flex h-11 shrink-0 items-center gap-2 border-b px-4"
@@ -351,7 +353,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {turns.map((t) => (
             <TurnItem key={t.id} turn={t} />
           ))}
-
           {thinkingText && mode === 'pure' && streamingText && <ThinkingBlock text={thinkingText} streaming />}
 
           {streamingText && mode === 'pure' && (

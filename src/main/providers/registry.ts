@@ -65,7 +65,10 @@ const DEEPSEEK: ProviderDescriptor = {
       'button[aria-label*="stop" i]'
     ],
     newChat: ['a[class*="new-chat"]', 'button[aria-label*="开始新对话"]', 'a[href="https://chat.deepseek.com/"]'],
-    loginFlag: ['._9d8da05', 'img[class*="avatar"]', '[class*="user-info"]']
+    // 登录标志：DeepSeek 登录后左侧栏顶部出现用户头像块。
+    // 不能用带哈希的类名（._9d8da05 之类）—— 平台每次发版都会变。
+    // 未登录时页面是 /sign_in，直接看有没有输入框更稳。
+    loginFlag: ['[class*="user-avatar"]', 'img[class*="avatar"]', '[class*="avatar"]']
   }
 }
 
@@ -195,7 +198,8 @@ const GLM: ProviderDescriptor = {
   }
 }
 
-const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, DOUBAO, QWEN, ERNIE, KIMI, GLM]
+/** 内置平台表：无项目时也要能打开 AI 页面（首次引导注入在里面） */
+export const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, DOUBAO, QWEN, ERNIE, KIMI, GLM]
 
 interface ProviderStoreData {
   providers: ProviderDescriptor[]

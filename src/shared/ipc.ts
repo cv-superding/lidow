@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   AuditEntry,
+  DomAdapter,
   FileNode,
   KnowledgeBase,
   MarketPlugin,
@@ -46,6 +47,8 @@ export interface LidowApi {
   getSession(sessionId: string): Promise<Session | null>
   createSession(projectId: string, providerId: string, parentSessionId?: string): Promise<Session>
   deleteSession(sessionId: string): Promise<void>
+  /** 删除项目内所有 0 轮次会话（保留 keepSessionId），返回清理数 */
+  cleanupEmptySessions(projectId: string, keepSessionId?: string): Promise<number>
   renameSession(sessionId: string, title: string): Promise<void>
   compactSession(sessionId: string): Promise<Session>
 
@@ -81,13 +84,17 @@ export interface LidowApi {
 
   // 插件
   listInstalledPlugins(): Promise<PluginManifest[]>
-  searchMarket(query: string, category?: string): Promise<MarketPlugin[]>
+  /** 内置精选插件（本地直装，不依赖网络） */
+  listBuiltinPlugins(): Promise<MarketPlugin[]>
+  searchMarket(query: string, category?: string): Promise<{ items: MarketPlugin[]; warning?: string }>
   installPlugin(id: string): Promise<PluginManifest[]>
   uninstallPlugin(id: string): Promise<PluginManifest[]>
   togglePlugin(id: string, enabled: boolean): Promise<PluginManifest[]>
 
   // DSH
   dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }>
+  /** 服务端权威 token 消耗（按平台累计） */
+  getTokenStats(): Promise<Record<string, number>>
 
   // 任务拆解
   getActivePlan(sessionId: string): Promise<TaskPlan | null>
@@ -131,10 +138,22 @@ export interface LidowApi {
   deleteQuickCommand(id: string): Promise<QuickCommand[]>
 
   // 视图控制
-  attachWebview(providerId: string, accountId: string): Promise<{ partition: string; overlayPath: string; home: string }>
+  attachWebview(providerId: string, accountId: string): Promise<{
+    partition: string
+    overlayPath: string
+    home: string
+    /** 该平台的 DOM 适配器：无会话场景也要下发，否则登录态轮询与引导都不工作 */
+    adapter?: DomAdapter
+  }>
   bindSession(sessionId: string, webContentsId: number): Promise<void>
+  /** 切换会话后把页面落到该会话自己的对话（providerUrl 或新聊天） */
+  landSession(sessionId: string): Promise<void>
+  /** 无会话时下发 adapter 与项目目录（决定是否弹首次引导） */
+  syncProjectToWebview(webContentsId: number, adapter?: DomAdapter, providerId?: string): Promise<boolean>
   setPureMode(on: boolean): Promise<void>
   checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string }>
+  /** 下载并安装更新（便携版打开 Releases 页） */
+  downloadUpdate(): Promise<{ ok: boolean; message: string }>
   listTemplates(): Promise<{ id: string; name: string; description: string }[]>
   applyTemplate(templateId: string, root: string): Promise<void>
   pushToSync(text: string): Promise<void>
@@ -161,6 +180,8 @@ export type LidowEvent =
   | { type: 'ui-panel'; panel: 'chat' | 'web'; open: boolean }
   | { type: 'think-chunk'; sessionId: string; think: string }
   | { type: 'ui-toggle-pure' }
+  /** 项目列表变化（网页内首次引导完成初始化后需要刷新下拉与目录状态） */
+  | { type: 'projects-changed'; sessionId: string }
 
 export const IPC_INVOKE_PREFIX = 'lidow:'
 export const IPC_EVENT = 'lidow:event'

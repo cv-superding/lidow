@@ -327,23 +327,70 @@ export function TasksView(): React.JSX.Element {
   )
 }
 
+/** 服务端权威 token 消耗统计（SSE accumulated_token_usage 差值，按平台累计持久化） */
+function TokenStatsRow(): React.JSX.Element {
+  const [stats, setStats] = useState<Record<string, number>>({})
+  useEffect(() => {
+    void api.getTokenStats().then(setStats).catch(() => undefined)
+  }, [])
+  const total = Object.values(stats).reduce((a, b) => a + b, 0)
+  const detail = Object.entries(stats)
+    .filter(([, v]) => v > 0)
+    .map(([k, v]) => `${k} ${v.toLocaleString()}`)
+    .join(' · ')
+  return (
+    <div className="mb-3 ml-[44px] text-[12px]" style={{ color: 'var(--text-hint)' }}>
+      累计消耗
+      <span className="ml-1.5 tabular-nums" style={{ color: 'var(--text-body)' }}>
+        {total > 0 ? `≈ ${Math.round(total / 1000)}k tokens` : '—'}
+      </span>
+      {detail && <span className="ml-2">{detail}</span>}
+      <span className="ml-2">（服务端权威值，零 API 费用）</span>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------- 插件
 
 export function PluginsView(): React.JSX.Element {
   const installedPlugins = useStore((s) => s.installedPlugins)
   const marketResults = useStore((s) => s.marketResults)
+  const marketWarning = useStore((s) => s.marketWarning)
+  const builtinPlugins = useStore((s) => s.builtinPlugins)
   const [query, setQuery] = useState('')
+  const [searching, setSearching] = useState(false)
   const [coverage, setCoverage] = useState<{ total: number; implemented: string[] } | null>(null)
   const refresh = (): void => {
     void api.listInstalledPlugins().then((p) => useStore.setState({ installedPlugins: p }))
+    void api.listBuiltinPlugins().then((p) => useStore.setState({ builtinPlugins: p }))
     void api.dshCoverage().then(setCoverage)
   }
   useEffect(refresh, [])
 
+  const search = (): void => {
+    if (!query.trim()) return
+    setSearching(true)
+    void api
+      .searchMarket(query)
+      .then((r) => useStore.setState({ marketResults: r.items, marketWarning: r.warning ?? '' }))
+      .catch((e) => useStore.setState({ marketWarning: `市场搜索失败：${e instanceof Error ? e.message : String(e)}` }))
+      .finally(() => setSearching(false))
+  }
+
+  const installBuiltin = (id: string): void => {
+    void api
+      .installPlugin(`builtin:${id}`)
+      .then(() => {
+        useStore.getState().notice('插件已安装并加载生效')
+        refresh()
+      })
+      .catch((e) => useStore.getState().notice(`安装失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
+  }
+
   return (
     <Page
       title="插件与 DSH"
-      subtitle={coverage ? `DSH 兼容 ${coverage.implemented.length} / ${coverage.total}` : undefined}
+      subtitle={coverage ? `DSH 兼容 ${coverage.implemented.length} / ${coverage.total}（分档明细见 docs/dsh-coverage.md）` : undefined}
       actions={
         <div className="relative">
           <span className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: 'var(--text-hint)' }}>
@@ -354,14 +401,28 @@ export function PluginsView(): React.JSX.Element {
             placeholder="搜索市场（GitHub / Gitee）"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && void api.searchMarket(query).then((r) => useStore.setState({ marketResults: r }))}
+            onKeyDown={(e) => e.key === 'Enter' && search()}
           />
         </div>
       }
     >
+      {/* 搜索失败必须可见：此前网络不通时市场静默返回空数组，用户无从知道原因 */}
+      {marketWarning && (
+        <div
+          className="mb-4 rounded-[var(--r-lg)] px-3.5 py-2.5 text-[12px] leading-relaxed"
+          style={{
+            background: 'var(--danger-soft)',
+            color: 'var(--danger)',
+            border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)'
+          }}
+        >
+          {marketWarning}
+        </div>
+      )}
+
       <SectionTitle count={installedPlugins.length}>已安装</SectionTitle>
       {installedPlugins.length === 0 ? (
-        <Empty title="暂无插件" hint="从下方市场搜索并安装" />
+        <Empty title="暂无插件" hint="从下方内置精选一键安装，或搜索市场" />
       ) : (
         <div className="mb-7 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {installedPlugins.map((p) => (
@@ -386,9 +447,39 @@ export function PluginsView(): React.JSX.Element {
         </div>
       )}
 
+      {/* 内置精选：本地直装不依赖网络，保证打开市场就有可装内容 */}
+      <SectionTitle count={builtinPlugins.length}>内置精选</SectionTitle>
+      {builtinPlugins.length === 0 ? (
+        <Empty title="全部已安装" hint="内置插件均已安装" />
+      ) : (
+        <div className="mb-7 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {builtinPlugins.map((m) => (
+            <div key={m.id} className="card flex flex-col p-3.5">
+              <div className="mb-1 flex items-center gap-2">
+                <span className="truncate text-[12.5px] font-medium">{m.name}</span>
+                <span className="badge">v{m.version}</span>
+                <span className="badge badge-accent">官方</span>
+              </div>
+              <div className="mb-3 line-clamp-2 text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                {m.description}
+              </div>
+              <div className="mt-auto">
+                {m.installed ? (
+                  <span className="badge badge-success">已安装</span>
+                ) : (
+                  <button className="btn btn-sm btn-primary" onClick={() => installBuiltin(m.id)}>
+                    一键安装
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <SectionTitle count={marketResults.length}>市场</SectionTitle>
       {marketResults.length === 0 ? (
-        <Empty title="搜索插件市场" hint="输入关键词后回车，从 GitHub 与 Gitee 检索可用插件" />
+        <Empty title={searching ? '搜索中…' : '搜索在线市场'} hint="输入关键词后回车，从 GitHub 与 Gitee 检索（走系统代理）" />
       ) : (
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
           {marketResults.map((m) => (
@@ -408,7 +499,17 @@ export function PluginsView(): React.JSX.Element {
                 ) : (
                   <button
                     className="btn btn-sm btn-primary"
-                    onClick={() => void api.installPlugin(`${m.source}:${m.id}`).then(refresh)}
+                    onClick={() =>
+                      void api
+                        .installPlugin(`${m.source}:${m.id}`)
+                        .then(() => {
+                          useStore.getState().notice('插件已安装并加载生效')
+                          refresh()
+                        })
+                        .catch((e) =>
+                          useStore.getState().notice(`安装失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+                        )
+                    }
                   >
                     安装
                   </button>
@@ -421,6 +522,7 @@ export function PluginsView(): React.JSX.Element {
     </Page>
   )
 }
+
 
 // ---------------------------------------------------------------- 记忆
 
@@ -698,6 +800,8 @@ export function SettingsView(): React.JSX.Element {
   const mcpServers = useStore((s) => s.mcpServers)
   const mcpTools = useStore((s) => s.mcpTools)
   const s = settings
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateMsg, setUpdateMsg] = useState('')
 
   const patch = (p: Parameters<typeof api.updateSettings>[0]): void => {
     void api.updateSettings(p).then((next) => {
@@ -909,6 +1013,8 @@ export function SettingsView(): React.JSX.Element {
             checked={s.autoCompact}
             onChange={(v) => patch({ autoCompact: v })}
           />
+
+          <TokenStatsRow />
           {s.autoCompact && (
             <div className="mb-3 ml-[44px] flex items-center gap-1.5 text-[12px]">
               <label className="flex items-center gap-1.5">
@@ -1058,18 +1164,50 @@ export function SettingsView(): React.JSX.Element {
 
         {/* 更新 */}
         <SettingGroup title="关于与更新">
-          <div className="flex items-center gap-2.5">
-            <button
-              className="btn btn-outline"
-              onClick={() =>
-                void api.checkUpdate().then((u) => alert(u.hasUpdate ? `发现新版本 ${u.version}` : '当前已是最新版本'))
-              }
-            >
-              <IconRefresh size={13} /> 检查更新
-            </button>
-            <span className="text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
-              GPL-3.0 · 零 Token 成本内嵌网页版 Agent
-            </span>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2.5">
+              <button
+                className="btn btn-outline"
+                disabled={updateBusy}
+                onClick={() => {
+                  setUpdateBusy(true)
+                  setUpdateMsg('')
+                  void api
+                    .checkUpdate()
+                    .then((u) =>
+                      setUpdateMsg(
+                        u.hasUpdate ? `发现新版本 v${u.version}，可下载安装` : '当前已是最新版本'
+                      )
+                    )
+                    .catch((e) => setUpdateMsg(`检查失败：${e instanceof Error ? e.message : String(e)}`))
+                    .finally(() => setUpdateBusy(false))
+                }}
+              >
+                <IconRefresh size={13} /> 检查更新
+              </button>
+              <button
+                className="btn btn-outline"
+                disabled={updateBusy || !updateMsg.includes('发现新版本')}
+                onClick={() => {
+                  setUpdateBusy(true)
+                  void api
+                    .downloadUpdate()
+                    .then((r) => setUpdateMsg(r.message))
+                    .catch((e) => setUpdateMsg(`下载失败：${e instanceof Error ? e.message : String(e)}`))
+                    .finally(() => setUpdateBusy(false))
+                }}
+              >
+                下载并安装
+              </button>
+              <span className="text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                GPL-3.0 · 零 Token 成本内嵌网页版 Agent
+              </span>
+            </div>
+            {updateMsg && (
+              <div className="text-[12px]" style={{ color: 'var(--text-body)' }}>
+                {updateMsg}
+              </div>
+            )}
           </div>
         </SettingGroup>
       </div>

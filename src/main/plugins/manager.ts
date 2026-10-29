@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { net } from 'electron'
 import { JsonStore } from '@main/infra/store'
 import { Logger } from '@main/infra/log'
 import { execCommand } from '@main/tools/exec'
@@ -13,6 +14,15 @@ import type { InstalledPlugin, MarketPlugin, PluginManifest } from '@shared/type
 
 interface PluginStoreData {
   disabled: string[]
+}
+
+/**
+ * 走系统代理的网络请求：net.fetch 走 Chromium 网络栈（继承系统代理设置）。
+ * 用全局 fetch 直连 GitHub 在国内环境必然超时，且失败是静默的 ——
+ * 市场看起来就像"什么都没有"，用户无从知道是网络问题。
+ */
+function netFetch(url: string, timeoutMs = 15_000, headers?: Record<string, string>): Promise<Response> {
+  return net.fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) }) as unknown as Promise<Response>
 }
 
 export class PluginManager {
@@ -68,17 +78,19 @@ export class PluginManager {
     return { ok: problems.length === 0, problems }
   }
 
-  /** 市场搜索：GitHub topic:lidow-plugin + Gitee 双源 */
-  async searchMarket(query: string, category?: string): Promise<MarketPlugin[]> {
+  /** 市场搜索：GitHub topic:lidow-plugin + Gitee 双源；失败原因如实带回（不再静默吞掉） */
+  async searchMarket(query: string, category?: string): Promise<{ items: MarketPlugin[]; warning?: string }> {
     const results: MarketPlugin[] = []
+    const errors: string[] = []
     const q = query ? `${query}` : ''
     // GitHub
     try {
       const ghQuery = [`topic:lidow-plugin`, q, category ? `topic:lidow-${category}` : ''].filter(Boolean).join(' ')
-      const res = await fetch(`https://api.github.com/search/repositories?q=${encodeURIComponent(ghQuery)}&per_page=20`, {
-        headers: { Accept: 'application/vnd.github+json' },
-        signal: AbortSignal.timeout(15_000)
-      })
+      const res = await netFetch(
+        `https://api.github.com/search/repositories?q=${encodeURIComponent(ghQuery)}&per_page=20`,
+        15_000,
+        { Accept: 'application/vnd.github+json' }
+      )
       if (res.ok) {
         const data = (await res.json()) as { items?: { name: string; full_name: string; description: string; html_url: string; stargazers_count: number; pushed_at: string }[] }
         for (const it of data.items ?? []) {
@@ -93,15 +105,15 @@ export class PluginManager {
             source: 'github'
           })
         }
+      } else {
+        errors.push(`GitHub HTTP ${res.status}`)
       }
     } catch (e) {
-      Logger.warn('plugins', `GitHub 市场搜索失败: ${String(e)}`)
+      errors.push(`GitHub ${e instanceof Error ? e.message : String(e)}`)
     }
     // Gitee
     try {
-      const res = await fetch(`https://gitee.com/api/v5/search/repositories?q=${encodeURIComponent(q || 'lidow-plugin')}&per_page=20`, {
-        signal: AbortSignal.timeout(15_000)
-      })
+      const res = await netFetch(`https://gitee.com/api/v5/search/repositories?q=${encodeURIComponent(q || 'lidow-plugin')}&per_page=20`)
       if (res.ok) {
         const data = (await res.json()) as { full_name: string; name: string; description: string; html_url: string; stargazers_count: number; owner?: { login: string } }[]
         for (const it of Array.isArray(data) ? data : []) {
@@ -116,12 +128,16 @@ export class PluginManager {
             source: 'gitee'
           })
         }
+      } else {
+        errors.push(`Gitee HTTP ${res.status}`)
       }
     } catch (e) {
-      Logger.warn('plugins', `Gitee 市场搜索失败: ${String(e)}`)
+      errors.push(`Gitee ${e instanceof Error ? e.message : String(e)}`)
     }
+    // 全部失败且无结果：这是网络问题的信号，必须让用户看见而不是显示空态
+    const warning = results.length === 0 && errors.length > 0 ? `市场搜索失败：${errors.join('；')}（请检查系统代理设置）` : undefined
     const installed = new Set(this.list().map((p) => p.id))
-    return results.map((r) => ({ ...r, installed: installed.has(r.id) }))
+    return { items: results.map((r) => ({ ...r, installed: installed.has(r.id) })), warning }
   }
 
   /** 安装：下载 zip → 系统解压 → 校验 manifest */
@@ -134,14 +150,14 @@ export class PluginManager {
         ? `https://codeload.github.com/${repoFullName}/zip/refs/heads/master`
         : `https://gitee.com/${repoFullName}/repository/archive/master.zip`
     const tmpZip = join(this.userDataDir, `${id}.zip`)
-    const res = await fetch(zipUrl, { signal: AbortSignal.timeout(60_000) })
+    const res = await netFetch(zipUrl, 60_000)
     if (!res.ok) {
       // master 失败试 main
       const alt =
         source === 'github'
           ? `https://codeload.github.com/${repoFullName}/zip/refs/heads/main`
           : zipUrl.replace('master', 'main')
-      const res2 = await fetch(alt, { signal: AbortSignal.timeout(60_000) })
+      const res2 = await netFetch(alt, 60_000)
       if (!res2.ok) throw new Error(`下载失败 HTTP ${res2.status}`)
       await downloadTo(res2, tmpZip)
     } else {
@@ -187,7 +203,109 @@ export class PluginManager {
   isEnabled(id: string): boolean {
     return !this.store.get().disabled.includes(id)
   }
+
+  // ---------- 内置精选（本地直装，不依赖网络） ----------
+  //
+  // 市场搜索依赖 GitHub/Gitee，网络不通时页面就是一片空白。
+  // 内置精选保证"打开市场就有东西可装"，而且这些插件是真实生效的：
+  // 装完立刻被插件运行时加载（见 AppContext.loadAllPlugins）。
+
+  /** 内置精选清单（未安装的才展示） */
+  listBuiltins(): MarketPlugin[] {
+    const installed = new Set(this.list().map((p) => p.id))
+    return BUILTIN_PLUGINS.map((b) => ({
+      id: b.manifest.id,
+      name: b.manifest.name,
+      description: b.manifest.description ?? '',
+      version: b.manifest.version,
+      author: 'Lidow 官方',
+      stars: undefined,
+      repoUrl: '',
+      source: 'builtin' as const,
+      installed: installed.has(b.manifest.id)
+    }))
+  }
+
+  /** 安装内置插件：直接落盘（无网络），装完由运行时加载 */
+  installBuiltin(id: string): void {
+    const b = BUILTIN_PLUGINS.find((x) => x.manifest.id === id)
+    if (!b) throw new Error(`未知内置插件: ${id}`)
+    const target = this.pluginDir(id)
+    if (existsSync(target)) throw new Error(`插件已安装: ${id}`)
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'manifest.json'), JSON.stringify(b.manifest, null, 2))
+    for (const [name, content] of Object.entries(b.files)) {
+      writeFileSync(join(target, name), content)
+    }
+    Logger.info('plugins', `内置插件已安装: ${id}`)
+  }
 }
+
+/**
+ * 内置精选插件：manifest + 文件在编译期写死，安装即落盘。
+ * 两个都是真实生效的最小可用件 —— 不是占位 demo：
+ *  1. dsh-storage-demo：DSH 扩展，加载时向 storage 写一条「加载时间」，
+ *     用于验证插件运行时接线（应用启动日志可见）
+ *  2. web-badge：网页脚本，在 DeepSeek 对话页右下角注入一枚「Lidow 已接管」徽标，
+ *     用于验证 webScript 注入链路
+ */
+const BUILTIN_PLUGINS: { manifest: PluginManifest; files: Record<string, string> }[] = [
+  {
+    manifest: {
+      id: 'dsh-storage-demo',
+      name: 'DSH 存储示例',
+      version: '1.0.0',
+      description: 'DSH 扩展最小示例：加载时向 storage 写入加载时间，验证插件运行时接线。',
+      author: 'Lidow',
+      category: 'dsh',
+      provides: ['dsh'],
+      dsh: 'dsh.js'
+    },
+    files: {
+      'dsh.js': `// DSH 扩展：register(ctx) 收到全部 119 个兼容服务
+export async function register(ctx) {
+  try {
+    const ts = new Date().toISOString()
+    await ctx.storage.set('dsh-storage-demo.loadedAt', ts)
+    console.log('[lidow-plugin] DSH 存储示例已加载', ts)
+  } catch (e) {
+    console.warn('[lidow-plugin] storage 不可用', e)
+  }
+}
+`
+    }
+  },
+  {
+    manifest: {
+      id: 'web-badge',
+      name: '接管徽标',
+      version: '1.0.0',
+      description: '在 AI 对话页右下角注入一枚「Lidow 已接管」徽标，验证网页脚本注入链路。',
+      author: 'Lidow',
+      category: 'webScript',
+      provides: ['webScript'],
+      platform: 'deepseek',
+      webScript: 'badge.js'
+    },
+    files: {
+      'badge.js': `// 网页脚本：在页面上加一枚小徽标（不碰平台自己的 DOM 逻辑）
+;(() => {
+  if (document.getElementById('lidow-plugin-badge')) return
+  const el = document.createElement('div')
+  el.id = 'lidow-plugin-badge'
+  el.textContent = 'Lidow 已接管'
+  el.style.cssText = [
+    'position:fixed', 'right:18px', 'bottom:150px', 'z-index:2147483645',
+    'padding:4px 10px', 'border-radius:999px', 'font-size:11px', 'font-weight:600',
+    'background:rgba(141,255,79,.16)', 'color:#59d915', 'border:1px solid rgba(89,217,21,.4)',
+    'font-family:system-ui,sans-serif', 'pointer-events:none', 'opacity:.8'
+  ].join(';')
+  document.body.appendChild(el)
+})()
+`
+    }
+  }
+]
 
 function safeReadDir(dir: string): string[] {
   try {
