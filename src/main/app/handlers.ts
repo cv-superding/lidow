@@ -172,10 +172,19 @@ export function registerHandlers(
       }
     }
 
-    // 离开被删除的对话：否则网页仍停留在已删除会话，甚至继续接管后续消息
-    if (wcId !== undefined) ctx.overlay.sendCmdToWebContents(wcId, { kind: 'new-chat' })
     ctx.overlay.unbindSession(sid)
-    if (project) ctx.sessionStoreOf(project).delete(sid)
+    if (project) {
+      const store = ctx.sessionStoreOf(project)
+      store.delete(sid)
+      // 已没有“带轮次”的会话 → 项目回到未初始化，网页需要重新出现初始化入口
+      const stillInitialized = store.list().some((m) => (store.get(m.id)?.turns.length ?? 0) > 0)
+      if (!stillInitialized) ctx.resetProjectInitialization(project, wcId)
+    }
+    // 离开被删除的对话：否则网页仍停留在已删除会话，甚至继续接管后续消息。
+    // 延迟一点，让 reset-first-run 的 localStorage 清理先落盘（页面随后可能 SPA 跳转）。
+    if (wcId !== undefined) {
+      setTimeout(() => ctx.overlay.sendCmdToWebContents(wcId, { kind: 'new-chat' }), 200)
+    }
     return { webDeleted, message }
   })
   R('renameSession', (sessionId: string, title: string) => {

@@ -722,6 +722,32 @@ export class AppContext {
   /** 确认就绪的项目（一旦有带轮次的会话就缓存为已初始化，避免每次 configure 扫盘） */
   private initializedProjects = new Set<string>()
 
+  /**
+   * 删除全部已初始化会话后，让项目重新回到未初始化状态：
+   * 清缓存并通知相关网页重新显示首次引导（否则网页仍以为项目已初始化）。
+   */
+  resetProjectInitialization(projectId: string, extraWcId?: number): void {
+    this.initializedProjects.delete(projectId)
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!project) return
+    const targets = new Set<number>()
+    if (extraWcId !== undefined) targets.add(extraWcId)
+    for (const sid of this.overlay.boundSessionIds()) {
+      if (this.sessionOf(sid)?.projectId !== projectId) continue
+      const wc = this.overlay.wcIdOfSession(sid)
+      if (wc !== undefined) targets.add(wc)
+    }
+    for (const wc of targets) {
+      this.overlay.sendCmdToWebContents(wc, {
+        kind: 'set-project',
+        projectRoot: project.root,
+        initialized: false
+      })
+      this.overlay.sendCmdToWebContents(wc, { kind: 'reset-first-run' })
+    }
+    Logger.info('project', `项目回到未初始化状态: ${project.root} targets=${targets.size}`)
+  }
+
   /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
   projectInitialized(projectId: string): boolean {
     if (!projectId) return false

@@ -498,50 +498,85 @@ function SessionDeleteDialog(): React.JSX.Element | null {
   const req = useStore((s) => s.sessionDelete)
   const cancel = useStore((s) => s.cancelSessionDelete)
   const perform = useStore((s) => s.performSessionDelete)
+  const [deleteWeb, setDeleteWeb] = useState(false)
+  useEffect(() => {
+    setDeleteWeb(false)
+  }, [req?.id])
   if (!req) return null
+
   return (
     <div
       className="fixed inset-0 z-[75] flex items-center justify-center px-6"
-      style={{ background: 'rgba(9,12,18,.44)', backdropFilter: 'blur(2px)' }}
+      style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
     >
       <div
-        className="anim-pop w-full max-w-[430px] rounded-[var(--r-xl)] p-5"
-        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow-lg)' }}
+        className="anim-pop w-full max-w-[388px] overflow-hidden rounded-[18px]"
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
       >
-        <div className="flex items-start gap-3">
-          <span
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
-            style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
-          >
-            <IconTrash size={16} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold">删除会话</div>
-            <div className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-              本地会话「{req.title}」将从 Lidow 删除。
-            </div>
-            <div
-              className="mt-2.5 rounded-[var(--r-md)] px-2.5 py-2 text-[11.5px] leading-relaxed"
-              style={{ background: 'var(--bg-active)', color: 'var(--text-hint)' }}
+        <div className="px-5 pb-4 pt-5">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px]"
+              style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
             >
-              {req.canDeleteWeb
-                ? `也可以同时删除 ${req.providerName} 网页端对话：Lidow 会在网页侧边栏中定位该对话并点击删除，此操作不可恢复。无论选哪种，删除后网页都会切到新对话。`
-                : `当前平台暂不支持从 Lidow 删除网页端对话，只会删除本地记录并让网页切到新对话。`}
-            </div>
-            <div className="mt-4 flex flex-wrap justify-end gap-2">
-              <button className="btn btn-sm btn-ghost" onClick={cancel}>
-                取消
-              </button>
-              <button className="btn btn-sm btn-outline" onClick={() => void perform(false)}>
-                仅删除本地
-              </button>
-              {req.canDeleteWeb && (
-                <button className="btn btn-sm btn-danger" onClick={() => void perform(true)}>
-                  同时删除网页端
-                </button>
-              )}
+              <IconTrash size={15} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[14px] font-semibold leading-tight">删除会话</div>
+              <div className="mt-0.5 truncate text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                {req.title}
+              </div>
             </div>
           </div>
+
+          {req.canDeleteWeb ? (
+            <button
+              role="checkbox"
+              aria-checked={deleteWeb}
+              className="mt-4 flex w-full items-start gap-2.5 rounded-[12px] border px-3 py-2.5 text-left transition-colors duration-[130ms]"
+              style={{
+                borderColor: deleteWeb ? 'color-mix(in srgb, var(--danger) 45%, var(--border))' : 'var(--border)',
+                background: deleteWeb ? 'var(--danger-soft)' : 'var(--surface-sunken)'
+              }}
+              onClick={() => setDeleteWeb((v) => !v)}
+            >
+              <span
+                className="mt-[1px] flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] border transition-colors duration-[130ms]"
+                style={{
+                  borderColor: deleteWeb ? 'var(--danger)' : 'var(--border-strong)',
+                  background: deleteWeb ? 'var(--danger)' : 'transparent',
+                  color: '#fff'
+                }}
+              >
+                {deleteWeb && <IconCheck size={10} />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[12px] font-medium">同时删除 {req.providerName} 网页端对话</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+                  会在网页侧边栏中定位并删除，不可恢复
+                </span>
+              </span>
+            </button>
+          ) : (
+            <div className="mt-4 rounded-[12px] px-3 py-2.5 text-[11.5px] leading-relaxed" style={{ background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}>
+              当前平台暂不支持从 Lidow 删除网页端对话，只会移除本地记录。
+            </div>
+          )}
+
+          <div className="mt-3 text-[11px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+            删除后网页会切到新对话；本地记录不可恢复。
+          </div>
+        </div>
+        <div
+          className="flex items-center justify-end gap-2 border-t px-5 py-3"
+          style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
+        >
+          <button className="btn btn-sm btn-ghost" onClick={cancel}>
+            取消
+          </button>
+          <button className="btn btn-sm btn-danger" onClick={() => void perform(deleteWeb && req.canDeleteWeb)}>
+            删除
+          </button>
         </div>
       </div>
     </div>
