@@ -40,8 +40,8 @@ export interface SessionDeleteRequest {
   title: string
   providerId: string
   providerName: string
-  /** 当前只对 DeepSeek 做了网页端删除适配 */
-  canDeleteWeb: boolean
+  /** 是否已有关联网页端对话（没有时只删本地） */
+  hasWebChat: boolean
 }
 
 export type ViewId =
@@ -130,7 +130,7 @@ interface LidowState {
   pureView: ViewId
   /** 项目初始化完成后的「是否进入纯净模式」建议弹窗 */
   pureSuggestion: boolean
-  /** 删除会话确认：是否同时删除网页端对话 */
+  /** 删除会话确认：本地与网页端一起删除 */
   sessionDelete: SessionDeleteRequest | null
   streamingText: string
   streamingTps: number
@@ -180,7 +180,7 @@ interface LidowState {
   dismissPureSuggestion(): void
   requestSessionDelete(s: SessionMeta): void
   cancelSessionDelete(): void
-  performSessionDelete(deleteWeb: boolean): Promise<void>
+  performSessionDelete(): Promise<void>
   applyTheme(s: AppSettings): void
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
@@ -401,20 +401,20 @@ export const useStore = create<LidowState>((set, get) => ({
         title: s.title,
         providerId: s.providerId,
         providerName,
-        canDeleteWeb: s.providerId === 'deepseek'
+        hasWebChat: Boolean(s.providerUrl)
       }
     })
   },
   cancelSessionDelete() {
     set({ sessionDelete: null })
   },
-  async performSessionDelete(deleteWeb) {
+  async performSessionDelete() {
     const req = get().sessionDelete
     if (!req) return
     set({ sessionDelete: null })
-    if (deleteWeb) get().notice('正在删除会话并同步网页端…')
+    get().notice(req.hasWebChat ? '正在删除会话并同步网页端…' : '正在删除本地会话…')
     try {
-      const res = await api.deleteSession(req.id, deleteWeb)
+      const res = await api.deleteSession(req.id, true)
       set((st) => ({
         ...(st.activeSession?.id === req.id
           ? {
@@ -430,7 +430,10 @@ export const useStore = create<LidowState>((set, get) => ({
         tabs: st.tabs.map((t) => (t.sessionId === req.id ? { ...t, sessionId: '' } : t))
       }))
       await get().refreshSessions()
-      get().notice(res.message ?? '会话已删除', res.webDeleted === false && deleteWeb ? 'warn' : 'info')
+      get().notice(
+        res.message ?? '会话已删除',
+        res.webDeleted === false && req.hasWebChat ? 'warn' : 'info'
+      )
     } catch (e) {
       get().notice(`删除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     }
@@ -926,6 +929,29 @@ export const useStore = create<LidowState>((set, get) => ({
             st.activeSession?.id === e.sessionId ? { ...st.activeSession, title: e.title } : st.activeSession
         }))
         break
+      case 'session-deleted': {
+        // 网页侧删除对话 → 主进程删除本地会话后广播：纯净模式/会话列表同步移除
+        set((st) => ({
+          sessions: st.sessions.filter((m) => m.id !== e.sessionId),
+          sessionDelete: st.sessionDelete?.id === e.sessionId ? null : st.sessionDelete,
+          tabs: st.tabs.map((t) => (t.sessionId === e.sessionId ? { ...t, sessionId: '' } : t)),
+          ...(st.activeSession?.id === e.sessionId
+            ? {
+                activeSession: null,
+                plan: null,
+                streamingText: '',
+                streamingTps: 0,
+                thinkingText: '',
+                pendingReplySessionId: '',
+                confirmRequest: null,
+                reviewFiles: [],
+                reviewActivePath: ''
+              }
+            : {})
+        }))
+        void get().refreshSessions()
+        break
+      }
       case 'ui-pure-suggestion': {
         // 已在纯净模式里就不用再问一次
         if (get().pureMode) break

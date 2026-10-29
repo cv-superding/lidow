@@ -373,7 +373,10 @@ export interface OverlayCommand {
     | 'toggle-search'
     | 'upload-file'
     | 'click-keywords'
+    | 'watch-chats'
   text?: string
+  /** watch-chats：当前项目下需要监听“网页侧是否被删除”的对话 URL */
+  urls?: string[]
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
   /** configure：网络层 hook 源码（注入主世界，拦截 SSE 获取回复，不依赖 DOM） */
@@ -410,3 +413,5 @@ export type OverlayEvent =
   | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; reason?: string; tokens?: number }
   /** 网络层 hook：请求失败 */
   | { type: 'net-error'; text: string; reason: string }
+  /** 网页侧用户删除了对话：主进程据此同步移除本地会话 */
+  | { type: 'chat-deleted'; url: string }

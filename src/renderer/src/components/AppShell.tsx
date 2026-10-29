@@ -504,15 +504,11 @@ function PureModeSuggestion(): React.JSX.Element | null {
   )
 }
 
-/** 删除会话：选择只删本地，或同时删除网页端对话 */
+/** 删除会话：本地记录与网页端对话一起删除 */
 function SessionDeleteDialog(): React.JSX.Element | null {
   const req = useStore((s) => s.sessionDelete)
   const cancel = useStore((s) => s.cancelSessionDelete)
   const perform = useStore((s) => s.performSessionDelete)
-  const [deleteWeb, setDeleteWeb] = useState(false)
-  useEffect(() => {
-    setDeleteWeb(false)
-  }, [req?.id])
   if (!req) return null
 
   return (
@@ -540,42 +536,18 @@ function SessionDeleteDialog(): React.JSX.Element | null {
             </div>
           </div>
 
-          {req.canDeleteWeb ? (
-            <button
-              role="checkbox"
-              aria-checked={deleteWeb}
-              className="mt-4 flex w-full items-start gap-2.5 rounded-[12px] border px-3 py-2.5 text-left transition-colors duration-[130ms]"
-              style={{
-                borderColor: deleteWeb ? 'color-mix(in srgb, var(--danger) 45%, var(--border))' : 'var(--border)',
-                background: deleteWeb ? 'var(--danger-soft)' : 'var(--surface-sunken)'
-              }}
-              onClick={() => setDeleteWeb((v) => !v)}
-            >
-              <span
-                className="mt-[1px] flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] border transition-colors duration-[130ms]"
-                style={{
-                  borderColor: deleteWeb ? 'var(--danger)' : 'var(--border-strong)',
-                  background: deleteWeb ? 'var(--danger)' : 'transparent',
-                  color: '#fff'
-                }}
-              >
-                {deleteWeb && <IconCheck size={10} />}
-              </span>
-              <span className="min-w-0">
-                <span className="block text-[12px] font-medium">同时删除 {req.providerName} 网页端对话</span>
-                <span className="mt-0.5 block text-[11px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
-                  会在网页侧边栏中定位并删除，不可恢复
-                </span>
-              </span>
-            </button>
-          ) : (
-            <div className="mt-4 rounded-[12px] px-3 py-2.5 text-[11.5px] leading-relaxed" style={{ background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}>
-              当前平台暂不支持从 Lidow 删除网页端对话，只会移除本地记录。
-            </div>
-          )}
+          <div className="mt-4 rounded-[12px] px-3 py-2.5 text-[11.5px] leading-relaxed" style={{ background: 'var(--surface-sunken)', color: 'var(--text-dim)' }}>
+            {req.hasWebChat ? (
+              <>
+                本地记录和 <span style={{ color: 'var(--text)' }}>{req.providerName} 网页端对话</span>会一起删除。
+              </>
+            ) : (
+              <>该会话还没有关联网页端对话，只会移除本地记录。</>
+            )}
+          </div>
 
           <div className="mt-3 text-[11px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
-            删除后网页会切到新对话；本地记录不可恢复。
+            网页端删除失败时，本地记录仍会移除；操作不可恢复。
           </div>
         </div>
         <div
@@ -585,7 +557,7 @@ function SessionDeleteDialog(): React.JSX.Element | null {
           <button className="btn btn-sm btn-ghost" onClick={cancel}>
             取消
           </button>
-          <button className="btn btn-sm btn-danger" onClick={() => void perform(deleteWeb && req.canDeleteWeb)}>
+          <button className="btn btn-sm btn-danger" onClick={() => void perform()}>
             删除
           </button>
         </div>

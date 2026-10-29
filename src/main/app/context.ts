@@ -117,6 +117,22 @@ function cleanChatTitle(raw: string | undefined, providerName: string): string {
   return t.slice(0, 60)
 }
 
+/** 平台对话 URL 归一化：忽略查询串/哈希/尾斜杠，用于双向删除匹配 */
+function chatUrlKey(raw: string | undefined): string {
+  if (!raw) return ''
+  try {
+    const u = new URL(raw)
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return ''
+  }
+}
+
+/** 账号归一化：空值/__default__ 都代表隐式默认分区 */
+function accountKey(accountId?: string): string {
+  return accountId && accountId !== '__default__' ? accountId : '__default__'
+}
+
 function routedSessionFacade(resolve: (sessionId: string) => SessionStore): LoopSessionStore {
   return {
     appendTurn: (id, t) => resolve(id).appendTurn(id, t),
@@ -156,6 +172,8 @@ export class AppContext {
   private projectDirs = new Map<string, string>()
   /** webContents → 平台/账号：首次初始化时没有会话绑定，靠它建对话到正确的平台 */
   private wcProviders = new Map<number, { providerId: string; accountId?: string }>()
+  /** 本地删除网页对话进行中的 URL：忽略 overlay 反向回调，避免同名事件重复删/竞态 */
+  private webChatDeletesInFlight = new Map<string, number>()
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
   private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
@@ -395,7 +413,11 @@ export class AppContext {
         Logger.info('nav', `会话标题同步自网页: ${session.title} → ${nextTitle}`)
         this.emit({ type: 'session-title', sessionId, title: nextTitle })
       }
+      const wcId = this.overlay.wcIdOfSession(sessionId)
+      if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
     }
+    this.overlay.onChatDeleted = (webContentsId, url) => this.handleWebChatDeleted(webContentsId, url)
+    this.overlay.onAnyReady = (webContentsId) => this.syncChatWatchToWebview(webContentsId)
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()
       const root = project?.root ?? null
@@ -617,6 +639,8 @@ export class AppContext {
     void this.overlay.injectWebScripts(sessionId).catch((e) => {
       Logger.warn('plugins', `网页脚本注入失败: ${e instanceof Error ? e.message : String(e)}`)
     })
+    const wcId = this.overlay.wcIdOfSession(sessionId)
+    if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
   }
 
   private registerEcosystemTools(): void {
@@ -785,6 +809,114 @@ export class AppContext {
 
   webviewProvider(webContentsId: number): { providerId: string; accountId?: string } | undefined {
     return this.wcProviders.get(webContentsId)
+  }
+
+  /** 同一平台/账号的网页载体（会话已解绑时也用它执行网页端删除） */
+  webContentsIdForProvider(providerId: string, accountId?: string): number | undefined {
+    const want = accountKey(accountId)
+    for (const [id, info] of this.wcProviders) {
+      if (info.providerId !== providerId) continue
+      if (accountKey(info.accountId) !== want) continue
+      const wc = webContents.fromId(id)
+      if (wc && !wc.isDestroyed()) return id
+    }
+    return undefined
+  }
+
+  /** 下发给网页的“本地会话地址”清单：用户在网页侧删除对话时据此反向同步 */
+  syncChatWatchToWebview(webContentsId: number, projectId?: string): void {
+    const project = projectId ? this.projects.find((p) => p.id === projectId) : this.activeProject()
+    if (!project) return
+    const info = this.wcProviders.get(webContentsId)
+    let urls: string[]
+    try {
+      const store = this.sessionStoreOf(project.id)
+      const keys = new Set<string>()
+      for (const m of store.list()) {
+        if (info?.providerId && m.providerId !== info.providerId) continue
+        if (info?.accountId && accountKey(m.accountId) !== accountKey(info.accountId)) continue
+        const key = chatUrlKey(m.providerUrl)
+        if (key) keys.add(key)
+      }
+      urls = [...keys]
+    } catch {
+      return
+    }
+    this.overlay.sendCmdToWebContents(webContentsId, { kind: 'watch-chats', urls })
+  }
+
+  /** 本地删除前打标：网页侧自动删除也会点「删除」，不能反向再触发一次 */
+  markWebChatDeleteInFlight(rawUrl: string | undefined): void {
+    const key = chatUrlKey(rawUrl)
+    if (!key) return
+    const stamp = Date.now()
+    this.webChatDeletesInFlight.set(key, stamp)
+    const timer = setTimeout(() => {
+      if (this.webChatDeletesInFlight.get(key) === stamp) this.webChatDeletesInFlight.delete(key)
+    }, 15_000)
+    timer.unref?.()
+  }
+
+  private isWebChatDeleteInFlight(rawUrl: string): boolean {
+    const key = chatUrlKey(rawUrl)
+    const stamp = this.webChatDeletesInFlight.get(key)
+    return stamp !== undefined && Date.now() - stamp < 15_000
+  }
+
+  /** 网页侧删除了对话：把指向同一 URL 的本地会话一并移除（纯净模式列表同步） */
+  private handleWebChatDeleted(webContentsId: number, rawUrl: string): void {
+    const key = chatUrlKey(rawUrl)
+    if (!key) return
+    if (this.isWebChatDeleteInFlight(key)) {
+      Logger.info('session', `忽略本地删除操作触发的网页回调: ${key.slice(0, 70)}`)
+      return
+    }
+    const info = this.wcProviders.get(webContentsId)
+    const removed: { projectId: string; title: string }[] = []
+    for (const project of this.projects) {
+      let store: SessionStore
+      try {
+        store = this.sessionStoreOf(project.id)
+      } catch {
+        continue
+      }
+      for (const meta of store.list()) {
+        if (info?.providerId && meta.providerId !== info.providerId) continue
+        if (info?.accountId && accountKey(meta.accountId) !== accountKey(info.accountId)) continue
+        if (chatUrlKey(meta.providerUrl) !== key) continue
+        this.loop.stop(meta.id, 'all')
+        this.overlay.unbindSession(meta.id)
+        store.delete(meta.id)
+        if (this.lastSessionId === meta.id) this.lastSessionId = ''
+        removed.push({ projectId: project.id, title: meta.title })
+        this.emit({ type: 'session-deleted', sessionId: meta.id, title: meta.title })
+      }
+    }
+    if (removed.length === 0) {
+      Logger.info('session', `网页端删除未匹配本地会话: ${key.slice(0, 70)}`)
+      return
+    }
+    const affected = [...new Set(removed.map((r) => r.projectId))]
+    for (const projectId of affected) {
+      const store = this.sessionStoreOf(projectId)
+      const stillInitialized = store.list().some((m) => {
+        const s = store.get(m.id)
+        return Boolean(s && (s.turns.length > 0 || s.providerUrl || s.systemPromptSent))
+      })
+      if (!stillInitialized) this.resetProjectInitialization(projectId, webContentsId)
+    }
+    this.syncChatWatchToWebview(webContentsId)
+    const titles = [...new Set(removed.map((r) => r.title).filter(Boolean))]
+    this.emit({
+      type: 'notice',
+      sessionId: '',
+      level: 'info',
+      message:
+        removed.length === 1
+          ? `网页端对话已删除，本地会话已同步移除${titles[0] ? `：${titles[0]}` : ''}`
+          : `网页端已删除 ${removed.length} 个对话，本地会话已同步移除`
+    })
+    Logger.info('session', `网页端删除已同步本地 session=${removed.map((r) => r.title).join('、')}`)
   }
 
   /** 确认就绪的项目（一旦有带轮次的会话就缓存为已初始化，避免每次 configure 扫盘） */

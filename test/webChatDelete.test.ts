@@ -43,6 +43,7 @@ function setup(): { wc: WebContentsLike; deleted: () => boolean } {
       confirm.textContent = '删除'
       confirm.addEventListener('click', () => {
         deleted = true
+        w.document.querySelector('#row')?.remove()
       })
       w.document.body.appendChild(confirm)
     })

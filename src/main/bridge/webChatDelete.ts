@@ -2,11 +2,11 @@
 import type { WebContents } from 'electron'
 
 /**
- * 在 DeepSeek 网页里尽力删除一条对话：
- * 按 providerUrl 里的 chat id 定位侧边栏行 → 打开 ⋯ 菜单 → 点「删除」→ 确认。
- * 平台 DOM 改版时返回失败原因，不影响本地会话删除。
+ * 在平台网页里尽力删除一条对话：
+ * 按 providerUrl 定位侧边栏行 → 打开 ⋯ 菜单 → 点「删除」→ 确认。
+ * 不同平台菜单文案/结构不同，命中不到时返回失败原因，不影响本地会话删除。
  */
-async function deepSeekDeleteScript(args: { url: string; title: string }): Promise<{ ok: boolean; reason?: string }> {
+async function webChatDeleteScript(args: { url: string; title: string }): Promise<{ ok: boolean; reason?: string }> {
   const g = globalThis as any
   const doc = g.document
   if (!doc) return { ok: false, reason: '页面不可用' }
@@ -21,14 +21,56 @@ async function deepSeekDeleteScript(args: { url: string; title: string }): Promi
       return false
     }
   }
-  const match = String(args.url || '').match(/\/a\/chat\/s\/([0-9a-fA-F-]{8,})/)
-  const id = match ? match[1] : ''
-  if (!id) return { ok: false, reason: '无法从会话 URL 识别对话 ID' }
+  const DELETE_LABELS = [
+    '删除',
+    '删除对话',
+    '删除会话',
+    '移除',
+    '移除对话',
+    'delete',
+    'delete chat',
+    'delete conversation',
+    'remove',
+    'remove chat',
+    'remove conversation'
+  ]
+  const CONFIRM_LABELS = [
+    ...DELETE_LABELS,
+    '确认',
+    '确定',
+    '确认删除',
+    '确定删除',
+    'ok',
+    'okay',
+    'confirm'
+  ]
+  const hasLabel = (el: any, labels: string[]) => labels.includes(text(el).toLowerCase())
+
+  let target: URL
+  try {
+    target = new g.URL(String(args.url || ''))
+  } catch {
+    return { ok: false, reason: '无效的对话地址' }
+  }
+  if (!/^https?:$/.test(target.protocol)) return { ok: false, reason: '无效的对话地址' }
+  if (g.location.origin !== target.origin) return { ok: false, reason: '当前页面与对话地址不一致' }
+  const path = target.pathname.replace(/\/+$/, '')
+  const segments = path.split('/').filter(Boolean)
+  const id = segments[segments.length - 1] ?? ''
+  if (!id || id.length < 4) return { ok: false, reason: '无法从会话 URL 识别对话 ID' }
+  const sameChat = (a: any): boolean => {
+    try {
+      const u = new g.URL(String(a.href), g.location.href)
+      return u.origin === target.origin && u.pathname.replace(/\/+$/, '') === path
+    } catch {
+      return false
+    }
+  }
 
   const deadline = Date.now() + 6000
   let anchor: any = null
   while (Date.now() < deadline) {
-    anchor = [...doc.querySelectorAll('a[href]')].find((a: any) => String(a.href).includes(id))
+    anchor = [...doc.querySelectorAll('a[href]')].find((a: any) => sameChat(a) || String(a.href).includes(id))
     if (anchor) break
     await sleep(150)
   }
@@ -66,37 +108,55 @@ async function deepSeekDeleteScript(args: { url: string; title: string }): Promi
   }
   if (!more) return { ok: false, reason: '未找到对话菜单按钮' }
 
-  more.click()
-  await sleep(350)
+  // 页面里的删除监听看到这个标记会跳过，避免本地删除又反向触发一次同步
+  const busyAttr = 'data-lidow-chat-delete-busy'
+  try {
+    doc.documentElement.setAttribute(busyAttr, '1')
+    more.click()
+    await sleep(350)
 
-  const items = [...doc.querySelectorAll('[role="menuitem"],button,[role="button"],div')].filter(
-    (el: any) => visible(el) && text(el) === '删除'
-  )
-  if (items.length === 0) return { ok: false, reason: '菜单中没有「删除」' }
-  // 取层级最深（子元素最少）的节点，避免命中包含文本的外层容器
-  items.sort((a: any, b: any) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)
-  items[0].click()
-  await sleep(450)
+    const items = [...doc.querySelectorAll('[role="menuitem"],button,[role="button"],div')].filter(
+      (el: any) => visible(el) && hasLabel(el, DELETE_LABELS)
+    )
+    if (items.length === 0) return { ok: false, reason: '菜单中没有「删除」' }
+    // 取层级最深（子元素最少）的节点，避免命中包含文本的外层容器
+    items.sort((a: any, b: any) => a.querySelectorAll('*').length - b.querySelectorAll('*').length)
+    items[0].click()
+    await sleep(450)
 
-  const confirms = [...doc.querySelectorAll('button,[role="button"]')].filter(
-    (el: any) => visible(el) && ['删除', '确认', '确定', '确认删除', '删除对话'].includes(text(el))
-  )
-  if (confirms.length > 0) {
-    confirms[confirms.length - 1].click()
-    await sleep(500)
+    const confirms = [...doc.querySelectorAll('button,[role="button"]')].filter(
+      (el: any) => visible(el) && hasLabel(el, CONFIRM_LABELS)
+    )
+    if (confirms.length > 0) {
+      confirms[confirms.length - 1].click()
+      await sleep(500)
+    }
+    // 确认点击后等侧栏真正移除，避免“点了删除但平台没删”被误报成功
+    const verifyDeadline = Date.now() + 2_000
+    while (Date.now() < verifyDeadline) {
+      const still = [...doc.querySelectorAll('a[href]')].some((a: any) => visible(a) && (sameChat(a) || String(a.href).includes(id)))
+      if (!still) return { ok: true }
+      await sleep(150)
+    }
+    return { ok: false, reason: '网页端删除后对话仍在侧边栏' }
+  } finally {
+    try {
+      doc.documentElement.removeAttribute(busyAttr)
+    } catch {
+      /* ignore */
+    }
   }
-  return { ok: true }
 }
 
-export async function deleteDeepSeekChat(
+export async function deleteWebChat(
   webContents: WebContents,
   providerUrl: string,
   title: string
 ): Promise<{ ok: boolean; reason?: string }> {
   if (!webContents || webContents.isDestroyed()) return { ok: false, reason: '网页已关闭' }
-  if (!/^https:\/\/chat\.deepseek\.com\//.test(providerUrl)) return { ok: false, reason: '不是 DeepSeek 对话' }
+  if (!/^https?:\/\//.test(providerUrl)) return { ok: false, reason: '没有可定位的网页对话地址' }
   try {
-    const code = `(${deepSeekDeleteScript.toString()})(${JSON.stringify({ url: providerUrl, title })})`
+    const code = `(${webChatDeleteScript.toString()})(${JSON.stringify({ url: providerUrl, title })})`
     const result = await Promise.race([
       webContents.executeJavaScript(code, true),
       new Promise<{ ok: boolean; reason?: string }>((resolve) =>
@@ -108,3 +168,6 @@ export async function deleteDeepSeekChat(
     return { ok: false, reason: e instanceof Error ? e.message : String(e) }
   }
 }
+
+/** 兼容旧调用/测试名 */
+export const deleteDeepSeekChat = deleteWebChat

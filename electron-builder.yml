@@ -21,6 +21,11 @@ files:
 
 asar: true
 
+# 项目模板是运行时资源（resources/templates），不能被 asar/files 白名单漏掉
+extraResources:
+  - from: templates
+    to: templates
+
 win:
   target:
     - nsis
@@ -45,6 +50,12 @@ mac:
   category: public.app-category.developer-tools
   icon: build/icon.png
   artifactName: ${productName}-${version}.${ext}
+
+linux:
+  target:
+    - dir
+  category: Development
+  icon: build/icon.png
 
 electronDownload:
   mirror: https://npmmirror.com/mirrors/electron/

@@ -63,6 +63,8 @@ let updateState: UpdateState = { phase: 'idle', portable: isPortable() }
 let updateEmitter: ((state: UpdateState) => void) | null = null
 let updaterWired = false
 let autoCheckTimer: NodeJS.Timeout | null = null
+/** Docker 镜像版本固定，应用内自动更新不可用；通过重建镜像升级 */
+const UPDATES_DISABLED = process.env.LIDOW_DISABLE_UPDATE === '1'
 
 function publishUpdate(patch: Partial<UpdateState>): UpdateState {
   updateState = { ...updateState, ...patch, portable: isPortable() }
@@ -120,6 +122,10 @@ async function wireUpdater(autoUpdater: AppUpdater): Promise<void> {
 export async function checkForUpdate(
   manual = false
 ): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
+  if (UPDATES_DISABLED) {
+    publishUpdate({ phase: 'idle', manual, message: 'Docker 部署请更新镜像' })
+    return { hasUpdate: false, portable: isPortable() }
+  }
   if (!app.isPackaged) {
     publishUpdate({ phase: 'idle', manual, message: '开发环境不检查更新' })
     return { hasUpdate: false, portable: isPortable() }
@@ -155,6 +161,7 @@ export async function checkForUpdate(
  * - 便携版 / 开发环境：打开 Releases 页（便携版无法原地替换自身）
  */
 export async function downloadAndInstallUpdate(): Promise<{ ok: boolean; message: string }> {
+  if (UPDATES_DISABLED) return { ok: false, message: 'Docker 部署请更新镜像' }
   if (isPortable()) {
     const { shell } = await import('electron')
     await shell.openExternal(RELEASES_URL)
@@ -177,7 +184,7 @@ export async function downloadAndInstallUpdate(): Promise<{ ok: boolean; message
 
 /** 启动后延迟自动检查一次（打包版；不打断首屏加载） */
 export function scheduleAutoUpdateCheck(delayMs = 8000): void {
-  if (!app.isPackaged || autoCheckTimer) return
+  if (UPDATES_DISABLED || !app.isPackaged || autoCheckTimer) return
   autoCheckTimer = setTimeout(() => {
     autoCheckTimer = null
     void checkForUpdate(false)

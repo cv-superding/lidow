@@ -463,6 +463,118 @@ let lastNavUrl = ''
 /** 平台对话标题：网页版会按内容自动命名，Lidow 侧栏需要同步 */
 let lastPageTitle = ''
 
+// ---------- 网页侧删除会话 → 本地会话同步 ----------
+
+/** 已知的本地会话网页地址（主进程下发） */
+let watchedChatUrls = new Set<string>()
+let chatDeleteWatchToken = 0
+
+function chatUrlKey(raw: string): string {
+  try {
+    const u = new URL(raw)
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return ''
+  }
+}
+
+function collectChatLinks(): Set<string> {
+  const out = new Set<string>()
+  for (const a of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    try {
+      // 侧栏折叠/仅隐藏但未移除的行也按“已消失”处理
+      if (!visible(a)) continue
+      const u = new URL(a.href, location.href)
+      if (u.origin !== location.origin) continue
+      const key = chatUrlKey(u.href)
+      if (key) out.add(key)
+    } catch {
+      /* ignore */
+    }
+  }
+  return out
+}
+
+function setWatchedChats(urls: string[] | undefined): void {
+  const next = new Set<string>()
+  for (const raw of urls ?? []) {
+    const key = chatUrlKey(raw)
+    if (key) next.add(key)
+  }
+  watchedChatUrls = next
+}
+
+/**
+ * 用户删网页对话时，侧栏里对应的链接会消失。
+ * 只在明确点了「删除/确认」后比对该会话地址，且要求消失链接恰好一个，
+ * 避免侧栏折叠、搜索过滤、虚拟滚动造成误删本地会话。
+ */
+function armChatDeleteWatch(): void {
+  const watching = [...watchedChatUrls]
+  if (watching.length === 0) return
+  const before = collectChatLinks()
+  const watchedBefore = watching.filter((u) => before.has(u))
+  if (watchedBefore.length === 0) return
+  const token = ++chatDeleteWatchToken
+  let checks = 0
+  const check = (): void => {
+    if (token !== chatDeleteWatchToken) return
+    checks++
+    const now = collectChatLinks()
+    const missing = watchedBefore.filter((u) => !now.has(u))
+    if (missing.length === 1) {
+      // 二次确认，避开 SPA 重渲染导致的短暂消失
+      if (checks < 2) {
+        window.setTimeout(check, 700)
+        return
+      }
+      const url = missing[0]!
+      watchedChatUrls.delete(url)
+      send({ type: 'chat-deleted', url })
+      return
+    }
+    if (checks < 3) window.setTimeout(check, 900)
+  }
+  window.setTimeout(check, 800)
+}
+
+function watchChatDeletion(): void {
+  document.addEventListener(
+    'click',
+    (ev) => {
+      try {
+        if (watchedChatUrls.size === 0) return
+        if ((ev as MouseEvent & { __lidowInternal?: boolean }).__lidowInternal) return
+        // 主进程自动删除时页面里也会点「删除」，不要反过来再同步一次
+        if (document.documentElement.hasAttribute('data-lidow-chat-delete-busy')) return
+        let el = ev.target as HTMLElement | null
+        for (let i = 0; i < 5 && el; i++) {
+          if (el.closest?.('#lidow-first-run, #lidow-first-run-banner')) return
+          const labels = [el.getAttribute?.('aria-label') ?? '', el.textContent ?? '']
+            .map((s) => s.replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+          if (
+            labels.some(
+              (label) =>
+                label.length <= 24 &&
+                /^(删除|移除|确认删除|确定删除|确认|确定|delete|remove|ok|okay|confirm)(\s*(对话|会话|chat|conversation))?$/i.test(
+                  label
+                )
+            )
+          ) {
+            armChatDeleteWatch()
+            return
+          }
+          el = el.parentElement
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    true
+  )
+}
+
 /**
  * 立即求值一次登录态（不等 4 秒轮询）。
  *
@@ -1207,6 +1319,9 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       // 只有「刚完成初始化」才需要重新评估，那由主进程在选完目录后单独通知。
       renderFirstRun()
       break
+    case 'watch-chats':
+      setWatchedChats(cmd.urls)
+      break
     case 'send':
       void doSend(cmd.text ?? '')
       break
@@ -1260,6 +1375,7 @@ window.addEventListener('popstate', () => renderFirstRun())
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) renderFirstRun()
 })
+watchChatDeletion()
 
 // 注意：不在这里主动渲染。无项目时由主进程「按 webview」下发 set-project，
 // 避免有项目时先闪一下引导再被 configure 收起。

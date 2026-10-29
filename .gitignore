@@ -2,6 +2,7 @@ node_modules/
 out/
 dist/
 dist-local*/
+dist-linux*/
 dist-e2e/
 coverage/
 *.local
@@ -11,6 +12,11 @@ Thumbs.db
 .vscode/*
 !.vscode/extensions.json
 *.tsbuildinfo
+
+# Docker 部署本地数据
+.env
+workspace/
+docker-data/
 
 .zcode/
 reference/

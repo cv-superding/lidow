@@ -516,6 +516,12 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     if (el) el.scrollTop = el.scrollHeight
   }, [turns.length, streamingText])
 
+  const preferredProviderId = (): string | undefined => {
+    const st = useStore.getState()
+    const tab = st.tabs.find((t) => t.id === st.activeTabId)
+    return tab?.providerId ?? st.providers[0]?.id
+  }
+
   const submit = async (): Promise<void> => {
     const text = input.trim()
     if (!text) return
@@ -528,12 +534,12 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     setSlashOpen(false)
     const session = activeSession
     if (text === '/new') {
-      const providerId = session?.providerId ?? useStore.getState().providers[0]?.id
+      const providerId = session?.providerId ?? preferredProviderId()
       if (providerId) await useStore.getState().createSession(providerId)
       return
     }
     if (!session) {
-      const providerId = useStore.getState().providers[0]?.id
+      const providerId = preferredProviderId()
       if (!providerId) {
         useStore.getState().notice('请先在「工作台」选择一个 AI 平台', 'warn')
         setInput(text)

@@ -60,6 +60,10 @@ export class OverlayManager {
   onOpenExternal?: (webContentsId: number, url?: string) => void
   /** 页面导航（会话已绑定时）——建立会话 ↔ 平台对话 URL 映射 */
   onNav?: (sessionId: string, url: string, title?: string) => void
+  /** 网页侧用户删除了对话（按 webContentsId 上报 URL） */
+  onChatDeleted?: (webContentsId: number, url: string) => void
+  /** overlay 就绪（无论是否已绑定会话）：用于下发网页会话删除监听列表 */
+  onAnyReady?: (webContentsId: number) => void
 
   /** 网页开关状态（深度思考 / 智能搜索）上报 */
   onToggleState?: (think: boolean, search: boolean) => void
@@ -350,6 +354,10 @@ export class OverlayManager {
         if (sid) this.onNav?.(sid, payload.url, payload.title)
         break
       }
+      case 'chat-deleted': {
+        this.onChatDeleted?.(sender.id, payload.url)
+        break
+      }
       case 'login-state': {
         // 登录成功的那一刻 = 该弹初始化引导的时候。
         // 这里把「有没有工作目录」重新推一次：overlay 会据此在页面里显示引导，
@@ -358,6 +366,7 @@ export class OverlayManager {
         break
       }
       case 'ready': {
+        this.onAnyReady?.(sender.id)
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && this.onReady) this.onReady(sessionId)
         break

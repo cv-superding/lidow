@@ -1986,7 +1986,7 @@ export function SettingsView(): React.JSX.Element {
           <div className="mt-4 border-t pt-3" style={{ borderColor: 'var(--border-soft)' }}>
             <ToggleRow
               label="鲸鱼娘桌宠"
-              desc="来自 dsh-pet 的桌宠：待机呼吸、AI 工作时思考、点击互动，可拖动位置"
+              desc="待机呼吸、工作状态联动、点击回应与气泡；右键可投喂、调大小、复位或隐藏，支持拖动"
               checked={s.desktopPet}
               onChange={(v) => patch({ desktopPet: v })}
             />

@@ -6,9 +6,10 @@ import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
 import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
-import { deleteDeepSeekChat } from '@main/bridge/webChatDelete'
+import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { Logger } from '@main/infra/log'
+import { isAbsoluteProjectPath } from '@shared/path'
 import type { DomAdapter, McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
 
@@ -48,7 +49,10 @@ export function registerHandlers(
   R('pickDirectory', () => showDirectoryPicker(parentWindowFor()))
   R('openProject', (root: string) => {
     const r = String(root ?? '')
-    if (!r || r === 'undefined' || !r.match(/^[A-Za-z]:[/\\]/)) throw new Error('无效的项目路径: ' + r)
+    // POSIX（Docker/macOS）路径是 /xxx，不能只认 Windows 盘符
+    if (!isAbsoluteProjectPath(r, process.platform === 'win32' ? 'win32' : 'posix')) {
+      throw new Error('无效的项目路径: ' + r)
+    }
     return ctx.openProject(r)
   })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
@@ -158,23 +162,29 @@ export function registerHandlers(
     const sid = String(sessionId)
     const session = ctx.sessionOf(sid)
     const project = findProjectOfSession(ctx, sid)
-    const wcId = ctx.overlay.wcIdOfSession(sid)
+    const boundWcId = ctx.overlay.wcIdOfSession(sid)
+    // 当前会话没绑定网页时，用同平台/同账号的网页执行删除；
+    // 否则用户切到别的会话后，删除旧会话就永远删不到网页端。
+    const wcId = boundWcId ?? (session ? ctx.webContentsIdForProvider(session.providerId, session.accountId) : undefined)
     // 先停掉正在跑的任务：否则循环后续 appendTurn 会写进已删除的会话
     ctx.loop.stop(sid, 'all')
 
     let webDeleted: boolean | undefined
     let message = '本地会话已删除（网页端历史保留，页面已切到新对话）'
-    if (deleteWebChat) {
-      if (!session?.providerUrl || wcId === undefined) {
+    // 默认双向删除；显式传 false 才只删本地（兼容旧调用）
+    if (deleteWebChat !== false) {
+      if (!session?.providerUrl) {
         webDeleted = false
-        message = '本地会话已删除；网页端未连接或没有可定位的对话地址'
-      } else if (session.providerId !== 'deepseek') {
+        message = '本地会话已删除；该会话还没有对应的网页端对话'
+      } else if (wcId === undefined) {
         webDeleted = false
-        message = '本地会话已删除；当前平台暂不支持从 Lidow 删除网页端对话'
+        message = '本地会话已删除；网页未连接，网页端对话需要手动删除'
       } else {
         const wc = webContents.fromId(wcId)
+        // 自动删除也会点网页里的「删除」，标记后忽略 overlay 的反向回调
+        ctx.markWebChatDeleteInFlight(session.providerUrl)
         const res = wc
-          ? await deleteDeepSeekChat(wc, session.providerUrl, session.title)
+          ? await removeWebChat(wc, session.providerUrl, session.title)
           : { ok: false, reason: '网页已关闭' }
         webDeleted = res.ok
         message = res.ok
@@ -188,6 +198,8 @@ export function registerHandlers(
     if (project) {
       const store = ctx.sessionStoreOf(project)
       store.delete(sid)
+      // 广播给所有窗口：即使删除动作来自 IPC/其它窗口，纯净模式列表也要同步消失
+      ctx.emit({ type: 'session-deleted', sessionId: sid, title: session?.title ?? '' })
       // 已没有“带轮次”的会话 → 项目回到未初始化，网页需要重新出现初始化入口
       const stillInitialized = store.list().some((m) => {
         const s = store.get(m.id)
@@ -197,9 +209,10 @@ export function registerHandlers(
     }
     // 离开被删除的对话：否则网页仍停留在已删除会话，甚至继续接管后续消息。
     // 延迟一点，让 reset-first-run 的 localStorage 清理先落盘（页面随后可能 SPA 跳转）。
-    if (wcId !== undefined) {
-      setTimeout(() => ctx.overlay.sendCmdToWebContents(wcId, { kind: 'new-chat' }), 200)
+    if (boundWcId !== undefined) {
+      setTimeout(() => ctx.overlay.sendCmdToWebContents(boundWcId, { kind: 'new-chat' }), 200)
     }
+    if (wcId !== undefined) ctx.syncChatWatchToWebview(wcId)
     return { webDeleted, message }
   })
   R('renameSession', (sessionId: string, title: string) => {
@@ -537,6 +550,7 @@ export function registerHandlers(
     const root = project?.root ?? null
     // 没有绑定会话 = 新开的网页/新窗口：即使项目已有历史，也给一个初始化入口，
     // 否则用户无法把新对话接到当前项目（只能看一个没有 Lidow 引导的空白页）。
+    ctx.syncChatWatchToWebview(id)
     return ctx.overlay.sendCmdToWebContents(id, {
       kind: 'set-project',
       projectRoot: root,
