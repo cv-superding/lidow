@@ -335,13 +335,39 @@ export const useStore = create<LidowState>((set, get) => ({
     // 进入纯净模式时回到对话主区；同时关掉初始化后的模式建议弹窗
     set({ pureMode: on, pureView: on ? 'home' : get().pureView, pureSuggestion: false })
     void api.setPureMode(on)
-    // 净模式进入时确保活动会话有后台 webview 承载（对话驱动依赖页面）
-    if (on) {
-      const s = get()
-      const session = s.activeSession ?? null
-      const providerId = session?.providerId ?? s.providers[0]?.id
-      if (providerId) void s.openProviderTab(providerId, session?.id)
-    }
+    // 净模式进入时以「网页实际绑定的会话」为准：activeSession 可能落后于
+    // 标签（自动续接/换绑后），直接用旧会话会打开错误的对话窗口。
+    if (!on) return
+    const s = get()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    const providerId = tab?.providerId ?? s.activeSession?.providerId ?? s.providers[0]?.id
+    if (!providerId) return
+    // 标签没有绑定会话时，只能复用同平台的 activeSession，避免把 A 平台会话绑到 B 平台页面
+    const fallbackId = tab
+      ? s.activeSession?.providerId === providerId
+        ? s.activeSession.id
+        : ''
+      : s.activeSession?.id ?? ''
+    const sessionId = tab?.sessionId || fallbackId
+    // 确保有后台 webview 承载（webview 是对话驱动通道）
+    void s.openProviderTab(providerId, sessionId, tab?.accountId ?? s.activeSession?.accountId)
+    if (!sessionId) return
+    // 拉全量 turns：store 里的会话可能只有元信息或落后于落盘内容
+    void api
+      .getSession(sessionId)
+      .then((sess) => {
+        if (!sess || !get().pureMode) return
+        const cur = get().tabs.find((t) => t.id === get().activeTabId)
+        if (cur?.sessionId && cur.sessionId !== sessionId) return // 期间又切了标签
+        set({ activeSession: sess })
+        void api
+          .getActivePlan(sessionId)
+          .then((plan) => {
+            if (get().activeSession?.id === sessionId) set({ plan })
+          })
+          .catch(() => undefined)
+      })
+      .catch(() => undefined)
   },
 
   applyTheme(s) {
@@ -707,10 +733,24 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'update-state':
         set({ updateState: e.state })
         break
-      case 'ui-pure-suggestion':
+      case 'ui-pure-suggestion': {
         // 已在纯净模式里就不用再问一次
-        if (!get().pureMode) set({ pureSuggestion: true })
+        if (get().pureMode) break
+        // 初始化是主进程直接建会话并绑定网页的，渲染层标签可能还不知道这个 session；
+        // 不补上 sessionId，进纯净模式就会打开一个空对话（用户反馈）。
+        const sid = e.sessionId
+        set((st) => ({
+          pureSuggestion: true,
+          tabs: st.tabs.map((t) => (t.id === st.activeTabId ? { ...t, sessionId: sid } : t))
+        }))
+        void api
+          .getSession(sid)
+          .then((sess) => {
+            if (sess && !get().pureMode) set({ activeSession: sess })
+          })
+          .catch(() => undefined)
         break
+      }
       case 'session-updated':
         // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时
         // 不能把用户眼前正在滚动的流式输出打没

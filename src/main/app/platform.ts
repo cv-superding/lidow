@@ -3,7 +3,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { Logger } from '@main/infra/log'
 import type { UpdateState } from '@shared/ipc'
-import type { AppUpdater } from 'electron-updater'
+// 必须用静态 import：打包后 `await import('electron-updater')` 的命名空间里
+// autoUpdater 是 defineProperty getter，动态导入拿不到（实测 v0.4.0：
+// Cannot set properties of undefined (setting 'autoDownload')）。
+import { autoUpdater, type AppUpdater } from 'electron-updater'
 
 /**
  * 全局热键：设置里可自定义（默认 Alt+Shift+L 唤起、Alt+Shift+N 新会话、Alt+Shift+S 中止全部）。
@@ -127,7 +130,6 @@ export async function checkForUpdate(
   }
   publishUpdate({ phase: 'checking', manual, message: '' })
   try {
-    const { autoUpdater } = await import('electron-updater')
     await wireUpdater(autoUpdater)
     await autoUpdater.checkForUpdates()
     // 事件监听已把 phase 写好；这里只按最终状态回包。
@@ -161,7 +163,6 @@ export async function downloadAndInstallUpdate(): Promise<{ ok: boolean; message
   if (!app.isPackaged) return { ok: false, message: '开发环境不支持自动更新' }
   if (updateState.phase === 'downloading') return { ok: true, message: '更新正在下载中…' }
   try {
-    const { autoUpdater } = await import('electron-updater')
     await wireUpdater(autoUpdater)
     publishUpdate({ phase: 'downloading', percent: 0, message: '' })
     await autoUpdater.downloadUpdate()
