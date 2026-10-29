@@ -401,7 +401,7 @@ export type OverlayEvent =
   | { type: 'stream-chunk'; text: string }
   | { type: 'stream-end'; text: string }
   | { type: 'send-result'; ok: boolean; error?: string }
-  | { type: 'float-menu-action'; action: string }
+  | { type: 'float-menu-action'; action: string; url?: string }
   /** 网页开关状态（深度思考 / 智能搜索）——chip 高亮用 */
   | { type: 'toggle-state'; think: boolean; search: boolean }
   /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */

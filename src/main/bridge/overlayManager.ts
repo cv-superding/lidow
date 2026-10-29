@@ -56,6 +56,8 @@ export class OverlayManager {
   onConfirmProject?: (webContentsId: number) => void
   /** 网页内「延续上个对话」：压缩旧会话并把摘要发进新对话 */
   onContinueProject?: (webContentsId: number) => void
+  /** 网页内请求把当前/指定 URL 交给系统浏览器（Google 登录被阻止时使用） */
+  onOpenExternal?: (webContentsId: number, url?: string) => void
   /** 页面导航（会话已绑定时）——建立会话 ↔ 平台对话 URL 映射 */
   onNav?: (sessionId: string, url: string, title?: string) => void
 
@@ -327,6 +329,10 @@ export class OverlayManager {
         }
         if (payload.action === 'continue-project') {
           this.onContinueProject?.(sender.id)
+          break
+        }
+        if (payload.action === 'open-external') {
+          this.onOpenExternal?.(sender.id, payload.url)
           break
         }
         const sessionId = this.sessionOfWebContents(sender.id)

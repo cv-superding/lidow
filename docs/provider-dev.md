@@ -5,7 +5,7 @@ Provider = 一个 AI 网页平台 + DOM 适配器。Lidow 不调用平台 API（
 
 ## 内置 Provider
 
-DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / Kimi / 智谱清言。
+DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心一言 / Kimi / 智谱清言。
 选择器取自 cuckoo-code 实测值，平台改版后可在设置中编辑。
 
 ## 自定义 Provider

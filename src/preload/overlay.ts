@@ -520,6 +520,7 @@ setInterval(() => {
     evaluateLoginNow()
     renderFirstRun()
   }
+  renderGoogleLoginNotice()
   if (!adapter) {
     exposeState({
       loggedIn,
@@ -955,6 +956,87 @@ function renderFirstRunBanner(): void {
   })
 
   document.body.appendChild(bar)
+}
+
+/**
+ * Google 明确禁止在嵌入式 webview 里完成 OAuth 登录（disallowed_useragent）。
+ * 识别到它的报错页时给用户可执行的出口：返回用邮箱登录，或在系统浏览器打开。
+ */
+function renderGoogleLoginNotice(): void {
+  const id = 'lidow-google-block'
+  const existing = document.getElementById(id)
+  const onGoogle = /(^|\.)accounts\.google\./i.test(location.hostname)
+  const pageText = (document.body?.innerText ?? '').slice(0, 5000)
+  const blocked =
+    onGoogle && /此浏览器或应用可能不安全|browser or app may not be secure|无法登录|disallowed_useragent/i.test(pageText)
+  if (!blocked) {
+    existing?.remove()
+    return
+  }
+  if (existing) return
+
+  const style = document.createElement('style')
+  style.id = 'lidow-google-block-style'
+  style.textContent = `
+    #lidow-google-block{position:fixed;top:14px;left:50%;transform:translateX(-50%);
+      z-index:2147483647;width:min(560px,calc(100vw - 32px));box-sizing:border-box;
+      display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;
+      background:rgba(255,255,255,.98);border:1px solid rgba(16,24,40,.12);
+      box-shadow:0 12px 36px rgba(16,24,40,.2);font-family:-apple-system,BlinkMacSystemFont,
+      "Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:#16181d;}
+    #lidow-google-block .gb-badge{width:26px;height:26px;border-radius:8px;flex-shrink:0;
+      display:flex;align-items:center;justify-content:center;background:#fff4e6;color:#b26a00;
+      font-size:14px;font-weight:700;}
+    #lidow-google-block .gb-body{min-width:0;flex:1;}
+    #lidow-google-block .gb-title{font-size:13px;font-weight:600;}
+    #lidow-google-block .gb-text{margin-top:3px;font-size:12px;line-height:1.55;color:#545a67;}
+    #lidow-google-block .gb-actions{display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;}
+    #lidow-google-block .gb-btn{border:none;border-radius:8px;padding:6px 12px;font-size:11.5px;
+      font-weight:600;cursor:pointer;transition:all .18s;}
+    #lidow-google-block .gb-btn.primary{background:#4d6bfe;color:#fff;}
+    #lidow-google-block .gb-btn.primary:hover{background:#3b5bdb;}
+    #lidow-google-block .gb-btn.ghost{background:transparent;color:#545a67;border:1px solid rgba(16,24,40,.16);}
+    #lidow-google-block .gb-btn.ghost:hover{background:rgba(16,24,40,.04);}
+    #lidow-google-block .gb-close{border:none;background:transparent;color:#8a8f9b;cursor:pointer;
+      font-size:15px;line-height:1;padding:2px 4px;border-radius:6px;}
+    #lidow-google-block .gb-close:hover{background:rgba(16,24,40,.06);color:#2f3640;}
+    @media (prefers-color-scheme: dark){
+      #lidow-google-block{background:rgba(26,26,26,.98);border-color:rgba(255,255,255,.1);color:#e4e6eb;}
+      #lidow-google-block .gb-text{color:#a8adba;}
+      #lidow-google-block .gb-badge{background:#2a2118;color:#e0b070;}
+      #lidow-google-block .gb-btn.ghost{color:#a8adba;border-color:rgba(255,255,255,.16);}
+      #lidow-google-block .gb-close:hover{background:rgba(255,255,255,.08);color:#e4e6eb;}
+    }
+  `
+  if (!document.getElementById('lidow-google-block-style')) document.head.appendChild(style)
+
+  const box = document.createElement('div')
+  box.id = id
+  box.innerHTML =
+    '<div class="gb-badge">!</div>' +
+    '<div class="gb-body">' +
+    '<div class="gb-title">Google 登录被阻止</div>' +
+    '<div class="gb-text">Google 不允许在应用内浏览器完成登录。请返回后改用邮箱/密码登录，或在系统浏览器中打开登录页。</div>' +
+    '<div class="gb-actions">' +
+    '<button class="gb-btn ghost" data-act="back">返回上一页</button>' +
+    '<button class="gb-btn primary" data-act="external">在系统浏览器打开</button>' +
+    '</div>' +
+    '</div>' +
+    '<button class="gb-close" data-act="close" title="关闭">✕</button>'
+  box.querySelector<HTMLButtonElement>('[data-act="back"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    if (history.length > 1) history.back()
+    else location.reload()
+  })
+  box.querySelector<HTMLButtonElement>('[data-act="external"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    send({ type: 'float-menu-action', action: 'open-external', url: location.href })
+  })
+  box.querySelector<HTMLButtonElement>('[data-act="close"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    box.remove()
+  })
+  document.body.appendChild(box)
 }
 
 /**

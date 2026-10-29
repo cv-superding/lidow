@@ -112,6 +112,35 @@ const CHATGPT: ProviderDescriptor = {
   }
 }
 
+const GEMINI: ProviderDescriptor = {
+  id: 'gemini',
+  name: 'Gemini',
+  home: 'https://gemini.google.com/app',
+  builtIn: true,
+  enabled: true,
+  accounts: [],
+  adapter: {
+    input: [
+      'rich-textarea .ql-editor[contenteditable="true"]',
+      'rich-textarea [contenteditable="true"]',
+      'div.ql-editor[contenteditable="true"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea'
+    ],
+    send: [
+      'button[aria-label*="Send message"]',
+      'button[aria-label*="发送"]',
+      'button[aria-label*="Submit"]',
+      'button.send-button'
+    ],
+    messages: ['chat-window', 'infinite-scroller', 'main'],
+    bubble: ['model-response', 'user-query', 'message-content', '[class*="markdown"]'],
+    streamingFlag: ['button[aria-label*="Stop"]', 'button[aria-label*="停止"]', 'mat-icon[fonticon="stop"]'],
+    newChat: ['button[aria-label*="New chat"]', 'button[aria-label*="新对话"]', 'a[href="/app"]'],
+    loginFlag: ['img[alt*="个人资料"]', 'a[href*="accounts.google.com"]', 'button[aria-label*="Google Account"]']
+  }
+}
+
 const DOUBAO: ProviderDescriptor = {
   id: 'doubao',
   name: '豆包',
@@ -209,7 +238,7 @@ const GLM: ProviderDescriptor = {
 }
 
 /** 内置平台表：无项目时也要能打开 AI 页面（首次引导注入在里面） */
-export const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, DOUBAO, QWEN, ERNIE, KIMI, GLM]
+export const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, GEMINI, DOUBAO, QWEN, ERNIE, KIMI, GLM]
 
 interface ProviderStoreData {
   providers: ProviderDescriptor[]
@@ -226,7 +255,18 @@ export class ProviderRegistry {
   }
 
   list(): ProviderDescriptor[] {
-    return this.store.get().providers
+    const current = this.store.get().providers
+    const missing = BUILT_IN_PROVIDERS.some((b) => !current.some((p) => p.id === b.id))
+    if (!missing) return current
+    // 旧项目 providers.json 没有新增的内置平台（如 Gemini）：合并缺失项并落盘，
+    // 同时保持内置平台的展示顺序；已有账号/自定义适配器不覆盖。
+    const byId = new Map(current.map((p) => [p.id, p]))
+    const merged = [
+      ...BUILT_IN_PROVIDERS.map((b) => byId.get(b.id) ?? structuredClone(b)),
+      ...current.filter((p) => !BUILT_IN_PROVIDERS.some((b) => b.id === p.id))
+    ]
+    this.store.set({ providers: merged })
+    return merged
   }
 
   get(id: string): ProviderDescriptor | undefined {

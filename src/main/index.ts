@@ -28,6 +28,9 @@ function registerHandler(name: string, fn: IpcHandler): void {
  * （表现为"刚登录过又要重新登录"）。这里在 app ready 前锁定同名目录。
  */
 app.setPath('userData', join(app.getPath('appData'), 'Lidow'))
+// 不暴露 Chromium 的 Client Hints 品牌列表（其中包含 Electron），
+// 否则 Google 登录会按“嵌入式应用”直接拒绝。
+app.commandLine.appendSwitch('disable-features', 'UserAgentClientHint')
 // Windows 任务栏分组/通知归属（与 electron-builder appId 一致）
 if (process.platform === 'win32') app.setAppUserModelId('ai.lidow.app')
 

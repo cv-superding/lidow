@@ -16,7 +16,7 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-128%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-129%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 
@@ -28,7 +28,7 @@
 
 ## 它是什么
 
-Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / Kimi / 智谱清言的**网页版**装进桌面窗口，
+Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心一言 / Kimi / 智谱清言的**网页版**装进桌面窗口，
 注入一层轻量 overlay：AI 回复中的工具调用代码块（```lidow）被解析后在本地沙箱执行，
 结果自动回传给 AI——形成「思考 → 行动 → 观察」的真 Agent 循环。
 

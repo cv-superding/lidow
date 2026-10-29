@@ -1,9 +1,8 @@
-import { app, BrowserWindow, Notification, webContents } from 'electron'
+import { app, BrowserWindow, Notification, shell, webContents } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { readFileSync } from 'node:fs'
-import os from 'node:os'
 import { nanoid } from 'nanoid'
 import { JsonStore } from '@main/infra/store'
 import { Logger } from '@main/infra/log'
@@ -351,6 +350,10 @@ export class AppContext {
     // 「延续上个对话」：压缩当前会话 → 摘要作为新对话的第一条消息。
     // 等于同一项目的上下文接力：新窗口从上次的进度接着干。
     this.overlay.onContinueProject = (webContentsId) => void this.continueProjectInNewChat(webContentsId)
+    this.overlay.onOpenExternal = (webContentsId, url) => {
+      const target = url || webContents.fromId(webContentsId)?.getURL()
+      if (target) void shell.openExternal(target)
+    }
     // 记录会话 ↔ 平台对话 URL：换绑 webview 时才能导航回正确的对话。
     // 没有这个映射，子代理/自动续接切回父会话后页面停在别人的对话里。
     this.overlay.onNav = (sessionId, url, title) => {
@@ -421,9 +424,16 @@ export class AppContext {
       if (wc.getType() === 'webview') {
         try {
           const chrome = process.versions.chrome ?? '126'
-          wc.setUserAgent(
-            `Mozilla/5.0 (${os.platform() === 'win32' ? 'Windows NT 10.0; Win64; x64' : os.platform()}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome} Safari/537.36`
-          )
+          const platform =
+            process.platform === 'win32'
+              ? 'Windows NT 10.0; Win64; x64'
+              : process.platform === 'darwin'
+                ? 'Macintosh; Intel Mac OS X 10_15_7'
+                : 'X11; Linux x86_64'
+          const ua = `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome} Safari/537.36`
+          wc.setUserAgent(ua)
+          // 同一分区的子 frame/弹窗也要用 Chrome UA，否则 Google 会按 Electron UA 拒绝登录
+          wc.session.setUserAgent(ua, 'zh-CN,zh;q=0.9,en;q=0.8')
         } catch {
           /* 忽略 */
         }
