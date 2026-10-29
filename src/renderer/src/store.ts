@@ -549,12 +549,17 @@ export const useStore = create<LidowState>((set, get) => ({
     // 优先用调用方给出的账号；否则沿用当前平台标签的账号（多账号下新建任务
     // 不应悄悄跳回默认账号的页面）。
     const activeTab = get().tabs.find((t) => t.id === get().activeTabId)
+    const provider = get().providers.find((p) => p.id === providerId)
     let account = accountId
-    if (account === undefined && activeTab && activeTab.providerId === providerId) {
-      // 标签用的是隐式默认分区时，若已存在账号记录，'' 会被主进程解析成 accounts[0]，
-      // 必须显式传 __default__，否则会话在下次打开时会跳到另一个账号。
-      const hasAccounts = (get().providers.find((p) => p.id === providerId)?.accounts.length ?? 0) > 0
-      account = activeTab.accountId || (hasAccounts ? DEFAULT_ACCOUNT_ID : '')
+    if (account === undefined) {
+      if (activeTab && activeTab.providerId === providerId) {
+        // 沿用当前标签的账号；隐式默认分区必须存成 __default__，否则下次打开
+        // 会因为 accounts[0] 已变成新账号而跳到未登录分区。
+        account = activeTab.accountId || DEFAULT_ACCOUNT_ID
+      } else {
+        // 没有当前标签：用设置里选中的账号，否则默认分区（不是 accounts[0]）
+        account = provider?.activeAccountId ?? DEFAULT_ACCOUNT_ID
+      }
     }
     const s = await api.createSession(project.id, providerId, undefined, account)
     // 关键：新建后必须把新会话设为 activeSession，
@@ -602,7 +607,8 @@ export const useStore = create<LidowState>((set, get) => ({
     // 否则纯净模式直接发送会报「网页未连接」（loop 找不到 channel）。
     if (s) {
       try {
-        await get().openProviderTab(s.providerId, s.id, s.accountId)
+        // 旧会话没有 accountId 时按默认分区打开，不能落到 accounts[0] 的新账号
+        await get().openProviderTab(s.providerId, s.id, s.accountId ?? DEFAULT_ACCOUNT_ID)
       } catch {
         /* 平台未配置时忽略，发送时还会再试 */
       }
@@ -616,8 +622,10 @@ export const useStore = create<LidowState>((set, get) => ({
     if (!provider) return
     // 未指定账号 = 沿用该平台的当前账号；指定账号则以调用方为准（含隐式默认账号）。
     // '' 被显式传入时表示「默认分区」，用哨兵值避免主进程回退到 accounts[0]。
+    // 未指定账号时也不能回退到 accounts[0]：新加的账号通常是未登录分区，
+    // 会让老会话/默认登录态被切到需要重新登录的账号上。
     const requested = accountId === '' ? DEFAULT_ACCOUNT_ID : accountId
-    const target = requested ?? provider.activeAccountId ?? provider.accounts[0]?.id ?? ''
+    const target = requested ?? provider.activeAccountId ?? DEFAULT_ACCOUNT_ID
     const targetKey = accountKeyOf(target)
     // 同一平台同一账号只保留一个标签：再次选择账号应该是切回已有页面，
     // 而不是用同样的 partition 再造一个 webview（看起来像重新登录）。
@@ -766,9 +774,13 @@ export const useStore = create<LidowState>((set, get) => ({
     if (
       !tab ||
       tab.providerId !== activeSession.providerId ||
-      (activeSession.accountId && accountKeyOf(tab.accountId) !== accountKeyOf(activeSession.accountId))
+      accountKeyOf(tab.accountId) !== accountKeyOf(activeSession.accountId ?? DEFAULT_ACCOUNT_ID)
     ) {
-      await get().openProviderTab(activeSession.providerId, activeSession.id, activeSession.accountId)
+      await get().openProviderTab(
+        activeSession.providerId,
+        activeSession.id,
+        activeSession.accountId ?? DEFAULT_ACCOUNT_ID
+      )
       ;({ activeTabId, tabs } = get())
       tab = tabs.find((t) => t.id === activeTabId)
     }

@@ -151,9 +151,8 @@ function AddTabButton(): React.JSX.Element {
   // 有账号记录时仍保留它：否则先登录后加账号的用户会看不到自己原来的登录态。
   const accountRows = picked
     ? [
-        ...(picked.accounts.length === 0 || hasTab(picked.id, DEFAULT_ACCOUNT_ID)
-          ? [{ id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态' }]
-          : []),
+        // 隐式默认账号始终保留：加了新账号后，用户仍需要能回到原来的登录态
+        { id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态' },
         ...picked.accounts.map((a) => ({
           id: a.id,
           label: a.label,

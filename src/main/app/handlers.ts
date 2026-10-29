@@ -92,8 +92,16 @@ export function registerHandlers(
     return ctx.providerRegistryOf(String(projectId)).get(String(providerId))
   })
   R('removeAccount', (projectId: string, providerId: string, accountId: string) => {
-    ctx.providerRegistryOf(String(projectId)).removeAccount(String(providerId), String(accountId))
-    return ctx.providerRegistryOf(String(projectId)).get(String(providerId))
+    const pid = String(projectId)
+    const acc = String(accountId)
+    const reg = ctx.providerRegistryOf(pid)
+    // 该账号下的会话回落到默认分区，避免之后打开时指向一个已被删除的账号
+    const sessions = ctx.sessionStoreOf(pid)
+    for (const m of sessions.list()) {
+      if (m.accountId === acc) sessions.update(m.id, (s) => ({ ...s, accountId: '__default__' }))
+    }
+    reg.removeAccount(String(providerId), acc)
+    return reg.get(String(providerId))
   })
   R('updateProviderAdapter', (projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']) =>
     ctx.providerRegistryOf(String(projectId)).update(String(providerId), { adapter })

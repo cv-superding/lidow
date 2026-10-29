@@ -1841,6 +1841,28 @@ export function SettingsView(): React.JSX.Element {
   const refreshProviders = (): void => {
     if (project) void api.listProviders(project.id).then((p) => useStore.setState({ providers: p }))
   }
+  const removeAccount = (providerId: string, accountId: string, label: string): void => {
+    if (!project) return
+    if (!window.confirm(`移除账号「${label || '未命名'}」？登录态分区会保留，只从列表中移除。`)) return
+    void api.removeAccount(project.id, providerId, accountId).then(async () => {
+      const st = useStore.getState()
+      const closing = st.tabs.filter((t) => t.providerId === providerId && t.accountId === accountId)
+      const activeClosed = closing.some((t) => t.id === st.activeTabId)
+      for (const t of closing) st.closeTab(t.id)
+      if (activeClosed) {
+        useStore.setState({
+          activeSession: null,
+          plan: null,
+          streamingText: '',
+          streamingTps: 0,
+          thinkingText: '',
+          pendingReplySessionId: '',
+          confirmRequest: null
+        })
+      }
+      await refreshProviders()
+    })
+  }
   const [activeSection, setActiveSection] = useState('appearance')
   const jump = (id: string): void => {
     setActiveSection(id)
@@ -2152,18 +2174,33 @@ export function SettingsView(): React.JSX.Element {
                     {p.accounts.map((a) => {
                       const active = p.activeAccountId === a.id
                       return (
-                        <button
+                        <span
                           key={a.id}
-                          className="rounded-[var(--r-sm)] px-2 py-1 text-[11.5px] transition-colors duration-[130ms]"
-                          style={{
-                            background: active ? 'var(--accent)' : 'var(--surface)',
-                            color: active ? 'var(--on-accent)' : 'var(--text-body)',
-                            border: `1px solid ${active ? 'transparent' : 'var(--border)'}`
-                          }}
-                          onClick={() => void api.switchAccount(project.id, p.id, a.id).then(refreshProviders)}
+                          className="inline-flex items-center overflow-hidden rounded-[var(--r-sm)]"
+                          style={{ border: `1px solid ${active ? 'transparent' : 'var(--border)'}` }}
                         >
-                          {a.label || '默认账号'}
-                        </button>
+                          <button
+                            className="px-2 py-1 text-[11.5px] transition-colors duration-[130ms]"
+                            style={{
+                              background: active ? 'var(--accent)' : 'var(--surface)',
+                              color: active ? 'var(--on-accent)' : 'var(--text-body)'
+                            }}
+                            onClick={() => void api.switchAccount(project.id, p.id, a.id).then(refreshProviders)}
+                          >
+                            {a.label || '默认账号'}
+                          </button>
+                          <button
+                            className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--danger-soft)]"
+                            style={{
+                              background: active ? 'var(--accent)' : 'var(--surface)',
+                              color: active ? 'var(--on-accent)' : 'var(--text-hint)'
+                            }}
+                            title="移除账号（保留登录态分区）"
+                            onClick={() => removeAccount(p.id, a.id, a.label)}
+                          >
+                            <IconTrash size={11} />
+                          </button>
+                        </span>
                       )
                     })}
                     <button

@@ -317,7 +317,12 @@ export class ProviderRegistry {
   removeAccount(providerId: string, accountId: string): void {
     const provider = this.get(providerId)
     if (!provider) return
-    this.update(providerId, { accounts: provider.accounts.filter((a) => a.id !== accountId) })
+    const remaining = provider.accounts.filter((a) => a.id !== accountId)
+    // 移除的是当前账号时，回退到隐式默认分区，而不是随便选另一个未登录账号
+    this.update(providerId, {
+      accounts: remaining,
+      ...(provider.activeAccountId === accountId ? { activeAccountId: undefined } : {})
+    })
   }
 
   switchAccount(providerId: string, accountId: string): void {
@@ -326,12 +331,11 @@ export class ProviderRegistry {
 
   partitionOf(providerId: string, accountId?: string): string {
     const provider = this.get(providerId)
-    // 显式选择隐式默认账号：它没有账号记录，但登录态在 default 分区里，
-    // 不能回退到 accounts[0]（那会让用户以为「沿用登录态」却看到登录页）。
-    if (accountId === '__default__' || (!accountId && provider?.accounts.length === 0)) {
-      return `persist:lidow-${providerId}-default`
-    }
-    const acc = provider?.accounts.find((a) => a.id === accountId) ?? provider?.accounts[0]
-    return acc?.partition ?? `persist:lidow-${providerId}-default`
+    const fallback = `persist:lidow-${providerId}-default`
+    // 没有明确指定账号（旧会话/默认标签）时用隐式默认分区，绝不能回退到
+    // accounts[0]：新添加的账号通常是全新分区，会把老会话切到未登录页。
+    if (!accountId || accountId === '__default__') return fallback
+    const acc = provider?.accounts.find((a) => a.id === accountId)
+    return acc?.partition ?? fallback
   }
 }
