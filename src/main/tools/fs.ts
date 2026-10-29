@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, writeFileSync, statSync, rmSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import fg from 'fast-glob'
 import { createTwoFilesPatch } from 'diff'
 import type { ToolDef } from './types'
@@ -18,7 +18,8 @@ export function safePath(root: string, p: string): string {
 const EXCLUDED_DIRS = ['node_modules', '.git', 'dist', 'build', 'out', '.next', 'coverage', '__pycache__', '.venv', 'target']
 
 function denyProductDirs(p: string): void {
-  const parts = p.split(sep)
+  // 分隔符同时接受 \ 与 /：Windows 上模型常写 dist/x，只按 sep 切分会漏判
+  const parts = p.split(/[\\/]+/).map((seg) => seg.toLowerCase())
   if (parts.some((seg) => EXCLUDED_DIRS.includes(seg))) {
     throw new Error(`目录 ${p} 位于产物目录（${EXCLUDED_DIRS.join('/')}）内，默认禁止写入；如确需修改请让用户调整配置`)
   }
@@ -47,21 +48,38 @@ export const writeTool: ToolDef = {
   parameters: { path: { type: 'string', description: '项目内相对路径', required: true }, content: { type: 'string', description: '完整文件内容', required: true } },
   dangerLevel: 'confirm',
   async run(input, ctx) {
-    const abs = safePath(ctx.projectRoot, str(input, 'path'))
-    denyProductDirs(str(input, 'path'))
+    const relPath = str(input, 'path')
+    const abs = safePath(ctx.projectRoot, relPath)
+    denyProductDirs(relPath)
+    // 计划/确认模式：改文件前必须经过用户确认（此前只有命令与删除有确认门）
+    if (ctx.settings.permissionMode === 'plan' || ctx.settings.permissionMode === 'ask') {
+      const ok = await ctx.confirm(`写入文件：${relPath}`)
+      if (!ok) return { ok: false, output: '', error: '用户拒绝写入' }
+    }
+    let oldContent: string | undefined
     let backupPath: string | undefined
     try {
       if (statSync(abs).isFile()) {
+        oldContent = readFileSync(abs, 'utf-8')
         backupPath = `${abs}.lidow-bak-${Date.now()}`
-        writeFileSync(backupPath, readFileSync(abs))
+        writeFileSync(backupPath, oldContent)
       }
     } catch {
-      /* 新文件 */
+      /* 新文件 / 非文本文件 */
     }
+    const content = str(input, 'content')
     mkdirSync(dirname(abs), { recursive: true })
-    writeFileSync(abs, str(input, 'content'), 'utf-8')
-    ctx.audit?.('file-write', `写入 ${str(input, 'path')}`, { path: abs, bytes: str(input, 'content').length }, backupPath)
-    return { ok: true, output: `已写入 ${str(input, 'path')}（${str(input, 'content').length} 字符）` }
+    writeFileSync(abs, content, 'utf-8')
+    ctx.audit?.('file-write', `写入 ${relPath}`, { path: abs, bytes: content.length }, backupPath)
+    // 生成 diff 供 UI 汇总「N 个文件已修改 +X -Y」；新文件即全量新增
+    const patch = createTwoFilesPatch('a/' + relPath, 'b/' + relPath, oldContent ?? '', content, undefined, undefined, {
+      context: 3
+    })
+    return {
+      ok: true,
+      output: `已写入 ${relPath}（${content.length} 字符）`,
+      display: { kind: 'diff', path: relPath, patch }
+    }
   }
 }
 
@@ -75,6 +93,10 @@ export const editTool: ToolDef = {
     const relPath = str(input, 'path')
     const abs = safePath(ctx.projectRoot, relPath)
     denyProductDirs(relPath)
+    if (ctx.settings.permissionMode === 'plan' || ctx.settings.permissionMode === 'ask') {
+      const ok = await ctx.confirm(`编辑文件：${relPath}`)
+      if (!ok) return { ok: false, output: '', error: '用户拒绝编辑' }
+    }
     const raw = readFileSync(abs, 'utf-8')
     const crlf = raw.includes('\r\n')
     const oldText = str(input, 'oldText')
@@ -166,23 +188,40 @@ export const grepTool: ToolDef = {
 
 export const deleteFileTool: ToolDef = {
   name: 'deleteFile',
-  description: '删除项目内文件或空目录。需确认。',
+  description: '删除项目内的单个文件或空目录。需确认。非空目录请先逐项删除其中的文件。',
   parameters: { path: { type: 'string', description: '项目内相对路径', required: true } },
   dangerLevel: 'confirm',
   async run(input, ctx) {
     const relPath = str(input, 'path')
     const abs = safePath(ctx.projectRoot, relPath)
     denyProductDirs(relPath)
-    const ok = await ctx.confirm(`删除文件：${relPath}`)
+    // safePath 对 "." 会放行并返回根目录本身 —— 递归删除会直接清空整个项目
+    if (abs === resolve(ctx.projectRoot)) {
+      return { ok: false, output: '', error: '拒绝删除项目根目录' }
+    }
+    let st
+    try {
+      st = statSync(abs)
+    } catch {
+      return { ok: false, output: '', error: `路径不存在：${relPath}` }
+    }
+    const isDir = st.isDirectory()
+    if (isDir && readdirSync(abs).length > 0) {
+      return { ok: false, output: '', error: `目录非空，拒绝递归删除：${relPath}（请先逐项删除其中的文件）` }
+    }
+    const ok = await ctx.confirm(`删除${isDir ? '空目录' : '文件'}：${relPath}`)
     if (!ok) return { ok: false, output: '', error: '用户拒绝删除' }
     let backupPath: string | undefined
-    try {
-      backupPath = `${abs}.lidow-bak-${Date.now()}`
-      writeFileSync(backupPath, readFileSync(abs))
-    } catch {
-      /* 目录或不存在 */
+    if (!isDir) {
+      try {
+        backupPath = `${abs}.lidow-bak-${Date.now()}`
+        writeFileSync(backupPath, readFileSync(abs))
+      } catch {
+        /* 文件不可读（权限）时仍尝试删除 */
+      }
     }
-    rmSync(abs, { recursive: true })
+    if (isDir) rmdirSync(abs)
+    else unlinkSync(abs)
     ctx.audit?.('file-delete', `删除 ${relPath}`, { path: abs }, backupPath)
     return { ok: true, output: `已删除 ${relPath}` }
   }

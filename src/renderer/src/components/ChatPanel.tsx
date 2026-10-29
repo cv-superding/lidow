@@ -7,9 +7,24 @@ import hljs from 'highlight.js'
 import { useStore } from '../store'
 import { api } from '../api'
 import { stripToolArtifacts } from '../textClean'
+import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
-import type { ChatTurn } from '@shared/types'
-import { IconArrowUp, IconStop, IconChevronRight, IconSpark, IconCheck } from './icons'
+import type { ChatTurn, ToolResult } from '@shared/types'
+import {
+  IconArrowUp,
+  IconStop,
+  IconChevronRight,
+  IconSpark,
+  IconCheck,
+  IconAttach,
+  IconShield,
+  IconBulb,
+  IconHand,
+  IconEye,
+  IconChevronDown,
+  IconClose,
+  IconDiff
+} from './icons'
 
 const SLASH_COMMANDS = [
   { cmd: '/compact', desc: '手动压缩上下文' },
@@ -87,27 +102,31 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
   )
 }
 
-/** 可折叠思考过程块：流式时自动展开，完成后收起 */
+/** 可折叠处理过程（思考）：默认只露一行摘要，展开才显示完整推理（Qoder 同款活动流） */
 function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }): React.JSX.Element {
-  const [open, setOpen] = useState(streaming)
-  useEffect(() => {
-    if (streaming) setOpen(true)
-  }, [streaming])
+  const [open, setOpen] = useState(false)
   if (!text) return <></>
+  const preview = text.replace(/\s+/g, ' ').trim().slice(0, 72)
   return (
     <div className="overflow-hidden rounded-[var(--r-lg)]" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
         style={{ color: 'var(--text-dim)' }}
-        onClick={() => setOpen(!open)}
+        onClick={() => setOpen((v) => !v)}
       >
-        <span style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
+        <span className="shrink-0" style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
           <IconSpark size={13} />
         </span>
-        <span className="font-medium">{streaming ? '思考中' : '思考过程'}</span>
-        {streaming && <span className="anim-breathe h-1 w-1 rounded-full" style={{ background: 'var(--accent)' }} />}
-        <span className="flex-1" />
-        <IconChevronRight size={12} className={`transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`} />
+        <span className="shrink-0 font-medium">{streaming ? '思考中' : '已处理'}</span>
+        {streaming && <span className="anim-breathe h-1 w-1 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />}
+        {preview ? (
+          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            · {preview}
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        <IconChevronRight size={12} className={`shrink-0 transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`} />
       </button>
       {open && (
         <div
@@ -118,6 +137,130 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
         </div>
       )}
     </div>
+  )
+}
+
+/** 一轮工具调用聚合：执行中显示计时并自动展开；结束后折叠为「执行工具 N 次」 */
+function ToolGroup({
+  results,
+  running = false,
+  startedAt
+}: {
+  results: ToolResult[]
+  running?: boolean
+  startedAt?: number
+}): React.JSX.Element {
+  const [open, setOpen] = useState(running)
+  const [now, setNow] = useState(Date.now())
+  const failed = results.filter((r) => !r.ok).length
+  useEffect(() => {
+    // 执行中自动展开看进度；结束后收起，但失败时保持展开避免错误被藏起来
+    setOpen(running || failed > 0)
+  }, [running, failed])
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [running])
+  useEffect(() => {
+    if (!running) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [running])
+  const secs = running && startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0
+  const labels = [...new Set(results.map((r) => toolLabel(r.name)))].slice(0, 4)
+  return (
+    <div className="overflow-hidden rounded-[var(--r-lg)]" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+      <button
+        className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        onClick={() => setOpen((v) => !v)}
+      >
+        {running ? (
+          <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
+        ) : (
+          <span className="shrink-0" style={{ color: failed > 0 ? 'var(--danger)' : 'var(--success)' }}>
+            {failed > 0 ? <IconClose size={10} /> : <IconCheck size={11} />}
+          </span>
+        )}
+        <span className="shrink-0 font-medium" style={{ color: 'var(--text)' }}>
+          {running ? `正在执行中 · ${secs}s` : `执行工具 ${results.length} 次`}
+        </span>
+        {labels.length > 0 ? (
+          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            {labels.join('、')}
+          </span>
+        ) : (
+          <span className="flex-1" />
+        )}
+        {!running && failed > 0 && (
+          <span className="shrink-0 text-[10.5px]" style={{ color: 'var(--danger)' }}>
+            {failed} 失败
+          </span>
+        )}
+        <IconChevronRight
+          size={12}
+          className={`shrink-0 transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`}
+        />
+      </button>
+      {open && (
+        <div className="anim-fade flex flex-col gap-1 border-t px-2 py-2" style={{ borderColor: 'var(--border-soft)' }}>
+          {results.map((r) => (
+            <ToolCard key={r.callId} result={r} flat />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 文件变更统计：按 diff 汇总「N 个文件已修改 +X -Y」 */
+function diffStats(results: ToolResult[]): { files: number; add: number; del: number } {
+  const byPath = new Map<string, { add: number; del: number }>()
+  for (const r of results) {
+    if (!r.ok || r.display?.kind !== 'diff') continue
+    let add = 0
+    let del = 0
+    for (const line of r.display.patch.split('\n')) {
+      if (line.startsWith('+++') || line.startsWith('---')) continue
+      if (line.startsWith('+')) add++
+      else if (line.startsWith('-')) del++
+    }
+    // 同一文件多次编辑取最后一次的行数（累计相加会重复计算历史内容）
+    byPath.set(r.display.path, { add, del })
+  }
+  let add = 0
+  let del = 0
+  for (const v of byPath.values()) {
+    add += v.add
+    del += v.del
+  }
+  return { files: byPath.size, add, del }
+}
+
+function ChangeCard({ results, running }: { results: ToolResult[]; running: boolean }): React.JSX.Element | null {
+  const stats = diffStats(results)
+  if (stats.files === 0) return null
+  return (
+    <button
+      className="flex items-center gap-2 self-center rounded-[var(--r-lg)] px-3 py-2 text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+      style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
+      title="查看审计记录"
+      onClick={() => useStore.getState().setPureView('audit')}
+    >
+      {running ? (
+        <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
+      ) : (
+        <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
+          <IconDiff size={13} />
+        </span>
+      )}
+      <span>
+        <span style={{ color: 'var(--text)', fontWeight: 500 }}>{stats.files}</span> 个文件已修改
+      </span>
+      {stats.add > 0 && <span style={{ color: 'var(--success)' }}>+{stats.add}</span>}
+      {stats.del > 0 && <span style={{ color: 'var(--danger)' }}>−{stats.del}</span>}
+      <IconChevronRight size={12} className="shrink-0" />
+    </button>
   )
 }
 
@@ -145,8 +288,12 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
       </div>
     )
   }
+  // status=streaming 且已有工具 = 工具批次正在执行（转圈 + 计时）
+  const toolRunning = turn.status === 'streaming' && (turn.toolResults?.length ?? 0) > 0
   return (
     <div className="flex flex-col gap-2">
+      {/* 处理过程默认折叠，只露摘要；历史轮次也保留可展开查看 */}
+      {turn.think && <ThinkingBlock text={turn.think} streaming={false} />}
       {turn.text ? (
         <TurnBody text={turn.text} />
       ) : (
@@ -154,14 +301,88 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
           （本轮仅工具调用，无文本）
         </span>
       )}
-      {turn.toolResults?.map((r) => (
-        <ToolCard key={r.callId} result={r} />
-      ))}
+      {turn.toolResults && turn.toolResults.length > 0 && (
+        <ToolGroup results={turn.toolResults} running={toolRunning} startedAt={turn.ts} />
+      )}
     </div>
   )
 }
 
 /** 首次使用引导：由 overlay 注入到 AI 网页里（见 preload/overlay.ts），此处不再实现 */
+
+/**
+ * 权限模式选择器（对齐 ZCode 四档）。
+ * 语义差异直接影响工具是否停下来问你：
+ *  plan → 编辑前先出计划；ask → 改文件/执行命令都问；
+ *  autonomous → 只在有风险时问；full → 减少确认次数
+ */
+const PERMISSION_MODES = [
+  { id: 'plan', label: '计划模式', desc: '编辑前先出计划', icon: IconBulb },
+  { id: 'ask', label: '变更前确认', desc: '改文件前先问我', icon: IconHand },
+  { id: 'autonomous', label: '自主模式', desc: '在有风险时询问', icon: IconShield },
+  { id: 'full', label: '完全访问', desc: '减少确认次数', icon: IconEye }
+] as const
+
+function PermissionPicker(): React.JSX.Element {
+  const settings = useStore((s) => s.settings)
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const cur = PERMISSION_MODES.find((m) => m.id === settings.permissionMode) ?? PERMISSION_MODES[2]
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  return (
+    <div ref={boxRef} className="relative">
+      <button className="composer-chip" title="权限模式" onClick={() => setOpen((v) => !v)}>
+        <cur.icon size={12} /> {cur.label}
+        <IconChevronDown size={10} className={`transition-transform duration-[150ms] ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div
+          className="anim-pop absolute bottom-[calc(100%+6px)] left-0 z-50 w-[240px] overflow-hidden rounded-[var(--r-lg)] p-1"
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          {PERMISSION_MODES.map((m) => {
+            const active = m.id === settings.permissionMode
+            return (
+              <button
+                key={m.id}
+                className="flex w-full items-start gap-2.5 rounded-[var(--r-sm)] px-2 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                style={{ background: active ? 'var(--bg-active)' : 'transparent' }}
+                onClick={() => {
+                  setOpen(false)
+                  void api.updateSettings({ permissionMode: m.id }).then((next) => useStore.setState({ settings: next }))
+                }}
+              >
+                <span className="mt-[2px] shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-hint)' }}>
+                  <m.icon size={14} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-[12.5px] font-medium">{m.label}</span>
+                  <span className="block text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                    {m.desc}
+                  </span>
+                </span>
+                {active && (
+                  <span className="mt-[3px] shrink-0" style={{ color: 'var(--accent)' }}>
+                    <IconCheck size={12} />
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
@@ -174,11 +395,26 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const answerConfirm = useStore((s) => s.answerConfirm)
   const plan = useStore((s) => s.plan)
   const quickCmds = useStore((s) => s.quickCmds)
+  const toggleState = useStore((s) => s.toggleState)
+  // 不能写成 useStore((s) => s.currentComposerActions())：
+  // 该方法每次调用都返回新数组，zustand 比较引用 → 无限重渲染（实测白屏报
+  // Maximum update depth exceeded）。订阅稳定的原始字段，再用 useMemo 派生。
+  const activeSessionId = activeSession?.providerId ?? ''
+  const tabsForComposer = useStore((s) => s.tabs)
+  const providersForComposer = useStore((s) => s.providers)
+  const composerActions = useMemo(() => {
+    const pid = activeSessionId
+    if (!pid) return []
+    const tabAdapter = tabsForComposer.find((t) => t.providerId === pid)?.adapter
+    if (tabAdapter?.composerActions?.length) return tabAdapter.composerActions
+    return providersForComposer.find((x) => x.id === pid)?.adapter?.composerActions ?? []
+  }, [activeSessionId, tabsForComposer, providersForComposer])
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const rafRef = useRef<number | null>(null)
+  /** 用户是否停留在底部（用滚动事件维护；更新后再算会因单次增长过大永久失效） */
+  const stickRef = useRef(true)
 
   // DSH 插件经 uiInput.set 下发的输入框内容
   useEffect(() => {
@@ -193,28 +429,46 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     () => (mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns),
     [allTurns, mode]
   )
-  const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
-
-  // 滚屏跟随：rAF 节流 + 用户上翻时不抢滚动条
-  useEffect(() => {
-    if (!scrollRef.current) return
-    if (rafRef.current) return
-    rafRef.current = requestAnimationFrame(() => {
-      rafRef.current = null
-      const el = scrollRef.current
-      if (!el) return
-      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120
-      if (nearBottom) el.scrollTo({ top: el.scrollHeight })
-    })
-    return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
+  // 当前任务（最后一条用户消息之后）的全部工具结果：文件变更汇总用
+  const taskChangeResults = useMemo(() => {
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i]!.role === 'user') return turns.slice(i + 1).flatMap((t) => t.toolResults ?? [])
     }
+    return turns.flatMap((t) => t.toolResults ?? [])
+  }, [turns])
+  const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
+  // 工具批次执行中（turn.status=streaming 且已有结果）：停止按钮应中止工具而不是生成
+  const lastTurn = turns[turns.length - 1]
+  const toolRunning = Boolean(
+    activeSession && lastTurn?.status === 'streaming' && (lastTurn.toolResults?.length ?? 0) > 0
+  )
+
+  // 滚屏跟随：记住用户是否停留在底部；流式/新消息时只在「原本就在底部」才跟随。
+  // 旧实现把判定放在 DOM 增长之后，单次新增超过 120px 时会永远判为不在底部。
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const onScroll = (): void => {
+      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  useEffect(() => {
+    if (!stickRef.current) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
   }, [turns.length, streamingText])
 
   const submit = async (): Promise<void> => {
     const text = input.trim()
     if (!text) return
+    // 快捷指令模板里的占位符没填就发送，AI 收到的是一句带 {{input}} 的指令
+    if (text.includes('{{input}}')) {
+      useStore.getState().notice('请先把 {{input}} 替换为具体内容再发送', 'warn')
+      return
+    }
     setInput('')
     setSlashOpen(false)
     const session = activeSession
@@ -353,7 +607,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {turns.map((t) => (
             <TurnItem key={t.id} turn={t} />
           ))}
-          {thinkingText && mode === 'pure' && streamingText && <ThinkingBlock text={thinkingText} streaming />}
+          {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
+          {taskChangeResults.length > 0 && (
+            <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
+          )}
+          {thinkingText && mode === 'pure' && <ThinkingBlock text={thinkingText} streaming={!streamingText} />}
 
           {streamingText && mode === 'pure' && (
             <div className="flex flex-col gap-2">
@@ -399,10 +657,24 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               ))}
             </div>
             <div className="flex justify-end gap-2">
-              <button className="btn btn-sm btn-outline" onClick={() => void api.confirmPlan(plan.id, false)}>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => {
+                  const sid = plan.sessionId
+                  useStore.setState({ plan: null })
+                  void api.confirmPlan(sid, false)
+                }}
+              >
                 放弃
               </button>
-              <button className="btn btn-sm btn-primary" onClick={() => void api.confirmPlan(plan.id, true)}>
+              <button
+                className="btn btn-sm btn-primary"
+                onClick={() => {
+                  const sid = plan.sessionId
+                  useStore.setState({ plan: null })
+                  void api.confirmPlan(sid, true)
+                }}
+              >
                 <IconCheck size={12} /> 确认执行
               </button>
             </div>
@@ -509,14 +781,43 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               }
             }}
           />
-          <div className="flex items-center gap-2 px-3 pb-2.5 pt-1">
-            <span className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-              / 唤起指令
-            </span>
+          <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-1">
+            {/* 网页交互开关：深度思考 / 智能搜索 / 上传（点击转发给平台页面） */}
+            {/* 平台自带功能：每个平台不同（DeepSeek=深度思考/智能搜索，豆包=对话/项目/技能/快速）。
+                按当前会话平台的 adapter.composerActions 渲染，不写死。 */}
+            {composerActions.map((a) => {
+              // 平台自带开关的真实状态由 overlay 每秒上报：开启的 chip 高亮
+              const active =
+                (toggleState.think && a.keywords.some((k) => k.includes('深度思考'))) ||
+                (toggleState.search && a.keywords.some((k) => k.includes('搜索')))
+              return (
+                <button
+                  key={a.label}
+                  className="composer-chip"
+                  title={`切换${a.label}`}
+                  style={
+                    active
+                      ? { color: 'var(--accent)', borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)' }
+                      : undefined
+                  }
+                  onClick={() => activeSession && void api.overlayAction(activeSession.id, a.keywords)}
+                >
+                  <IconSpark size={12} /> {a.label}
+                </button>
+              )
+            })}
+            <button
+              className="btn btn-ghost btn-icon btn-sm"
+              title="上传文件（平台支持各类文档与图片）"
+              onClick={() => activeSession && void api.overlayToggle(activeSession.id, 'upload-file')}
+            >
+              <IconAttach size={13} />
+            </button>
+            <PermissionPicker />
             <span className="flex-1" />
             {running ? (
-              <button className="btn btn-sm btn-danger" onClick={() => void stop('generate')}>
-                <IconStop size={11} /> 停止生成
+              <button className="btn btn-sm btn-danger" onClick={() => void stop(toolRunning ? 'tool' : 'generate')}>
+                <IconStop size={11} /> {toolRunning ? '停止工具' : '停止生成'}
               </button>
             ) : (
               <button

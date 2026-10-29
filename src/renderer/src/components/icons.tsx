@@ -46,6 +46,17 @@ export function IconCheck({ size, className }: P): React.JSX.Element {
   )
 }
 
+/** 文件变更 / diff 统计 */
+export function IconDiff({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2" y="2.5" width="12" height="11" rx="2" />
+      <path d="M8 2.5v11" />
+      <path d="M4.4 5.8h1.4M10.2 5.8h1.4M4.4 8h1.4M10.2 8h1.4M4.4 10.2h1.4M10.2 10.2h1.4" />
+    </svg>
+  )
+}
+
 export function IconPlugin({ size, className }: P): React.JSX.Element {
   return (
     <svg {...base(size)} className={className}>
@@ -292,6 +303,64 @@ export function IconChevronDown({ size, className }: P): React.JSX.Element {
   return (
     <svg {...base(size)} className={className}>
       <path d="m4.5 6.5 3.5 3.5 3.5-3.5" />
+    </svg>
+  )
+}
+
+/** 地球（智能搜索/联网） */
+export function IconGlobe({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <circle cx="8" cy="8" r="6" />
+      <path d="M2 8h12M8 2a10 10 0 0 1 0 12M8 2a10 10 0 0 0 0 12" />
+    </svg>
+  )
+}
+
+/** 回形针（附件上传） */
+export function IconAttach({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M11 5.5 6.2 10.3a2.5 2.5 0 0 0 3.5 3.5l5.1-5.1a4 4 0 0 0-5.7-5.7L3.6 8.5a5.5 5.5 0 0 0 7.8 7.8l4-4" />
+    </svg>
+  )
+}
+
+/** 盾牌（权限模式） */
+export function IconShield({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M8 2 3 4v4c0 3 2.2 5.3 5 6 2.8-.7 5-3 5-6V4z" />
+      <path d="m6 8 1.5 1.5L10.5 6.5" />
+    </svg>
+  )
+}
+
+/** 灯泡（计划模式） */
+export function IconBulb({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M6 12a4 4 0 1 1 4 0v2H6z" />
+      <path d="M6.5 14.5h3" />
+    </svg>
+  )
+}
+
+/** 眼睛（完全访问） */
+export function IconEye({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M1.5 8S3.8 3.5 8 3.5 14.5 8 14.5 8 12.2 12.5 8 12.5 1.5 8 1.5 8z" />
+      <circle cx="8" cy="8" r="1.8" />
+    </svg>
+  )
+}
+
+/** 手（变更前确认） */
+export function IconHand({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M5 8V4.5a1 1 0 0 1 2 0V8m0 0V3.5a1 1 0 0 1 2 0V8m0 0V4.5a1 1 0 0 1 2 0V9m0-1.5a1 1 0 0 1 2 0V11a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4V8.5a1 1 0 0 1 2 0" />
     </svg>
   )
 }

@@ -83,9 +83,10 @@ describe('loop 的看门狗必须能判死本轮', () => {
   })
 
   it('自动压缩在任务收尾触发（进行中调用只会被 running 守卫推迟）', () => {
-    // 回归：maybeCompact 原挂在每轮末尾 —— running 恒真 → 永远延后 → 死功能
+    // 回归：maybeCompact 原挂在每轮末尾 —— running 恒真 → 永远延后 → 死功能。
+    // 自动续接会把任务迁到新会话，因此收尾压缩按 state.sessionId 触发。
     const finallyParts = src.split('finally {')
-    const withCompact = finallyParts.filter((x) => x.includes('maybeCompact(sessionId)'))
+    const withCompact = finallyParts.filter((x) => x.includes('maybeCompact(state.sessionId)'))
     expect(withCompact.length).toBeGreaterThanOrEqual(2)
   })
 })

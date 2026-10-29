@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api } from './api'
+import { waitWebviewWcId, webviewWcId } from './webviews'
 import type { LidowEvent } from '@shared/ipc'
 import type {
   AppSettings,
@@ -92,6 +93,8 @@ interface LidowState {
   mcpServers: McpServerConfig[]
   mcpTools: McpToolInfo[]
   installedPlugins: PluginManifest[]
+  /** 网页开关状态（深度思考 / 智能搜索），由 overlay 轮询上报 */
+  toggleState: { think: boolean; search: boolean }
   marketResults: MarketPlugin[]
   /** 市场搜索失败原因（网络不通等），空态时必须可见而不是无声无息 */
   marketWarning: string
@@ -115,7 +118,7 @@ interface LidowState {
   refreshSessions(): Promise<void>
   createSession(providerId: string): Promise<void>
   openSession(id: string): Promise<void>
-  openProviderTab(providerId: string, sessionId?: string): Promise<void>
+  openProviderTab(providerId: string, sessionId?: string, forceNew?: boolean): Promise<void>
   closeTab(id: string): void
   setActiveTab(id: string): void
   bindTabSession(tabId: string, sessionId: string, webContentsId: number): Promise<void>
@@ -129,6 +132,9 @@ interface LidowState {
   handleEvent(e: LidowEvent): void
 }
 
+/** boot 进行中的 promise：并发/重复调用共享同一次（防监听器重复注册） */
+let bootPromise: Promise<void> | null = null
+
 export const useStore = create<LidowState>((set, get) => ({
   booted: false,
   version: '',
@@ -138,6 +144,7 @@ export const useStore = create<LidowState>((set, get) => ({
     language: 'zh-CN',
     pureMode: false,
     dangerConfirm: true,
+    permissionMode: 'autonomous',
     ssrfProtection: true,
     commandTimeoutMs: 30000,
     sandboxTimeoutMs: 60000,
@@ -202,6 +209,7 @@ export const useStore = create<LidowState>((set, get) => ({
   mcpServers: [],
   mcpTools: [],
   installedPlugins: [],
+  toggleState: { think: false, search: false },
   marketResults: [],
   marketWarning: '',
   builtinPlugins: [],
@@ -213,6 +221,10 @@ export const useStore = create<LidowState>((set, get) => ({
   selectedFile: null,
 
   async boot() {
+    // 幂等：React StrictMode 会让 effect 跑两次，重复注册监听器会导致
+    // 每条事件被处理多遍（实测：右下角同一条通知出现两次）
+    if (get().booted || bootPromise) return
+    bootPromise = (async () => {
     const state = await api.getAppState()
     set({ booted: true, version: state.version, settings: state.settings, pureMode: state.settings.pureMode, projects: state.projects, activeProjectId: state.activeProjectId })
     get().applyTheme(state.settings)
@@ -224,6 +236,16 @@ export const useStore = create<LidowState>((set, get) => ({
       // 没有项目也要有平台列表：空态里要能选平台先进 AI 页面，
       // 初始化引导由 overlay 注入在网页里（cuckoo 同款）
       await get().refreshProviders()
+    }
+    })()
+    try {
+      await bootPromise
+    } catch (e) {
+      // 不能把已 reject 的 promise 留在 bootPromise 里：否则后续 boot() 直接 return，
+      // 应用会永久停在「正在启动…」。这里复位并放行渲染，让用户至少能操作/重试。
+      bootPromise = null
+      set({ booted: true })
+      get().notice(`启动失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     }
   },
 
@@ -294,9 +316,20 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async openProject(root) {
+    const before = get().activeProjectId
     await api.openProject(root)
     const state = await api.getAppState()
-    set({ projects: state.projects, activeProjectId: state.activeProjectId, activeSession: null, sessions: [] })
+    const changed = before !== state.activeProjectId
+    set((s) => ({
+      projects: state.projects,
+      activeProjectId: state.activeProjectId,
+      activeSession: null,
+      sessions: [],
+      plan: null,
+      // 切项目后标签上还挂着旧项目的会话（主进程已统一解绑）：清掉 sessionId，
+      // 让 WebviewTab 重新下发新项目的配置，避免初始化/发送复用旧会话。
+      tabs: changed ? s.tabs.map((t) => ({ ...t, sessionId: '' })) : s.tabs
+    }))
     await get().refreshProviders()
     await get().refreshSessions()
   },
@@ -344,45 +377,39 @@ export const useStore = create<LidowState>((set, get) => ({
     }
   },
 
-  async openProviderTab(providerId, sessionId) {
-    const { providers, tabs } = get()
+
+  async openProviderTab(providerId, sessionId, forceNew = false) {
+    const { providers } = get()
     const provider = providers.find((p) => p.id === providerId)
     if (!provider) return
-    const existing = tabs.find((t) => t.providerId === providerId)
+    // forceNew：多开模式。同平台再开一个独立 webview（各自 partition，
+    // 登录态互不干扰），用于并行跑多个任务。
+    const existing = forceNew
+      ? get().tabs.find((t) => t.providerId === providerId && t.id.includes('__new_') && !t.sessionId)
+      : get().tabs.find((t) => t.providerId === providerId)
     if (existing) {
       set({ activeTabId: existing.id })
       if (sessionId) {
-        // webview 可能还在 attach：等 wcId 就绪再绑定，否则主进程收不到 bindSession，
-        // loop 就会报「网页未连接」（纯净模式新建会话后立刻发送的常见路径）。
-        let wcId = existing.wcId ?? -1
-        for (let i = 0; wcId <= 0 && i < 40; i++) {
-          await new Promise((r) => setTimeout(r, 150))
-          wcId = get().tabs.find((t) => t.id === existing.id)?.wcId ?? -1
-        }
-        // store 里没拿到（webview 已 attach 但 wcId 未回写）：直接从 DOM 取。
-        // 缺了这步 bindTabSession 会因 webContentsId<=0 静默跳过 → 会话永远绑不上
-        // → hook 不注入 → 网页里发消息 AI 完全不知道有工具和工作目录。
-        if (wcId <= 0) {
-          try {
-            wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
-          } catch {
-            wcId = -1
-          }
-        }
+        // wcId 必须取自该标签自己的 webview：多标签时页面上有多个 <webview>，
+        // 按 DOM 顺序取第一个会把 A 平台的会话绑到 B 平台的页面。
+        let wcId = webviewWcId(existing.id)
+        if (wcId <= 0) wcId = await waitWebviewWcId(existing.id, 40)
         if (wcId > 0) {
-          set({ tabs: get().tabs.map((t) => (t.id === existing.id ? { ...t, wcId } : t)) })
+          set((s) => ({ tabs: s.tabs.map((t) => (t.id === existing.id ? { ...t, wcId } : t)) }))
         }
         await get().bindTabSession(existing.id, sessionId, wcId)
       }
       return
     }
     const info = await api.attachWebview(providerId, provider.activeAccountId ?? provider.accounts[0]?.id ?? '')
+    // 多开时给独立 partition：同一平台两个实例互相看不到对方的登录态
+    const extraPartition = forceNew ? `-x${Date.now().toString(36)}` : ''
     const tab: WebTab = {
-      id: `tab_${providerId}`,
+      id: forceNew ? `tab_${providerId}__new_${Date.now().toString(36)}` : `tab_${providerId}`,
       providerId,
       providerName: provider.name,
       accountId: provider.activeAccountId ?? provider.accounts[0]?.id ?? '',
-      partition: info.partition,
+      partition: forceNew ? `${info.partition}${extraPartition}` : info.partition,
       overlayPath: info.overlayPath,
       home: info.home,
       sessionId: sessionId ?? '',
@@ -390,20 +417,11 @@ export const useStore = create<LidowState>((set, get) => ({
       connected: false,
       loggedIn: false
     }
-    set({ tabs: [...tabs, tab], activeTabId: tab.id })
-    // 首次创建：webview 尚未渲染/attach，等 wcId 就绪后绑定。
-    // （did-attach 时机早于 React effect 的话 bindNow 会拿不到 id 而放弃，
-    //   此轮询是唯一保障——缺了它首次会话永远绑不上。）
+    // 用函数式更新：两次并发打开（双击平台/纯净模式与点击重叠）不会互相覆盖
+    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
+    // 首次创建：webview 尚未渲染/attach，等它自己的 wcId 就绪后绑定。
     if (sessionId) {
-      let wcId = -1
-      for (let i = 0; wcId <= 0 && i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 150))
-        try {
-          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
-        } catch {
-          wcId = -1
-        }
-      }
+      const wcId = await waitWebviewWcId(tab.id, 60)
       if (wcId > 0) await get().bindTabSession(tab.id, sessionId, wcId)
     }
   },
@@ -416,18 +434,34 @@ export const useStore = create<LidowState>((set, get) => ({
 
   setActiveTab(id) {
     set({ activeTabId: id })
+    // 切换网页标签 = 切换当前会话：不同步的话发送会把旧会话的提示词
+    // 写进新标签的平台页面（跨平台串台），顶栏导出等操作也指向旧会话。
+    const tab = get().tabs.find((t) => t.id === id)
+    const sid = tab?.sessionId
+    if (!sid || sid === get().activeSession?.id) return
+    void api.getSession(sid).then(async (sess) => {
+      if (!sess) return
+      set({ activeSession: sess })
+      try {
+        set({ plan: await api.getActivePlan(sid) })
+      } catch {
+        /* 计划读取失败不影响会话切换 */
+      }
+    })
   },
 
   async bindTabSession(tabId, sessionId, webContentsId) {
-    const { tabs } = get()
-    const prev = tabs.find((t) => t.id === tabId)
+    const prev = get().tabs.find((t) => t.id === tabId)
     // 幂等：同会话同 wcId 已绑定 → 不再做任何事。
     // 缺了这句，WebTabs 的补绑 effect 会「绑定→更新tab→effect重跑→再绑定」死循环，
     // 每秒打爆主进程几十次 bindSession + hook 注入（实测应用因此假死）。
     if (prev && prev.sessionId === sessionId && webContentsId > 0 && prev.wcId === webContentsId) return
     const switched = prev && prev.sessionId && prev.sessionId !== sessionId
-    set({ tabs: tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t)) })
+    set((s) => ({
+      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t))
+    }))
     if (webContentsId > 0) {
+      // 主进程 bindSession 会解除同一 webview 上的旧会话绑定（单绑定不变量）
       await api.bindSession(sessionId, webContentsId)
       // 会话切换 = 换一个网页会话承载：重置页面到新对话（净模式切换会话的关键）
       // 切换会话必须落回该会话自己的对话：有平台侧 URL 导航回去（历史完整恢复），
@@ -467,52 +501,28 @@ export const useStore = create<LidowState>((set, get) => ({
     }
     let { activeTabId, tabs } = get()
     let tab = tabs.find((t) => t.id === activeTabId)
-    // 纯净模式首次发送时可能还没有承载网页：按会话的平台自动打开
-    if (!tab) {
+    // 活动标签必须属于当前会话的平台；否则按会话的平台切换/打开标签。
+    // 不同步时会把 A 平台会话的提示词直接发进 B 平台的页面（跨平台串台）。
+    if (!tab || tab.providerId !== activeSession.providerId) {
       await get().openProviderTab(activeSession.providerId, activeSession.id)
       ;({ activeTabId, tabs } = get())
       tab = tabs.find((t) => t.id === activeTabId)
     }
-    // 关键兜底：webview 已存在但从未成功绑定（wcId<=0 时 bindTabSession 静默跳过）
-    // → 从 DOM 直接拿 webContentsId 补绑，否则 loop 永远「网页未连接」
-    if (tab && tab.sessionId && (tab.wcId ?? -1) <= 0) {
-      try {
-        const el = document.querySelector('webview') as Electron.WebviewTag | null
-        const wcId = el?.getWebContentsId?.() ?? -1
-        const tabId = tab.id
-        if (wcId > 0) {
-          set({ tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, wcId } : t)) })
-          tab = get().tabs.find((t) => t.id === tabId)
-        }
-      } catch {
-        /* webview 未挂载 */
-      }
+    if (!tab) {
+      get().notice('没有可用的网页标签（平台未配置或被关闭）', 'warn')
+      return
     }
-    // 发送前无条件确保绑定（bindSession 幂等，重复调用无害）。
-    // 此前的条件分支（sessionId 不一致才绑）有竞态：首次创建/快速切换时
-    // 状态看似一致但主进程 bindings 里没有 → loop 报「网页未连接」。
-    if (tab) {
-      let wcId = tab.wcId ?? -1
-      if (wcId <= 0) {
-        try {
-          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
-        } catch {
-          /* webview 未挂载 */
-        }
-      }
-      // 等待 webview attach（最长 10s）：纯净模式首次发送常早于页面加载
-      for (let i = 0; wcId <= 0 && i < 66; i++) {
-        await new Promise((r) => setTimeout(r, 150))
-        try {
-          wcId = (document.querySelector('webview') as Electron.WebviewTag | null)?.getWebContentsId?.() ?? -1
-        } catch {
-          wcId = -1
-        }
-      }
-      if (wcId > 0) {
-        set({ tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, wcId, sessionId: activeSession.id } : t)) })
-        await api.bindSession(activeSession.id, wcId)
-      }
+    const tabId = tab.id
+    // 关键兜底：webview 已存在但从未成功绑定（wcId<=0 时 bindTabSession 静默跳过）
+    // → 从该标签自己的 webview 补绑，否则 loop 永远「网页未连接」。
+    // 注意不能用 document.querySelector('webview')：多标签时会拿到别的平台页面。
+    let wcId = webviewWcId(tabId)
+    if (wcId <= 0) wcId = await waitWebviewWcId(tabId, 66)
+    if (wcId > 0) {
+      set((s) => ({ tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, wcId, sessionId: activeSession.id } : t)) }))
+      await api.bindSession(activeSession.id, wcId)
+    } else {
+      get().notice('网页尚未就绪，未能绑定会话（请稍后重试发送）', 'warn')
     }
     await api.sendPrompt(activeSession.id, text)
   },
@@ -577,6 +587,18 @@ export const useStore = create<LidowState>((set, get) => ({
         })
         void s.refreshSessions()
         break
+      case 'session-switched': {
+        // 自动续接：主进程已把网页绑定到新会话，视图和标签状态都要跟上，
+        // 否则后续消息会重新绑回旧会话、续接后的回复也看不到。
+        set((st) => ({
+          tabs: st.tabs.map((t) => (t.sessionId === e.fromSessionId ? { ...t, sessionId: e.sessionId } : t))
+        }))
+        void api.getSession(e.sessionId).then((sess) => {
+          if (sess && get().activeSession?.id === e.fromSessionId) set({ activeSession: sess, plan: null })
+        })
+        void get().refreshSessions()
+        break
+      }
       case 'think-chunk':
         // 子代理/后台会话的思考流不进当前视图（session 过滤，防串台）
         if (e.sessionId !== s.activeSession?.id) break
@@ -597,8 +619,9 @@ export const useStore = create<LidowState>((set, get) => ({
         set({ confirmRequest: { callId: e.callId, reason: e.reason } })
         break
       case 'plan-proposed':
-        // 计划卡片同样在纯净模式内联呈现，不强制退出
-        set({ plan: e.plan })
+        // 计划卡片同样在纯净模式内联呈现，不强制退出。
+        // 只显示当前会话的计划（子代理/后台会话提交的计划不弹到眼前）
+        if (e.sessionId === s.activeSession?.id) set({ plan: e.plan })
         break
       case 'notice': {
         const ts = Date.now()
@@ -611,12 +634,46 @@ export const useStore = create<LidowState>((set, get) => ({
         set({ pureMode: true, pureView: 'home' })
         break
       }
+      case 'toggle-state':
+        set({ toggleState: { think: e.think, search: e.search } })
+        break
       case 'ui-toggle-pure': {
-        set({ pureMode: !get().pureMode })
+        const next = !get().pureMode
+        set({ pureMode: next })
+        // 热键切换也要落盘：否则重启后又回到旧模式
+        void api.setPureMode(next)
+        break
+      }
+      case 'ui-new-session': {
+        // 全局热键：用当前会话的平台新建任务（没有会话时用第一个平台）
+        const st = get()
+        const pid = st.activeSession?.providerId ?? st.providers[0]?.id
+        if (pid) void st.createSession(pid)
+        else get().notice('请先在「工作台」选择一个 AI 平台', 'warn')
         break
       }
       case 'projects-changed': {
-        void s.refreshAll()
+        // 网页内初始化选了新目录：主进程已切换活动项目并解绑旧会话。
+        // 渲染层必须同时清掉旧项目的 activeSession / 标签会话，否则后续发送
+        // 会把旧项目的会话重新绑到网页上。
+        void (async () => {
+          const before = get().activeProjectId
+          const st = await api.getAppState()
+          const changed = before !== st.activeProjectId
+          set((s) => ({
+            projects: st.projects,
+            activeProjectId: st.activeProjectId,
+            ...(changed
+              ? {
+                  activeSession: null,
+                  sessions: [],
+                  plan: null,
+                  tabs: s.tabs.map((t) => ({ ...t, sessionId: '' }))
+                }
+              : {})
+          }))
+          await s.refreshAll()
+        })()
         break
       }
       default:

@@ -26,7 +26,17 @@ export async function execCommand(
     return { ok: false, exitCode: null, output: `已拦截：${verdict.reason}`, timedOut: false, durationMs: 0 }
   }
   const readonly = isReadOnly(cmd)
-  if (verdict.level === 'confirm' || (ctx.settings.dangerConfirm && !readonly)) {
+  // 权限模式分流（对齐 ZCode 四档）：
+  //  plan/ask      → 非只读命令一律确认
+  //  autonomous    → 只在检测器判定有风险时确认（默认）
+  //  full          → 只读与常规命令直接跑，风险命令仍确认（blocked 已在上面拦掉）
+  // dangerConfirm 是「危险命令需确认」总开关：关掉后风险命令不再弹窗。
+  // 此前把 `dangerConfirm && 非只读` 也并进 autonomous，导致 npm test / git add
+  // 这类常规命令也弹确认，与「只在有风险时问」的语义相反。
+  const mode = ctx.settings.permissionMode ?? 'autonomous'
+  const needsConfirm =
+    mode === 'plan' || mode === 'ask' ? !readonly : verdict.level === 'confirm' && ctx.settings.dangerConfirm
+  if (needsConfirm) {
     // 确认框必须始终带上具体命令：只显示「包含需要确认的操作：xxx」时
     // 用户根本不知道要执行什么（实测出现空白「执行命令：」的困惑）。
     const detail = verdict.reason
@@ -60,9 +70,14 @@ export async function execCommand(
 
   const started = Date.now()
   return new Promise<ExecResult>((resolveP) => {
+    if (ctx.signal?.aborted) {
+      resolveP({ ok: false, exitCode: null, output: '用户中止了命令', timedOut: false, durationMs: 0 })
+      return
+    }
     const child = spawn(file, args, { cwd: workdir, windowsHide: true, env: { ...process.env } })
     let out = ''
     let timedOut = false
+    let aborted = false
     let settled = false
 
     const limit = Math.min(ctx.settings.outputBufferLimit, OUTPUT_HARD_CAP)
@@ -81,15 +96,32 @@ export async function execCommand(
       }
     }, Math.max(5_000, ctx.settings.commandTimeoutMs))
 
+    // 「停止工具」：杀掉子进程并让上层把本轮标记为已取消
+    const onAbort = (): void => {
+      aborted = true
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+    }
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
+
     const finish = (code: number | null): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      ctx.signal?.removeEventListener('abort', onAbort)
       const trimmed = clampOutput(out, limit)
+      const suffix = timedOut
+        ? `\n[lidow] 命令超时（${Math.round(ctx.settings.commandTimeoutMs / 1000)}s）已终止`
+        : aborted
+          ? '\n[lidow] 用户中止了命令'
+          : ''
       resolveP({
-        ok: !timedOut && (code === 0 || code === null),
+        ok: !timedOut && !aborted && (code === 0 || code === null),
         exitCode: code,
-        output: trimmed + (timedOut ? `\n[lidow] 命令超时（${Math.round(ctx.settings.commandTimeoutMs / 1000)}s）已终止` : ''),
+        output: trimmed + suffix,
         timedOut,
         durationMs: Date.now() - started
       })

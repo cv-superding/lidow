@@ -37,6 +37,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: 'zh-CN',
   pureMode: false,
   dangerConfirm: true,
+  permissionMode: 'autonomous',
   ssrfProtection: true,
   commandTimeoutMs: 30_000,
   sandboxTimeoutMs: 60_000,
@@ -105,6 +106,8 @@ export class AppContext {
   emitFn?: (event: unknown) => void
 
   private pendingConfirms = new Map<string, (ok: boolean) => void>()
+  /** 各会话最近一次思考流（net hook 上报的是累计文本）：随 assistant turn 落盘，UI 折叠展示 */
+  private thinkBuffers = new Map<string, string>()
   private projectDirs = new Map<string, string>()
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
@@ -124,9 +127,10 @@ export class AppContext {
     })
     this.projects = this.projectStore.get().projects
     for (const p of this.projects) this.projectDirs.set(p.id, p.root)
-    // 启动时对全部已知项目补跑脚手架（幂等）：旧项目也能获得 .lidow/skills 等目录
+    // 启动时对全部已知项目补跑脚手架（幂等）：旧项目也能获得 .lidow/skills 等目录。
+    // 只处理仍然存在的目录 —— 已删除的测试目录不能因为这条逻辑被重新创建出来。
     for (const p of this.projects) {
-      if (p.root && p.root !== 'undefined') this.initProjectScaffold(p.root)
+      if (p.root && p.root !== 'undefined' && existsSync(p.root)) this.initProjectScaffold(p.root)
     }
 
     this.memory = new MemoryStore(userData)
@@ -204,7 +208,8 @@ export class AppContext {
     this.loop = new AgentLoop({
       store: routedSessionFacade((id) => this.sessionStoreOf(this.sessionProjectOf(id))),
       tools: this.tools,
-      toolCtxBase: () => this.toolCtx(''),
+      // 按会话取根目录：任务运行中切换活动项目不能把工具写到另一个项目
+      toolCtxBase: (sessionId) => this.toolCtx(sessionId),
       confirm: (sessionId, reason) => this.requestConfirm(sessionId, reason),
       sendToPage: (sessionId, text) => this.overlay.sendToPage(sessionId, text),
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
@@ -214,8 +219,11 @@ export class AppContext {
       settings: () => this.settings.get(),
       securityMod: () => {
         const m = this.settings.get().securityMod
+        // enabled 是总开关：开启后即使 refusalRewrite 还是历史默认值 'off'，
+        // 也按本地改写执行；否则设置里的「安全 MOD」开关开/关没有任何区别。
+        const mode = !m.enabled ? 'off' : m.refusalRewrite === 'api' ? 'api' : 'local'
         return {
-          mode: m.refusalRewrite,
+          mode,
           ctfInject: m.ctfInject,
           maxRewrites: m.maxRewrites,
           rewriteApi: m.rewriteApi,
@@ -225,6 +233,7 @@ export class AppContext {
       },
       captureMemory: (content) => this.memory.add(content.slice(0, 40), content, ['标记'], 'marker'),
       systemPromptFor: (sessionId) => this.systemPromptFor(sessionId),
+      takeThinking: (sessionId) => this.takeThinking(sessionId),
       // 自动续接：新会话需要自己的网页绑定。这里只做主进程侧绑定，
       // 前端会通过 session-updated 事件跟上（切到新会话视图）。
       rebindToSession: async (sessionId: string) => this.rebindWebview(sessionId),
@@ -246,12 +255,17 @@ export class AppContext {
       }
     })
     this.hotkeys.registerAction('stop-all', () => this.stopAll('all'))
-    this.hotkeys.registerAction('new-session', () => this.emit({ type: 'notice', sessionId: '', level: 'info', message: 'action:new-session' }))
-    this.hotkeys.registerAction('toggle-pure', () => this.emit({ type: 'notice', sessionId: '', level: 'info', message: 'action:toggle-pure' }))
+    this.hotkeys.registerAction('new-session', () => this.emit({ type: 'ui-new-session', sessionId: '' }))
+    this.hotkeys.registerAction('toggle-pure', () => this.emit({ type: 'ui-toggle-pure', sessionId: '' }))
     this.hotkeys.applyAll()
 
     this.overlay.setThinkChunkHandler((sessionId, think) => {
+      // 缓存最新累计思考：loop 在回复结束后取走并写入 turn.think（折叠展示）
+      if (think) this.thinkBuffers.set(sessionId, think.slice(0, 20_000))
       this.emit({ type: 'think-chunk', sessionId, think })
+    })
+    this.overlay.setToggleStateHandler((think, search) => {
+      this.emit({ type: 'toggle-state', sessionId: '', think, search })
     })
     // 用户在网页输入框里自己发消息时，回复没有经过 lidow 的 send/await 通道。
     // 常驻接管：回复里若带工具块就执行，否则提示用户改用原生输入框。
@@ -282,6 +296,9 @@ export class AppContext {
     // 初始化时必须自动输入一段提示词 —— 否则 AI 不知道自己绑定了本地工具，
     // 会答「我没有文件系统访问权限」。
     this.overlay.onConfirmProject = (webContentsId) => void this.sendInitPrompt(webContentsId)
+    // 「延续上个对话」：压缩当前会话 → 摘要作为新对话的第一条消息。
+    // 等于同一项目的上下文接力：新窗口从上次的进度接着干。
+    this.overlay.onContinueProject = (webContentsId) => void this.continueProjectInNewChat(webContentsId)
     // 记录会话 ↔ 平台对话 URL：换绑 webview 时才能导航回正确的对话。
     // 没有这个映射，子代理/自动续接切回父会话后页面停在别人的对话里。
     this.overlay.onNav = (sessionId, url) => {
@@ -302,8 +319,13 @@ export class AppContext {
       Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
     }
     this.overlay.onLogin = (webContentsId) => {
-      const root = this.activeProject()?.root ?? null
-      this.overlay.sendCmdToWebContents(webContentsId, { kind: 'set-project', projectRoot: root })
+      const project = this.activeProject()
+      const root = project?.root ?? null
+      this.overlay.sendCmdToWebContents(webContentsId, {
+        kind: 'set-project',
+        projectRoot: root,
+        initialized: project ? this.projectInitialized(project.id) : false
+      })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
     }
@@ -468,7 +490,9 @@ export class AppContext {
     const ownProject = this.projects.find((p) => p.id === session.projectId)
     this.overlay.sendCmd(sessionId, {
       kind: 'set-project',
-      projectRoot: ownProject?.root ?? null
+      projectRoot: ownProject?.root ?? null,
+      // 项目已有对话记录 = 初始化过：换会话/页面重载都不再弹首次引导
+      initialized: this.projectInitialized(session.projectId)
     })
     // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
@@ -488,7 +512,8 @@ export class AppContext {
       memory: this.memory,
       plans: this.plans,
       projectRoot: () => this.activeProject()?.root ?? '',
-      currentSessionId: () => this.lastSessionId
+      currentSessionId: () => this.lastSessionId,
+      onPlanProposed: (sessionId, plan) => this.emit({ type: 'plan-proposed', sessionId, plan })
     })) {
       this.tools.register(t)
     }
@@ -565,16 +590,17 @@ export class AppContext {
         task: { type: 'string', description: '要交给子代理完成的任务描述', required: true }
       },
       dangerLevel: 'safe',
-      run: async (input) => {
+      run: async (input, ctx) => {
         const task = String(input.task ?? '').trim()
         if (!task) return { ok: false, output: '', error: 'task 必填' }
         const agentName = String(input.agent ?? '').trim()
 
-        const parentSessionId = this.lastSessionId
+        // 以工具上下文里的会话为准：任务运行中切换活动会话不会把父子关系挂错
+        const parentSessionId = ctx.sessionId || this.lastSessionId
         const parent = parentSessionId ? this.sessionOf(parentSessionId) : null
         const project = parent ? this.projects.find((p) => p.id === parent.projectId) : this.activeProject()
         if (!project) return { ok: false, output: '', error: '没有可用项目（子代理需要工作目录）' }
-        if (!parentSessionId) return { ok: false, output: '', error: '当前没有活动会话' }
+        if (!parentSessionId || !parent) return { ok: false, output: '', error: '当前没有活动会话' }
 
         // 代理定义：项目级优先于用户级
         let persona = ''
@@ -586,7 +612,7 @@ export class AppContext {
           persona = agent.body ?? ''
         }
 
-        const providerId = parent!.providerId
+        const providerId = parent.providerId
         const child = this.sessionStoreOf(project.id).create(project.id, providerId)
         this.sessionStoreOf(project.id).update(child.id, (s) => ({
           ...s,
@@ -613,12 +639,15 @@ export class AppContext {
         } catch (e) {
           return { ok: false, output: '', error: `子代理执行失败：${e instanceof Error ? e.message : String(e)}` }
         } finally {
-          this.overlay.unbindSession(child.id)
-          this.sessionStoreOf(project.id).delete(child.id)
+          // 必须先把网页切回父会话、再清理子会话：父会话的绑定要靠子会话
+          // 当前持有的 wcId 来恢复。先解绑的话 rebind 拿不到 wcId，父会话
+          // 失去网页绑定，主循环下一轮直接报「网页未连接」。
           if (parentSessionId) {
             await this.rebindWebview(parentSessionId)
             this.emit({ type: 'session-updated', sessionId: parentSessionId })
           }
+          this.overlay.unbindSession(child.id)
+          this.sessionStoreOf(project.id).delete(child.id)
         }
       }
     }
@@ -636,6 +665,27 @@ export class AppContext {
     return this.projectStore.get().activeProjectId
   }
 
+  /** 确认就绪的项目（一旦有带轮次的会话就缓存为已初始化，避免每次 configure 扫盘） */
+  private initializedProjects = new Set<string>()
+
+  /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
+  projectInitialized(projectId: string): boolean {
+    if (!projectId) return false
+    if (this.initializedProjects.has(projectId)) return true
+    try {
+      const store = this.sessionStoreOf(projectId)
+      for (const m of store.list()) {
+        if ((store.get(m.id)?.turns.length ?? 0) > 0) {
+          this.initializedProjects.add(projectId)
+          return true
+        }
+      }
+    } catch {
+      /* 项目目录不可读时按未初始化处理 */
+    }
+    return false
+  }
+
   /**
    * 网页内首次引导的「初始化项目」落点：弹目录框 → 打开项目 → 全量同步。
    * 按 webContentsId 触发（首次使用场景没有会话绑定，configureOverlay 会空转，
@@ -646,11 +696,12 @@ export class AppContext {
       const res = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
       if (res.canceled || !res.filePaths[0]) return
       const root = res.filePaths[0]
-      this.openProject(root)
+      const opened = this.openProject(root)
       // 渲染层据此刷新项目下拉/目录条/会话列表
       this.emit({ type: 'projects-changed', sessionId: '' })
-      // 所有网页（含发起方）同步新目录 → 浮窗消失；发起方无需会话绑定
-      this.overlay.broadcastCmd({ kind: 'set-project', projectRoot: root })
+      // 所有网页（含发起方）同步新目录 → 浮窗消失；发起方无需会话绑定。
+      // 已初始化过的项目不再弹首次引导，空目录才需要确认。
+      this.overlay.broadcastCmd({ kind: 'set-project', projectRoot: root, initialized: this.projectInitialized(opened.id) })
       // 当前活动会话如果已绑定，顺带重配（hook 的系统提示词要带上新目录）
       if (this.lastSessionId) this.configureOverlay(this.lastSessionId)
       Logger.info('project', `网页引导初始化项目: ${root}`)
@@ -675,7 +726,21 @@ export class AppContext {
       }
       // 找到该 webview 对应的会话；没有会话就现建一个（首次引导场景）
       let sessionId = this.overlay.sessionOfWebContents?.(webContentsId) ?? ''
-      if (!sessionId) {
+      const bound = sessionId ? this.sessionOf(sessionId) : null
+      // 切换项目后 webview 上可能还绑着旧项目的会话（文件甚至已被删除）。
+      // 初始化必须落在「当前项目」的会话上，否则会把提示词写进旧项目，
+      // 或者像实测那样直接失败：会话不存在: sess_xxx。
+      if (bound && bound.projectId !== project.id) {
+        Logger.info('project', `初始化：解绑旧项目会话 ${sessionId}（${bound.projectId} → ${project.id}）`)
+        this.overlay.unbindSession(sessionId)
+        sessionId = ''
+      }
+      if (!sessionId || !bound) {
+        if (sessionId) {
+          // 绑定的会话文件已不存在（项目目录被删/移动）：解绑后重建
+          Logger.warn('project', `初始化：会话 ${sessionId} 已不存在，改为新建`)
+          this.overlay.unbindSession(sessionId)
+        }
         // 平台取当前 webview 对应的 provider（无则用内置第一个）
         const reg = this.providerRegistryOf(project.id)
         const providerId = reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
@@ -701,7 +766,66 @@ export class AppContext {
     }
   }
 
-  openProject(root: string): ProjectInfo {    let p = this.projects.find((x) => x.root === root)
+  /**
+   * 「延续上个对话」：把当前项目最近一次对话压缩成摘要，作为新对话的开场消息。
+   *
+   * 语义等同「同一项目的上下文接力」：用户开新窗口但不想丢上下文，
+   * 摘要里保留了目标、已完成项、未完成项与关键文件路径。
+   */
+  private async continueProjectInNewChat(webContentsId: number): Promise<void> {
+    try {
+      const project = this.activeProject()
+      if (!project) return
+      // 找到该 webview 已绑定的会话；没有就用最近一个
+      const currentId = this.overlay.sessionOfWebContents?.(webContentsId) ?? this.lastSessionId
+      const store = this.sessionStoreOf(project.id)
+      const sessions = store.list().filter((m) => (store.get(m.id)?.turns.length ?? 0) > 0)
+      const prior = sessions.find((m) => m.id === currentId) ?? sessions[0]
+      if (!prior) {
+        // 没有历史对话：退化为普通初始化
+        await this.sendInitPrompt(webContentsId)
+        return
+      }
+
+      // 压缩到摘要（compactNow 内部失败会回退本地摘要，不会抛）
+      await this.loop.compactNow(prior.id, false)
+      const turns = store.get(prior.id)?.turns ?? []
+      const summary = [...turns].reverse().find((t) => t.role === 'system' && t.text.includes('上下文压缩'))
+      const sys = this.systemPromptFor(prior.id)
+      const handoff =
+        this.settings.get().autoContinue.handoffPrompt
+      const body = [
+        sys,
+        '---',
+        summary?.text ?? '（上一轮对话没有可用的压缩摘要，请先读取项目文件确认现状）',
+        handoff
+      ]
+        .filter(Boolean)
+        .join('\n\n')
+
+      // 新会话承载这次新对话
+      const created = store.create(project.id, prior.providerId)
+      store.update(created.id, (x) => ({ ...x, title: `延续：${prior.title}`.slice(0, 40) }))
+      this.overlay.bindSession(created.id, webContentsId)
+      this.lastSessionId = created.id
+      this.emit({ type: 'session-updated', sessionId: created.id })
+
+      await this.overlay.sendToPage(created.id, body)
+      Logger.info('project', `延续对话：${prior.id} → ${created.id}（摘要 ${summary?.text.length ?? 0} 字）`)
+      this.emit({
+        type: 'notice',
+        sessionId: created.id,
+        level: 'info',
+        message: '已把上个对话的摘要带进这个新窗口'
+      })
+    } catch (e) {
+      Logger.warn('project', `延续对话失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  openProject(root: string): ProjectInfo {
+    const prevActive = this.projectStore.get().activeProjectId
+    let p = this.projects.find((x) => x.root === root)
     if (!p) {
       p = { id: `proj_${nanoid(8)}`, name: basename(root), root, createdAt: Date.now(), lastOpenedAt: Date.now() }
       this.projects.push(p)
@@ -710,6 +834,13 @@ export class AppContext {
     this.projectStore.set({ projects: this.projects, activeProjectId: p.id })
     this.projectDirs.set(p.id, root)
     this.initProjectScaffold(root)
+    // 切换项目：网页上显示的对话属于旧项目，解除全部会话绑定。
+    // 否则初始化/新任务会复用旧项目的会话（其文件可能已随目录删除而不存在），
+    // 表现为「初始化失败：会话不存在」以及初始化完又弹一次引导。
+    if (prevActive && prevActive !== p.id) {
+      for (const sid of this.overlay.boundSessionIds()) this.overlay.unbindSession(sid)
+      this.lastSessionId = ''
+    }
     return p
   }
 
@@ -757,6 +888,13 @@ export class AppContext {
   }
 
   private projectDirOf(projectId: string): string {
+    // 防御：projectId 可能是字符串 'undefined'（早期调用方传了空值），
+    // 那会在 userData 下建出 projects/undefined 这种垃圾目录（已实测出现过）。
+    if (!projectId || projectId === 'undefined' || projectId === 'null') {
+      const fallback = this.activeProject()?.root
+      if (fallback) return fallback
+      throw new Error('无效的项目 id（无法确定工作目录）')
+    }
     let dir = this.projectDirs.get(projectId)
     if (!dir) {
       // 优先用项目真实根目录（会话/待办等存在项目的 .lidow/ 下，随项目走）；
@@ -801,6 +939,15 @@ export class AppContext {
     return this.projectStore.get().activeProjectId ?? this.projects[0]?.id ?? ''
   }
 
+  /** 会话所属项目（索引查询，不读整份会话文件） */
+  private projectOfSession(sessionId: string): ProjectInfo | null {
+    if (!sessionId) return null
+    for (const p of this.projects) {
+      if (this.sessionStoreOf(p.id).meta(sessionId)) return p
+    }
+    return null
+  }
+
   sessionOf(sessionId: string): ReturnType<SessionStore['get']> {
     for (const p of this.projects) {
       const s = this.sessionStoreOf(p.id).get(sessionId)
@@ -813,15 +960,18 @@ export class AppContext {
 
   toolCtx(sessionId: string): ToolContext {
     const s = this.settings.get()
-    const project = this.activeProject()
+    // 以会话所属项目为准；无会话的调用方（定时任务/插件）回退到活动项目
+    const project = this.projectOfSession(sessionId) ?? this.activeProject()
     return {
       projectRoot: project?.root ?? process.cwd(),
+      sessionId: sessionId || undefined,
       settings: {
         commandTimeoutMs: s.commandTimeoutMs,
         sandboxTimeoutMs: s.sandboxTimeoutMs,
         outputBufferLimit: s.outputBufferLimit,
         ssrfProtection: s.ssrfProtection,
-        dangerConfirm: s.dangerConfirm
+        dangerConfirm: s.dangerConfirm,
+        permissionMode: s.permissionMode
       },
       confirm: (reason) => this.requestConfirm(sessionId, reason),
       injectJs: (code) => this.overlay.executeJs(sessionId, code),
@@ -830,7 +980,8 @@ export class AppContext {
   }
 
   private requestConfirm(sessionId: string, reason: string): Promise<boolean> {
-    this.lastSessionId = sessionId
+    // 插件安装/定时任务等无会话上下文的确认不能把全局 active session 清空
+    if (sessionId) this.lastSessionId = sessionId
     return new Promise((resolve) => {
       const callId = `cfm_${nanoid(6)}`
       const timer = setTimeout(() => {
@@ -859,8 +1010,16 @@ export class AppContext {
     return merged.trim()
   }
 
+  /** 取走某会话最新的思考过程（取后即清，避免挂到下一轮） */
+  private takeThinking(sessionId: string): string {
+    const v = this.thinkBuffers.get(sessionId) ?? ''
+    this.thinkBuffers.delete(sessionId)
+    return v
+  }
+
   systemPromptFor(sessionId: string): string {
-    const project = this.activeProject()
+    // 系统提示词里的工作目录必须来自会话所属项目（多项目并行时不能取错）
+    const project = this.projectOfSession(sessionId) ?? this.activeProject()
     if (!project) return ''
     const base = buildSystemPrompt({
       projectRoot: project.root,

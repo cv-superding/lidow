@@ -50,6 +50,8 @@ interface ExtractResult {
  */
 interface ExtractCtx {
   fragmentTypes: string[]
+  /** 每个片段已消费的 content 长度：重复快照/快照+补丁重叠时不重复追加 */
+  seen?: number[]
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
@@ -80,27 +82,28 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }
     return null
   }
 
-  // 快照帧：{v:{response:{fragments:[{type,content}...]}}} —— 回复首段内容在这里
-  // （cuckoo 的 snapshotFragments；只在首个片段时消费，这里靠 finished 前的快照天然幂等：
-  //   DeepSeek 只在流开始时发一次全量 fragments，之后走 APPEND 增量）
+  // 快照帧：{v:{response:{fragments:[{type,content}...]}}} —— 回复首段内容在这里。
+  // 类型表按「当前流」累加，不能每次快照都清空：连续快照若只带部分片段，
+  // 清空后增量补丁会把 THINK 的内容误判成 RESPONSE（思考整段漏进气泡）。
   if (p === undefined && v && typeof v === 'object') {
     const resp = (v as Record<string, unknown>).response as Record<string, unknown> | undefined
     if (resp && typeof resp === 'object') {
       const frags = resp.fragments
       if (Array.isArray(frags) && frags.length > 0) {
         const merged: ExtractResult = {}
-        // 快照是全量的：重置类型表（之后的增量按这个顺序对应下标）
-        ctx.fragmentTypes.length = 0
-        for (const frag of frags) {
-          const fr = frag as { type?: string; content?: string; text?: string }
-          ctx.fragmentTypes.push(String(fr?.type ?? 'RESPONSE').toUpperCase())
+        const seen = ctx.seen ?? (ctx.seen = [])
+        for (let i = 0; i < frags.length; i++) {
+          const fr = frags[i] as { type?: string; content?: string; text?: string }
+          const type = String(fr?.type ?? 'RESPONSE').toUpperCase()
+          ctx.fragmentTypes[i] = type
           const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
           if (!content) continue
-          if (String(fr?.type ?? '').toUpperCase() === 'THINK') merged.think = (merged.think ?? '') + content
-          else merged.text = (merged.text ?? '') + content
-        }
-        if (typeof resp.accumulated_token_usage === 'number') {
-          // token 信息由 hook 主循环统一捕获，这里只标记存在
+          const already = seen[i] ?? 0
+          if (content.length <= already) continue
+          const delta = content.slice(already)
+          seen[i] = content.length
+          if (type === 'THINK') merged.think = (merged.think ?? '') + delta
+          else merged.text = (merged.text ?? '') + delta
         }
         return Object.keys(merged).length > 0 ? merged : null
       }
@@ -110,12 +113,15 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }
   // fragments APPEND：{ p: '<path>/fragments', o: 'APPEND', v: [{type, content}...] }
   if (p && p.endsWith('/fragments') && f.o === 'APPEND' && Array.isArray(v)) {
     const merged: ExtractResult = {}
+    const seen = ctx.seen ?? (ctx.seen = [])
     for (const frag of v) {
       const fr = frag as { type?: string; content?: string; text?: string }
-      ctx.fragmentTypes.push(String(fr?.type ?? 'RESPONSE').toUpperCase())
+      const type = String(fr?.type ?? 'RESPONSE').toUpperCase()
+      ctx.fragmentTypes.push(type)
       const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
+      seen[ctx.fragmentTypes.length - 1] = content.length
       if (!content) continue
-      if (String(fr?.type ?? '').toUpperCase() === 'THINK') merged.think = (merged.think ?? '') + content
+      if (type === 'THINK') merged.think = (merged.think ?? '') + content
       else merged.text = (merged.text ?? '') + content
     }
     return Object.keys(merged).length > 0 ? merged : null
@@ -128,12 +134,16 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }
       // 按片段下标判断它到底是 THINK 还是正文：
       // -1 表示最后一段。不查类型表的话，思考内容会被当正文显示（实测踩中）
       const m = /\/fragments\/(-?\d+)\//.exec(p)
-      let type = ''
+      let idx = -1
       if (m) {
-        const idx = Number(m[1])
-        const ft = ctx.fragmentTypes
-        type = idx === -1 ? ft[ft.length - 1] ?? '' : ft[idx] ?? ''
+        const raw = Number(m[1])
+        idx = raw === -1 ? ctx.fragmentTypes.length - 1 : raw
       }
+      if (idx >= 0) {
+        const seen = ctx.seen ?? (ctx.seen = [])
+        seen[idx] = (seen[idx] ?? 0) + v.length
+      }
+      const type = idx >= 0 ? ctx.fragmentTypes[idx] ?? '' : ''
       if (type === 'THINK') return { think: v }
       return { text: v }
     }
@@ -161,11 +171,10 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
   var isCompletion = ${spec.isCompletion};
   var isStopStream = ${spec.isStopStream ?? 'function () { return false; }'};
   var extractFn = ${spec.extract};
-  // 每次「一轮流」独立的状态容器（片段类型表）。deepseekExtract 用它区分
-  // THINK 与正文 —— 不做成闭包单例，重置交给新流开始时的 extractCtx。
-  var extractCtx = { fragmentTypes: [] };
-  function extract(f) {
-    try { return extractFn(f, extractCtx); } catch (e) { return null; }
+  // 片段类型表由每条流各自持有（见 streamCtx）：多请求并发/重试时互不覆盖。
+  // deepseekExtract 用它区分 THINK 与正文。
+  function extract(f, ctx) {
+    try { return extractFn(f, ctx); } catch (e) { return null; }
   }
   var userStopped = false;
   // 已被 lidow 自己注入过的 prompt 打标，避免同一请求重复拼接
@@ -239,8 +248,8 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     var reader = body.getReader();
     var decoder = new TextDecoder();
     var frameDecoder = createDecoder();
-    // 新一轮流：清空片段类型表（上一轮的 THINK/RESPONSE 布局不复用）
-    extractCtx.fragmentTypes = [];
+    // 每条流独立类型表：多个请求（重试/并发）不能互相清空
+    var streamCtx = { fragmentTypes: [] };
     var text = '', think = '', finished = false, incomplete = false, exhausted = false, dispatched = false, lastEmit = 0;
     var accTokens = null;
 
@@ -260,7 +269,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         var parsed = parseData(blocks[i]);
         if (!parsed) continue;
         var r = null;
-        r = extract(parsed);
+        r = extract(parsed, streamCtx);
         if (r) {
           if (typeof r.text === 'string' && r.text) text += r.text;
           if (typeof r.think === 'string' && r.think) think += r.think;
@@ -397,8 +406,8 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     // DeepSeek 用 XHR 流式（responseType 可能是 text 或 stream）：
     // progress 事件不可靠，改用 readystatechange + 轮询增量读取。
     var lastLen = 0;
-    // 新一轮 XHR 流：同样重置片段类型表
-    extractCtx.fragmentTypes = [];
+    // 新一轮 XHR 流的独立类型表
+    var streamCtx = { fragmentTypes: [] };
     var acc = { text: '', think: '', finished: false, incomplete: false, exhausted: false, dispatched: false };
     var timer = null;
 
@@ -435,7 +444,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         var parsed = parseData(blocks[i]);
         if (!parsed) continue;
         var r = null;
-        r = extract(parsed);
+        r = extract(parsed, streamCtx);
         if (!r) continue;
         if (typeof r.text === 'string' && r.text) acc.text += r.text;
         if (typeof r.think === 'string' && r.think) acc.think += r.think;
@@ -465,7 +474,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
           var parsed = parseData(rest[i]);
           if (!parsed) continue;
           var r = null;
-          r = extract(parsed);
+          r = extract(parsed, streamCtx);
           if (!r) continue;
           if (typeof r.text === 'string' && r.text) acc.text += r.text;
           if (typeof r.think === 'string' && r.think) acc.think += r.think;
@@ -483,7 +492,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
         var parsed2 = parseData(rest2[i2]);
         if (!parsed2) continue;
         var r2 = null;
-        try { r2 = extractFn(parsed2); } catch (e) { r2 = null; }
+        try { r2 = extract(parsed2, streamCtx); } catch (e) { r2 = null; }
         if (!r2) continue;
         if (typeof r2.text === 'string' && r2.text) acc.text += r2.text;
         if (typeof r2.think === 'string' && r2.think) acc.think += r2.think;

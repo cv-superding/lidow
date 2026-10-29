@@ -28,6 +28,15 @@ describe('stripToolArtifacts', () => {
     expect(out).not.toContain('"tool"')
   })
 
+  it('语言标记被 DOM 污染（lidow复制下载）的代码块也要剔除', () => {
+    const text = '结果：\n```\nlidow复制下载{"tool": "bash", "command": "ls"}\n```\n完成。'
+    const out = stripToolArtifacts(text)
+    expect(out).toContain('结果：')
+    expect(out).toContain('完成。')
+    expect(out).not.toContain('"tool"')
+    expect(out).not.toContain('复制下载')
+  })
+
   it('普通文本保持原样', () => {
     const text = '这个项目的主入口在 src/main.tsx，用到了 React 18。'
     expect(stripToolArtifacts(text)).toBe(text)

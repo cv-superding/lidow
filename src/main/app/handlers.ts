@@ -109,6 +109,9 @@ export function registerHandlers(
       for (const m of store.list()) {
         if (m.providerId !== String(providerId)) continue
         if (m.id === ctx.lastSessionId) continue
+        // 正在被网页承载 / 正在执行的会话不能删：删了之后回复会落进不存在的会话
+        if (ctx.overlay.wcIdOfSession(m.id) !== undefined) continue
+        if (ctx.loop.runningSessionIds().includes(m.id)) continue
         if ((store.get(m.id)?.turns.length ?? 0) === 0) store.delete(m.id)
       }
     }
@@ -129,9 +132,12 @@ export function registerHandlers(
     return removed
   })
   R('deleteSession', (sessionId: string) => {
-    ctx.overlay.unbindSession(String(sessionId))
-    const project = findProjectOfSession(ctx, String(sessionId))
-    if (project) ctx.sessionStoreOf(project).delete(String(sessionId))
+    const sid = String(sessionId)
+    // 先停掉正在跑的任务：否则循环后续 appendTurn 会写进已删除的会话
+    ctx.loop.stop(sid, 'all')
+    ctx.overlay.unbindSession(sid)
+    const project = findProjectOfSession(ctx, sid)
+    if (project) ctx.sessionStoreOf(project).delete(sid)
   })
   R('renameSession', (sessionId: string, title: string) => {
     const project = findProjectOfSession(ctx, String(sessionId))
@@ -158,12 +164,22 @@ export function registerHandlers(
     ctx.resolveConfirm(String(callId), Boolean(approved))
   })
   R('confirmPlan', (sessionId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]) => {
-    if (approved) ctx.plans.confirm(String(sessionId), edits)
-    else ctx.plans.abort(String(sessionId))
+    const sid = String(sessionId)
+    if (!approved) {
+      ctx.plans.abort(sid)
+      return
+    }
+    // 确认后必须让 AI 真正开始执行：否则它停在「等待确认」的答复上，
+    // 用户点了确认也看不到任何后续动作。
+    const plan = ctx.plans.confirm(sid, edits)
+    if (!plan) return
+    ctx.lastSessionId = sid
+    void ctx.loop.run(sid, '用户已确认计划，请按顺序执行计划中的各项任务；每完成一项更新 todoWrite，全部完成后给出总结。')
   })
   R('abortPlan', (sessionId: string) => {
-    ctx.plans.abort(String(sessionId))
-    ctx.loop.stop(String(sessionId), 'all')
+    const sid = String(sessionId)
+    ctx.plans.abort(sid)
+    ctx.loop.stop(sid, 'all')
   })
   R('getActivePlan', (sessionId: string) => ctx.plans.activeOf(String(sessionId)))
 
@@ -191,7 +207,8 @@ export function registerHandlers(
   R('exportSession', (sessionId: string) => {
     const session = ctx.sessionOf(String(sessionId))
     if (!session) throw new Error('会话不存在')
-    const project = ctx.activeProject()
+    // 导出到会话所属项目的 .lidow/exports（多项目时不能用活动项目）
+    const project = ctx.projects.find((p) => p.id === session.projectId) ?? ctx.activeProject()
     if (!project) throw new Error('请先打开项目')
     const md = [
       `# ${session.title}`,
@@ -233,6 +250,26 @@ export function registerHandlers(
   })
   R('terminalCwd', () => ctx.activeProject()?.root ?? process.cwd())
   R('listTools', () => ctx.tools.all().map((t) => ({ name: t.name, description: t.description })))
+  /** 用外部程序打开项目：explorer / vscode / pycharm / terminal */
+  R('openInApp', async (appId: string, target: string) => {
+    const dir = String(target ?? '')
+    if (!dir) throw new Error('没有项目目录')
+    const { spawn } = await import('node:child_process')
+    const map: Record<string, [string, string[]]> = {
+      explorer: [process.platform === 'win32' ? 'explorer.exe' : 'xdg-open', [dir]],
+      vscode: ['code', [dir]],
+      pycharm: ['pycharm64.exe', [dir]],
+      terminal: [process.platform === 'win32' ? 'powershell.exe' : 'bash', process.platform === 'win32' ? ['-NoExit', '-Command', `Set-Location -LiteralPath '${dir}'`] : ['-i']]
+    }
+    const [bin, args] = map[String(appId)] ?? map.explorer!
+    try {
+      const child = spawn(bin, args, { detached: true, stdio: 'ignore', cwd: dir })
+      child.unref()
+      return true
+    } catch {
+      return false
+    }
+  })
   R('openExternal', async (url: string) => {
     const u = String(url ?? '')
     // 只放行 http(s)，避免 file:// 或自定义协议被执行
@@ -371,8 +408,21 @@ export function registerHandlers(
     }
   })
   R('bindSession', (sessionId: string, webContentsId: number) => {
-    ctx.overlay.bindSession(String(sessionId), Number(webContentsId))
-    ctx.configureOverlay(String(sessionId))
+    const sid = String(sessionId)
+    const wcId = Number(webContentsId)
+    const prev = ctx.overlay.sessionOfWebContents(wcId)
+    // 单个 webview 只能承载一个会话：换绑会把原会话正在跑的任务踢下车，
+    // 明确提示而不是让用户以为任务还在后台继续
+    if (prev && prev !== sid && ctx.loop.isRunning(prev)) {
+      ctx.emit({
+        type: 'notice',
+        sessionId: prev,
+        level: 'warn',
+        message: '原会话正在执行任务：切换到其他会话后该任务无法继续'
+      })
+    }
+    ctx.overlay.bindSession(sid, wcId)
+    ctx.configureOverlay(sid)
   })
   /**
    * 还没有会话时（无项目也能进 AI 页面）给网页侧下发运行所需配置：
@@ -393,8 +443,21 @@ export function registerHandlers(
         : BUILT_IN_PROVIDERS.find((p) => p.id === String(providerId))?.adapter
     }
     if (ad) ctx.overlay.sendCmdToWebContents(id, { kind: 'configure', adapter: ad })
-    const root = ctx.activeProject()?.root ?? null
-    return ctx.overlay.sendCmdToWebContents(id, { kind: 'set-project', projectRoot: root })
+    const project = ctx.activeProject()
+    const root = project?.root ?? null
+    return ctx.overlay.sendCmdToWebContents(id, {
+      kind: 'set-project',
+      projectRoot: root,
+      initialized: project ? ctx.projectInitialized(project.id) : false
+    })
+  })
+  /** 透传网页内交互命令（深度思考/智能搜索/上传文件） */
+  R('overlayToggle', (sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file') => {
+    return ctx.overlay.sendCmd(String(sessionId), { kind })
+  })
+  /** 按文案点击平台自带按钮（底部 chip 转发，各平台功能不同） */
+  R('overlayAction', (sessionId: string, keywords: string[]) => {
+    return ctx.overlay.sendCmd(String(sessionId), { kind: 'click-keywords', keywords: keywords ?? [] })
   })
   R('setPureMode', (on: boolean) => {
     ctx.settings.set({ pureMode: Boolean(on) })

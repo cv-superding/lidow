@@ -24,6 +24,8 @@ interface Channel {
   hookBound?: boolean
   /** 上一轮的服务端累计 token（accumulated_token_usage 是会话累计值，本轮消耗 = 差值） */
   lastAcc?: number
+  /** 最近一次「把回复交给等待方」的时间：迟到的 net-response 不能再当成外部消息接管 */
+  lastResolveAt?: number
 }
 
 /**
@@ -52,12 +54,26 @@ export class OverlayManager {
   onInitProject?: (webContentsId: number) => void
   /** 网页内「使用此目录，开始」：确认目录后自动发一轮初始化提示词 */
   onConfirmProject?: (webContentsId: number) => void
+  /** 网页内「延续上个对话」：压缩旧会话并把摘要发进新对话 */
+  onContinueProject?: (webContentsId: number) => void
   /** 页面导航（会话已绑定时）——建立会话 ↔ 平台对话 URL 映射 */
   onNav?: (sessionId: string, url: string) => void
+
+  /** 网页开关状态（深度思考 / 智能搜索）上报 */
+  onToggleState?: (think: boolean, search: boolean) => void
 
   /** 会话当前绑定的 webContents id（未绑定为 undefined） */
   wcIdOfSession(sessionId: string): number | undefined {
     return this.bindings.get(sessionId)
+  }
+
+  /** 当前所有已绑定的会话 id（切项目时统一解绑用） */
+  boundSessionIds(): string[] {
+    return [...this.bindings.keys()]
+  }
+
+  setToggleStateHandler(fn: (think: boolean, search: boolean) => void): void {
+    this.onToggleState = fn
   }
 
   setTokenUsageHandler(fn: (sessionId: string, deltaTokens: number) => void): void {
@@ -65,9 +81,24 @@ export class OverlayManager {
   }
 
   /** 向所有已连接的 webview 广播命令（项目切换后同步 set-project 用） */
+  /**
+   * 向所有网页广播命令。
+   *
+   * 不能只遍历 this.channels —— 它仅在 overlay 上报过事件后才存在；
+   * 首次引导阶段（还没绑会话、页面刚加载）可能一个 channel 都没有，
+   * 命令就发不出去，表现为「选完目录弹窗内容不变」。
+   * 因此直接遍历所有 webview 类型的 webContents。
+   */
   broadcastCmd(cmd: OverlayCommand): void {
-    for (const ch of this.channels.values()) {
-      const target = webContents.fromId(ch.webContentsId)
+    const seen = new Set<number>()
+    for (const ch of this.channels.values()) seen.add(ch.webContentsId)
+    for (const [, wcId] of this.bindings) seen.add(wcId)
+    // 兜底：已登记过的 hook webview（含未绑会话的）
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.getType() === 'webview') seen.add(wc.id)
+    }
+    for (const id of seen) {
+      const target = webContents.fromId(id)
       if (target && !target.isDestroyed()) target.send('lidow:overlay-cmd', cmd)
     }
   }
@@ -156,6 +187,9 @@ export class OverlayManager {
     switch (payload.type) {
       case 'stream-start':
         ch.streamBuf = ''
+        // 新一轮开始：上一轮的网络层权威文本不能留到这一轮兜底
+        ch.netText = undefined
+        ch.netError = undefined
         break
       case 'stream-chunk': {
         ch.streamBuf = payload.text
@@ -173,9 +207,13 @@ export class OverlayManager {
         if (ch.domFallbackTimer) clearTimeout(ch.domFallbackTimer)
         ch.domFallbackTimer = setTimeout(() => {
           ch.domFallbackTimer = undefined
+          ch.lastResolveAt = Date.now()
           for (const r of ch.replyResolvers) r(ch.netText?.length ? ch.netText : payload.text)
           ch.replyResolvers.clear()
-        }, 12000)
+          // 3 秒足够等网络层权威文本（它通常与 DOM 结束同时到达）。
+          // 此前 12 秒会让没有 net hook 的平台每轮都多等 12 秒，且长回复期间
+          // 会被上一轮的 netText 提前 resolve。
+        }, 3000)
         break
       }
       case 'send-result':
@@ -185,7 +223,13 @@ export class OverlayManager {
       // ---------- 网络层 hook（不依赖 DOM，优先于 DOM 轮询）----------
       case 'net-stream': {
         // 主世界 SSE 增量：直接把完整文本交给等待方（比 DOM 轮询更准更快）
+        const prevBuf = ch.streamBuf
         ch.streamBuf = payload.text
+        // 文本不是上一段的延续 = 新的一轮流；若当前没有等待方，说明是用户
+        // 在网页里自己发的消息，清掉「刚给过等待方」的标记以便正常接管
+        if (ch.replyResolvers.size === 0 && prevBuf && !payload.text.startsWith(prevBuf)) {
+          ch.lastResolveAt = undefined
+        }
         ch.thinkBuf = payload.think ?? ''
         for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
         // 思考过程流式上报（纯净模式折叠块显示）
@@ -245,7 +289,11 @@ export class OverlayManager {
         ch.chunkResolvers.clear()
         for (const r of ch.replyResolvers) r(payload.text)
         ch.replyResolvers.clear()
-        if (!hadWaiter && payload.text.trim()) {
+        if (hadWaiter) ch.lastResolveAt = Date.now()
+        // 没有等待方 → 用户在网页里自己发的消息；但刚交给等待方的回复可能
+        // 晚几百毫秒才从网络层到达（DOM 兜底已先 resolve），不能再次接管，
+        // 否则同一段工具调用会被执行两遍。
+        if (!hadWaiter && payload.text.trim() && Date.now() - (ch.lastResolveAt ?? 0) > 8_000) {
           const sessionId = this.sessionOfWebContents(sender.id)
           if (sessionId) this.onPageReply?.(sessionId, payload.text)
         }
@@ -277,8 +325,17 @@ export class OverlayManager {
           this.onConfirmProject?.(sender.id)
           break
         }
+        if (payload.action === 'continue-project') {
+          this.onContinueProject?.(sender.id)
+          break
+        }
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && this.onFloatAction) this.onFloatAction(sessionId, payload.action)
+        break
+      }
+      case 'toggle-state': {
+        // 网页里平台自带开关的真实状态：转发给渲染层给 chip 上色
+        this.onToggleState?.(payload.think, payload.search)
         break
       }
       case 'nav': {
@@ -340,6 +397,12 @@ export class OverlayManager {
   }
 
   bindSession(sessionId: string, webContentsId: number): void {
+    // 单绑定不变量：一个 webview 同时只承载一个会话。
+    // 换绑时不解除旧会话（此前 renderer 只调 bindSession），sessionOfWebContents
+    // 会一直返回最早绑定的会话 —— 导航 URL、思考流、网页输入框回复全部归错会话。
+    for (const [sid, wcId] of this.bindings) {
+      if (wcId === webContentsId && sid !== sessionId) this.bindings.delete(sid)
+    }
     const same = this.bindings.get(sessionId) === webContentsId
     this.bindings.set(sessionId, webContentsId)
     // 绑定值没变时降低日志噪音（死循环场景每秒会打几十条）
@@ -376,6 +439,10 @@ export class OverlayManager {
     const target = this.targetOf(ch)
     if (!target) throw new Error('webview 已销毁')
     this.startTs.delete(ch.webContentsId)
+    // 新请求落地前清空上一轮的权威文本/错误：DOM 兜底只会用本轮的数据
+    ch.netText = undefined
+    ch.netError = undefined
+    ch.streamBuf = ''
     const sendP = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('发送超时（页面可能弹出拦截确认）')), SEND_TIMEOUT_MS)
       ch.sendResolvers.add((ok, err) => {
@@ -393,8 +460,13 @@ export class OverlayManager {
   /** 会话 → hook 源码（页面导航/重载后需要重新注入，SPA 内部跳转不会丢） */
   private hookSources = new Map<string, string>()
   private hookBoundWc = new Set<number>()
-  /** 已完成注入的 (sessionId, wcId) 组合：重复 bindSession 不再重发 hook（防注入风暴） */
-  private injectedPairs = new Set<string>()
+  /**
+   * (sessionId, wcId) 最近一次注入时间：只用于防短时间重复注入。
+   * 不能像此前那样永久短路 —— 会话 A→B→A 切回时必须重新执行，
+   * 否则页面里的 __lidowSysPrompt__ 还停在上一个会话，网页输入框直发的消息
+   * 会带着错误会话/目录的系统提示词。
+   */
+  private lastHookInject = new Map<string, number>()
 
   /**
    * 向 webview 主世界注入网络层 hook。
@@ -419,14 +491,19 @@ export class OverlayManager {
       Logger.warn('overlay', 'injectHook: webContents 不存在')
       return false
     }
-    // 同会话同 webview 已注入过 → 不重复注入（死循环场景下会每秒注入几十次）
+    // 同一 (会话, webview) 短时间内重复 configure 时跳过（防注入风暴）；
+    // 但不能永久跳过 —— 会话切走再切回必须重跑以刷新页面里的系统提示词。
     const pairKey = `${sessionId}:${wcId}`
-    if (this.injectedPairs.has(pairKey)) return true
-    // 页面每次加载完成后补注（刷新/首次打开都能生效）
+    const last = this.lastHookInject.get(pairKey) ?? 0
+    if (Date.now() - last < 500) return true
+    // 页面每次加载完成后补注（刷新/首次打开都能生效）。
+    // 会话会换绑：闭包里的 sessionId 是首次注入时的旧值，恢复时必须按
+    // 「当前绑到这个 webview 的会话」取源码，否则会把别的会话的提示词注入回来。
     if (!this.hookBoundWc.has(wcId)) {
       this.hookBoundWc.add(wcId)
       target.on('did-finish-load', () => {
-        const src = this.hookSources.get(sessionId)
+        const currentSid = this.sessionOfWebContents(wcId)
+        const src = currentSid ? this.hookSources.get(currentSid) : undefined
         if (src) void target.executeJavaScript(src, true).catch(() => undefined)
       })
     }
@@ -436,7 +513,7 @@ export class OverlayManager {
       if (!target.isLoading()) {
         try {
           await target.executeJavaScript(source, true)
-          this.injectedPairs.add(pairKey)
+          this.lastHookInject.set(pairKey, Date.now())
           Logger.info('overlay', `hook 注入成功 session=${sessionId} try=${i + 1}`)
           return true
         } catch (e) {

@@ -65,6 +65,10 @@ const DEEPSEEK: ProviderDescriptor = {
       'button[aria-label*="stop" i]'
     ],
     newChat: ['a[class*="new-chat"]', 'button[aria-label*="开始新对话"]', 'a[href="https://chat.deepseek.com/"]'],
+    composerActions: [
+      { label: '深度思考', keywords: ['深度思考', '深度思考（R1）'] },
+      { label: '智能搜索', keywords: ['智能搜索', '联网搜索'] }
+    ],
     // 登录标志：DeepSeek 登录后左侧栏顶部出现用户头像块。
     // 不能用带哈希的类名（._9d8da05 之类）—— 平台每次发版都会变。
     // 未登录时页面是 /sign_in，直接看有没有输入框更稳。
@@ -122,6 +126,12 @@ const DOUBAO: ProviderDescriptor = {
     bubble: ['[data-testid="receive_message"]', '[data-testid="message_item_content"]'],
     streamingFlag: ['button[data-testid="chat_input_stop_button"]', 'button[aria-label*="停止"]'],
     newChat: ['button[data-testid="new_session"]', 'button[aria-label*="新会话"]'],
+    composerActions: [
+      { label: '对话', keywords: ['对话'] },
+      { label: '项目', keywords: ['项目'] },
+      { label: '技能', keywords: ['技能'] },
+      { label: '快速', keywords: ['快速'] }
+    ],
     loginFlag: ['img[class*="avatar"]', '[class*="user-info"]']
   }
 }

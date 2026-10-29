@@ -332,40 +332,62 @@ function TopActions({
   }
 
   const iconCls = 'btn btn-ghost btn-icon'
+  const project = useProject(useStore())
 
   return (
     <>
-      {/* 导出 */}
+      {/* 用外部程序打开项目（对齐 ZCode 顶栏文件夹下拉） */}
       <div ref={exportRef} className="relative">
-        <button className={iconCls} title="导出会话" onClick={() => setExportOpen((v) => !v)}>
-          <IconDownload size={15} />
+        <button className={iconCls} title="用外部程序打开项目" onClick={() => setExportOpen((v) => !v)}>
+          <IconFolder size={15} />
         </button>
         {exportOpen && (
           <div
-            className="anim-pop absolute right-0 top-[calc(100%+6px)] z-50 w-[196px] overflow-hidden rounded-[var(--r-lg)] p-1"
+            className="anim-pop absolute right-0 top-[calc(100%+6px)] z-50 w-[200px] overflow-hidden rounded-[var(--r-lg)] p-1"
             style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
           >
+            {[
+              { id: 'explorer', label: '资源管理器' },
+              { id: 'vscode', label: 'VS Code' },
+              { id: 'pycharm', label: 'PyCharm' },
+              { id: 'terminal', label: '终端（项目目录）' }
+            ].map((x) => (
+              <button
+                key={x.id}
+                className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                style={{ color: 'var(--text-dim)' }}
+                disabled={!project}
+                onClick={() => {
+                  setExportOpen(false)
+                  if (!project) return
+                  void api.openInApp(x.id, project.root).then((ok) => {
+                    if (!ok) useStore.getState().notice(`无法启动 ${x.label}（可能未安装或不在 PATH 中）`, 'warn')
+                  })
+                }}
+              >
+                {x.label}
+              </button>
+            ))}
+            <div className="divider-soft my-1" />
             <button
-              className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-hover)]"
+              className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+              style={{ color: 'var(--text-dim)' }}
               onClick={() => {
                 setExportOpen(false)
                 void exportMd()
               }}
             >
-              <IconDownload size={12} /> 导出当前会话为 Markdown
-            </button>
-            <button
-              className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors hover:bg-[var(--bg-hover)]"
-              onClick={() => {
-                setExportOpen(false)
-                void api.openExportDir().catch(() => useStore.getState().notice('请先打开项目', 'warn'))
-              }}
-            >
-              <IconFolder size={12} /> 打开导出目录
+              导出当前会话
             </button>
           </div>
         )}
       </div>
+
+      {/* 导出（保留快捷入口）。原下拉已移到上方文件夹按钮 */}
+      {/* 导出会话（快捷入口，下拉见上方文件夹按钮） */}
+      <button className={iconCls} title="导出当前会话" onClick={() => void exportMd()}>
+        <IconDownload size={15} />
+      </button>
 
       {/* 帮助 */}
       <button className={iconCls} title="帮助" onClick={() => setHelpOpen(true)}>
@@ -505,7 +527,11 @@ export function AppShell(): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
-      {pureMode ? <DragStrip /> : <TopBar terminalOpen={terminalOpen} setTerminalOpen={setTerminalOpen} />}
+      {pureMode ? (
+        <DragStrip terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen((v) => !v)} />
+      ) : (
+        <TopBar terminalOpen={terminalOpen} setTerminalOpen={setTerminalOpen} />
+      )}
 
       <div className="flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}

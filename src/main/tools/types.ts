@@ -4,12 +4,18 @@ import type { ToolDisplay } from '@shared/types'
 export interface ToolContext {
   /** 项目根目录（工具路径隔离基准） */
   projectRoot: string
+  /** 当前会话 id：工具按「会话所属项目」而非全局活动项目取根目录 */
+  sessionId?: string
+  /** 用户「停止工具」时中止（shell 命令等长任务据此退出） */
+  signal?: AbortSignal
   settings: {
     commandTimeoutMs: number
     sandboxTimeoutMs: number
     outputBufferLimit: number
     ssrfProtection: boolean
     dangerConfirm: boolean
+    /** 权限模式：plan/ask 全确认、autonomous 只问风险、full 少问 */
+    permissionMode?: 'plan' | 'ask' | 'autonomous' | 'full'
   }
   /** 危险操作确认门（UI 二次确认），返回是否放行 */
   confirm: (reason: string) => Promise<boolean>

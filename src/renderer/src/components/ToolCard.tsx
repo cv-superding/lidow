@@ -1,22 +1,29 @@
 import { useState } from 'react'
 import type { ToolResult } from '@shared/types'
+import { toolLabel } from '../toolLabels'
 import { IconChevronRight, IconTerminal, IconCheck, IconClose, IconFile } from './icons'
 
 /** 可视化工具卡片：diff / 终端 / 表格 / 文件列表 / 文本 */
-export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element {
+export function ToolCard({ result, flat = false }: { result: ToolResult; flat?: boolean }): React.JSX.Element {
   const [open, setOpen] = useState(!result.ok)
   const display = result.display
 
   return (
     <div
-      className="overflow-hidden rounded-[var(--r-lg)] transition-colors duration-[130ms]"
+      className={`overflow-hidden transition-colors duration-[130ms] ${flat ? '' : 'rounded-[var(--r-lg)]'}`}
       style={{
-        background: 'var(--surface)',
-        border: `1px solid ${result.ok ? 'var(--border)' : 'color-mix(in srgb, var(--danger) 32%, transparent)'}`
+        background: flat ? 'transparent' : 'var(--surface)',
+        border: flat
+          ? 'none'
+          : `1px solid ${result.ok ? 'var(--border)' : 'color-mix(in srgb, var(--danger) 32%, transparent)'}`
       }}
     >
       <button
-        className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        className={
+          flat
+            ? 'flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
+            : 'flex w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
+        }
         onClick={() => setOpen(!open)}
       >
         <span
@@ -28,12 +35,18 @@ export function ToolCard({ result }: { result: ToolResult }): React.JSX.Element 
         >
           {result.ok ? <IconCheck size={11} /> : <IconClose size={10} />}
         </span>
-        <span className="font-mono text-[12px] font-medium" style={{ color: 'var(--text)' }}>
-          {result.name}
+        <span className="shrink-0 text-[12px] font-medium" style={{ color: 'var(--text)' }}>
+          {toolLabel(result.name)}
         </span>
-        {display && <span className="badge">{display.kind}</span>}
+        {result.summary ? (
+          <span className="min-w-0 truncate font-mono text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            {result.summary}
+          </span>
+        ) : display ? (
+          <span className="badge">{display.kind}</span>
+        ) : null}
         <span className="flex-1" />
-        <span className="text-[10.5px] tabular-nums" style={{ color: 'var(--text-hint)' }}>
+        <span className="shrink-0 text-[10.5px] tabular-nums" style={{ color: 'var(--text-hint)' }}>
           {result.durationMs}ms
         </span>
         <IconChevronRight

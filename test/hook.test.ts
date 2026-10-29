@@ -13,6 +13,7 @@ interface Captured {
   response: { text: string; finished: boolean }[]
   errors: { text: string; reason: string }[]
   streams: string[]
+  thinks: string[]
 }
 
 const FIXTURE = readFileSync(resolve(__dirname, 'fixtures/deepseek-sse.txt'), 'utf8')
@@ -26,12 +27,15 @@ function chunk(text: string, size: number): string[] {
 
 /** 在假 window 上执行 hook 源码，返回捕获到的事件 */
 function runHook(sseText: string, chunkSize: number): Promise<Captured> {
-  const captured: Captured = { response: [], errors: [], streams: [] }
+  const captured: Captured = { response: [], errors: [], streams: [], thinks: [] }
   const bridge = {
-    emit(kind: string, detail: { text?: string; finished?: boolean; reason?: string }): void {
+    emit(kind: string, detail: { text?: string; finished?: boolean; reason?: string; think?: string }): void {
       if (kind === 'response') captured.response.push({ text: detail.text ?? '', finished: !!detail.finished })
       else if (kind === 'error') captured.errors.push({ text: detail.text ?? '', reason: detail.reason ?? '' })
-      else if (kind === 'stream') captured.streams.push(detail.text ?? '')
+      else if (kind === 'stream') {
+        captured.streams.push(detail.text ?? '')
+        captured.thinks.push(detail.think ?? '')
+      }
     }
   }
 
@@ -140,6 +144,32 @@ describe('DeepSeek hook 注入源码', () => {
     // 正文要完整
     expect(text).toContain('正文回答')
     expect(text).toContain('继续')
+  })
+
+  it('重复快照不能清空类型表（思考内容不许漏进正文）', async () => {
+    // 回归：此前每次快照都清空 fragmentTypes，后续的增量补丁无类型可查，
+    // THINK 的内容被当成 RESPONSE 整段漏进气泡（用户实测）。
+    const sse = [
+      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户说"}]}}}',
+      '',
+      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户说，先看文件"}]}}}',
+      '',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，再回答"}',
+      '',
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"正文回答"}]}',
+      '',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，结尾"}',
+      '',
+      'data: {"p":"response/status","v":"FINISHED"}',
+      ''
+    ].join('\n\n')
+    const cap = await runHook(sse, 32)
+    expect(cap.response).toHaveLength(1)
+    const text = cap.response[0]!.text
+    expect(text).toBe('正文回答，结尾')
+    expect(text).not.toContain('用户说')
+    const think = cap.thinks[cap.thinks.length - 1] ?? ''
+    expect(think).toBe('用户说，先看文件，再回答')
   })
 
   it('hook 提取的文本能被工具解析器解析出 write 调用', async () => {

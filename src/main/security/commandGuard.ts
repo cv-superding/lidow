@@ -78,16 +78,89 @@ export function normalizeCmd(cmd: string): string {
 
 /**
  * rm 语义解析（正则难以兼顾 flag 前置/后置与目标判定，改用 token 分析）：
- * - `rm` 可出现在任意位置，且跳过前缀修饰词（sudo/env/nohup/command/time/nice）
+ * - 只看「实际命令词」：跳过前缀修饰词（sudo/env/nohup/command/time/nice）与环境变量赋值；
+ *   命令不是 rm 时，文本里出现的 rm（如 `echo "rm -rf /"`、`grep rm file`）不算删除
  * - 兼容长选项（--recursive --force --no-preserve-root）
  * - 目标为 / ~ $home * .. ./ 或通配符根（/*、~*）且带递归/强制 → blocked
  * - 其余任何 rm → confirm
  */
+const RM_PREFIXES = new Set(['sudo', 'env', 'nohup', 'command', 'time', 'nice', 'builtin', 'exec', 'ionice', 'stdbuf', 'doas', 'timeout'])
+/** 前缀命令自身的带参选项：`sudo -u root rm …` / `nice -n 10 rm …` 里参数不是命令 */
+const PREFIX_ARG_FLAGS: Record<string, Set<string>> = {
+  sudo: new Set(['-u', '-g', '-p', '-C', '-h', '-r', '-t', '-U', '--user', '--group', '--host', '--prompt', '--chdir']),
+  doas: new Set(['-u', '-C']),
+  nice: new Set(['-n', '--adjustment']),
+  time: new Set(['-f', '--format', '-o', '--output']),
+  ionice: new Set(['-c', '-n', '-p', '-u']),
+  stdbuf: new Set(['-i', '-o', '-e']),
+  env: new Set(['-u', '--unset', '-C', '--chdir']),
+  timeout: new Set(['-s', '--signal', '-k', '--kill-after'])
+}
+/** 前缀命令的位置参数个数（timeout 的时长在命令之前），跳过后才是真正的命令 */
+const PREFIX_POSITIONAL: Record<string, number> = { timeout: 1 }
+/** 通过内层字符串执行命令的 shell：`bash -c "rm -rf /"` 必须下钻判断 */
+const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ash', 'cmd', 'cmd.exe', 'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe'])
+
 export function judgeRm(seg: string): 'blocked' | 'confirm' | null {
-  const tokens = seg.split(/\s+/)
-  const idx = tokens.indexOf('rm')
-  if (idx === -1) return null
-  const rest = tokens.slice(idx + 1)
+  const tokens = seg.split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return null
+
+  let i = 0
+  let lastPrefix = ''
+  let pendingPositional = 0
+  while (i < tokens.length) {
+    const t = tokens[i]!
+    if (RM_PREFIXES.has(t)) {
+      lastPrefix = t
+      pendingPositional += PREFIX_POSITIONAL[t] ?? 0
+      i++
+      continue
+    }
+    if (/^[a-z_][a-z0-9_]*=/i.test(t)) {
+      i++
+      continue
+    }
+    if (lastPrefix && PREFIX_ARG_FLAGS[lastPrefix]?.has(t)) {
+      i += 2
+      continue
+    }
+    if (pendingPositional > 0) {
+      pendingPositional--
+      i++
+      continue
+    }
+    if (t.startsWith('-')) {
+      i++
+      continue
+    }
+    break
+  }
+  const command = tokens[i]
+  if (!command) return null
+
+  if (SHELLS.has(command)) {
+    const flag = tokens.findIndex((t) => t === '-c' || t === '/c' || t === '-command')
+    if (flag < 0) return null
+    return judgeRm(tokens.slice(flag + 1).join(' '))
+  }
+
+  // git rm 等版本控制删除同样属于删除操作（可回滚，按确认处理）
+  if (command === 'git' && tokens[i + 1] === 'rm') return 'confirm'
+
+  // 间接执行：xargs rm / find -exec rm
+  let rmIdx = -1
+  if (command === 'rm') rmIdx = i
+  else if (command === 'xargs') {
+    let j = i + 1
+    while (j < tokens.length && tokens[j]!.startsWith('-')) j++
+    if (tokens[j] === 'rm') rmIdx = j
+  } else {
+    const execAt = tokens.indexOf('-exec')
+    if (execAt >= 0 && tokens[execAt + 1] === 'rm') rmIdx = execAt + 1
+  }
+  if (rmIdx < 0) return null
+
+  const rest = tokens.slice(rmIdx + 1)
   const flags = rest.filter((t) => t.startsWith('-')).join('')
   const targets = rest.filter((t) => !t.startsWith('-'))
   const recursive = flags.includes('r')

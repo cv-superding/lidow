@@ -11,7 +11,7 @@ export interface ParsedReply {
   native?: boolean
 }
 
-const FENCE_RE = /```(?:lidow|tool)(?:\w*)\s*\n([\s\S]*?)```/g
+const FENCE_RE = /```([^\n]*)\n([\s\S]*?)```/g
 
 /**
  * 平台原生工具调用方言的标记：DeepSeek 的 `<｜｜DSML｜｜calls>` 用全角竖线，
@@ -139,7 +139,20 @@ export function parseToolCalls(reply: string): ParsedReply {
   let clean = reply
 
   for (const m of reply.matchAll(FENCE_RE)) {
-    const raw = m[1] ?? ''
+    const info = (m[1] ?? '').trim().toLowerCase()
+    let raw = m[2] ?? ''
+    const declared = info.startsWith('lidow') || info.startsWith('tool')
+    if (!declared) {
+      // DOM 抓取可能把代码块头部的「lidow + 复制/下载」混进块内容（实测：
+      // "```\nlidow复制下载{\"tool\":…}\n```），语言标记因此丢失。
+      // 只接受内容里明确带 "tool" 字段的 JSON，避免误吞普通代码块。
+      const at = raw.indexOf('{')
+      const end = raw.lastIndexOf('}')
+      if (at < 0 || end <= at) continue
+      const candidate = raw.slice(at, end + 1)
+      if (!/"tool"\s*:/.test(candidate)) continue
+      raw = candidate
+    }
     let parsed: unknown
     try {
       parsed = JSON.parse(raw)
@@ -148,16 +161,20 @@ export function parseToolCalls(reply: string): ParsedReply {
         // 容忍尾逗号
         parsed = JSON.parse(raw.replace(/,\s*([}\]])/g, '$1'))
       } catch {
-        malformed.push(raw.slice(0, 500))
-        clean = clean.replace(m[0], '')
+        if (declared) {
+          malformed.push(raw.slice(0, 500))
+          clean = clean.replace(m[0], '')
+        }
         continue
       }
     }
     const obj = parsed as Record<string, unknown>
     const name = typeof obj.tool === 'string' ? obj.tool : typeof obj.name === 'string' ? obj.name : null
     if (!name) {
-      malformed.push(raw.slice(0, 500))
-      clean = clean.replace(m[0], '')
+      if (declared) {
+        malformed.push(raw.slice(0, 500))
+        clean = clean.replace(m[0], '')
+      }
       continue
     }
     // 参数来源（按优先级）：

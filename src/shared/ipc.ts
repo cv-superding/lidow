@@ -57,8 +57,9 @@ export interface LidowApi {
   newChat(sessionId: string): Promise<void>
   stop(level: StopLevel): Promise<void>
   confirmTool(callId: string, approved: boolean, rememberChoice?: boolean): Promise<void>
-  confirmPlan(planId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]): Promise<void>
-  abortPlan(planId: string): Promise<void>
+  /** 确认/放弃计划：第一个参数是会话 id（计划按会话存储） */
+  confirmPlan(sessionId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]): Promise<void>
+  abortPlan(sessionId: string): Promise<void>
 
   // 工具/文件
   readFileTree(projectId: string, dir: string, depth: number): Promise<FileNode[]>
@@ -111,6 +112,8 @@ export interface LidowApi {
   // 顶栏工具
   /** 在系统文件管理器中打开路径（项目根/导出目录） */
   revealPath(path: string): Promise<boolean>
+  /** 用外部程序打开项目（explorer / vscode / pycharm / terminal） */
+  openInApp(appId: string, target: string): Promise<boolean>
   /** 打开导出目录并返回路径 */
   openExportDir(): Promise<string>
   /** 内置终端：执行一条命令（独立于 AI，用户手动运行），返回输出 */
@@ -151,6 +154,10 @@ export interface LidowApi {
   /** 无会话时下发 adapter 与项目目录（决定是否弹首次引导） */
   syncProjectToWebview(webContentsId: number, adapter?: DomAdapter, providerId?: string): Promise<boolean>
   setPureMode(on: boolean): Promise<void>
+  /** 触发网页内交互（深度思考 / 智能搜索 / 上传文件） */
+  overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
+  /** 按文案点击平台自带按钮（各平台底部功能不同） */
+  overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
   checkUpdate(): Promise<{ hasUpdate: boolean; version?: string; url?: string }>
   /** 下载并安装更新（便携版打开 Releases 页） */
   downloadUpdate(): Promise<{ ok: boolean; message: string }>
@@ -170,6 +177,8 @@ export interface LidowApi {
 
 export type LidowEvent =
   | { type: 'session-updated'; sessionId: string }
+  /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
+  | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }
   | { type: 'tool-start'; sessionId: string; result: ToolResult }
   | { type: 'tool-confirm-required'; sessionId: string; result: ToolResult; callId: string; name: string; input: Record<string, unknown>; reason: string }
@@ -180,6 +189,9 @@ export type LidowEvent =
   | { type: 'ui-panel'; panel: 'chat' | 'web'; open: boolean }
   | { type: 'think-chunk'; sessionId: string; think: string }
   | { type: 'ui-toggle-pure' }
+  /** 全局热键：新建会话（渲染层按当前平台建会话） */
+  | { type: 'ui-new-session' }
+  | { type: 'toggle-state'; think: boolean; search: boolean }
   /** 项目列表变化（网页内首次引导完成初始化后需要刷新下拉与目录状态） */
   | { type: 'projects-changed'; sessionId: string }
 

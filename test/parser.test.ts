@@ -29,6 +29,22 @@ describe('parseToolCalls', () => {
     expect(parseToolCalls('```lidow\n{"name":"read","args":{"path":"x"}}\n```').calls[0]!.name).toBe('read')
   })
 
+  it('代码块语言标记被 DOM 污染（lidow复制下载）时仍能解析', () => {
+    const reply = '```\nlidow复制下载{"tool": "bash", "command": "wc -c a.html"}\n```'
+    const r = parseToolCalls(reply)
+    expect(r.calls).toHaveLength(1)
+    expect(r.calls[0]!.name).toBe('bash')
+    expect(r.calls[0]!.input).toEqual({ command: 'wc -c a.html' })
+    expect(r.cleanText).toBe('')
+  })
+
+  it('普通代码块不会被误当工具块', () => {
+    const reply = '```js\nconst x = { name: "a" }\n```'
+    const r = parseToolCalls(reply)
+    expect(r.calls).toHaveLength(0)
+    expect(r.cleanText).toBe(reply)
+  })
+
   it('畸形 JSON 归入 malformed 并提示', () => {
     const reply = '```lidow\n{"tool":"read" "input":}\n```'
     const r = parseToolCalls(reply)

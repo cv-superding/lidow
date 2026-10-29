@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { api } from '../api'
+import { registerWebview } from '../webviews'
 import { IconPlus, IconClose, IconFolder } from './icons'
 
 /** 选目录并打开项目；入口在网页浮窗，这里只作为工作台空态的手动入口 */
@@ -57,6 +58,9 @@ export function WebTabs(): React.JSX.Element {
             </button>
           )
         })}
+
+        {/* 新建平台标签：点击弹出平台选择（多开，每个平台独立 webview 与登录态） */}
+        <AddTabButton />
       </div>
       {/* webview 容器 */}
       <div className="relative flex-1">
@@ -74,9 +78,91 @@ export function WebTabs(): React.JSX.Element {
   )
 }
 
+/**
+ * 新建标签按钮：弹出平台选择，选中即开一个新 webview。
+ * 每个平台一个独立 partition（登录态互不干扰），可同时挂多个平台并行工作。
+ */
+function AddTabButton(): React.JSX.Element {
+  const providers = useStore((s) => s.providers)
+  const tabs = useStore((s) => s.tabs)
+  const openProviderTab = useStore((s) => s.openProviderTab)
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const openedIds = new Set(tabs.map((t) => t.providerId))
+
+  return (
+    <div ref={boxRef} className="relative mb-[6px] ml-0.5">
+      <button
+        className="flex h-7 w-7 items-center justify-center rounded-[var(--r-md)] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        style={{ color: 'var(--text-hint)' }}
+        title="新建平台标签（可多开）"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <IconPlus size={14} />
+      </button>
+      {open && (
+        <div
+          className="anim-pop absolute left-0 top-[calc(100%+4px)] z-50 w-[280px] overflow-hidden rounded-[var(--r-lg)] p-1.5"
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+        >
+          <div className="text-label px-2 py-1.5">选择平台（多开）</div>
+          <div className="grid grid-cols-2 gap-1.5 p-1">
+            {providers.map((p) => {
+              const already = openedIds.has(p.id)
+              return (
+                <button
+                  key={p.id}
+                  className="flex flex-col items-start gap-0.5 rounded-[var(--r-md)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                  style={{ border: '1px solid var(--border)' }}
+                  onClick={() => {
+                    setOpen(false)
+                    void openProviderTab(p.id, undefined, true)
+                  }}
+                >
+                  <span className="flex w-full items-center gap-1.5">
+                    <span className="truncate text-[12px] font-medium">{p.name}</span>
+                    {already && (
+                      <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
+                        已打开
+                      </span>
+                    )}
+                  </span>
+                  <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                    {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '未登录'}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+          <div className="px-2 pb-1 pt-0.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+            每个平台独立登录态，可同时开多个并行工作
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
   const tab = useStore((s) => s.tabs.find((t) => t.id === tabId))
   const ref = useRef<Electron.WebviewTag | null>(null)
+
+  // 把真实的 webview 元素登记到注册表：会话绑定/completion 等待都按标签取自己的
+  // webContentsId，避免多标签时拿到别的平台页面。
+  useEffect(() => {
+    registerWebview(tabId, ref.current)
+    return () => registerWebview(tabId, null)
+  }, [tabId])
 
   useEffect(() => {
     const wv = ref.current

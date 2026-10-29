@@ -318,6 +318,36 @@ body {
   border-color: var(--border-strong);
 }
 
+/* 输入框内的功能 chip（深度思考 / 智能搜索 / 权限模式） */
+.composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 130ms ease;
+}
+.composer-chip:hover {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--accent-soft);
+}
+/* 激活态：与平台网页里按钮高亮保持一致（用户一眼看出开关已开） */
+.composer-chip[data-active='true'] {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: var(--accent-soft);
+  font-weight: 500;
+}
+
 .btn-ghost {
   color: var(--text-dim);
 }

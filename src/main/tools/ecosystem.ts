@@ -2,6 +2,7 @@ import type { ToolDef } from './types'
 import type { MemoryStore } from '@main/ecosystem/memory'
 import type { TaskPlanStore } from '@main/ecosystem/taskPlan'
 import { readSkill } from '@main/ecosystem/skills'
+import type { TaskPlan } from '@shared/types'
 import { str } from './types'
 
 /** 生态工具：记忆读写 + 技能读取 + 计划提交（经 ctx 附加对象传入依赖） */
@@ -10,6 +11,8 @@ export interface EcosystemRefs {
   plans: TaskPlanStore
   projectRoot: () => string
   currentSessionId: () => string
+  /** 计划草稿提交后通知渲染层弹确认卡（否则只有重开会话才看得到） */
+  onPlanProposed?: (sessionId: string, plan: TaskPlan) => void
 }
 
 export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
@@ -51,12 +54,14 @@ export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
     description: '读取技能完整正文（技能目录已在系统提示词中）。',
     parameters: { name: { type: 'string', description: '技能名', required: true } },
     dangerLevel: 'safe',
-    async run(input) {
-      // readSkill 按路径校验；此处按名字查找后调用
+    async run(input, ctx) {
+      // readSkill 按路径校验；此处按名字查找后调用。用工具上下文里的项目根，
+      // 避免任务运行中切换活动项目后读到别的项目的技能。
+      const root = ctx.projectRoot || refs.projectRoot()
       const { listSkills } = await import('@main/ecosystem/skills')
-      const skill = listSkills(refs.projectRoot()).find((s) => s.name === str(input, 'name'))
+      const skill = listSkills(root).find((s) => s.name === str(input, 'name'))
       if (!skill) return { ok: false, output: '', error: `技能不存在: ${str(input, 'name')}` }
-      return { ok: true, output: readSkill(skill.path, refs.projectRoot()) }
+      return { ok: true, output: readSkill(skill.path, root) }
     }
   }
 
@@ -68,15 +73,18 @@ export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
       steps: { type: 'string', description: 'JSON 数组字符串：[{"title":"…","detail":"…"}]', required: true }
     },
     dangerLevel: 'safe',
-    async run(input) {
+    async run(input, ctx) {
       try {
         const steps = JSON.parse(str(input, 'steps')) as { title: string; detail?: string }[]
         if (!Array.isArray(steps) || steps.length === 0) throw new Error('steps 不能为空')
-        refs.plans.propose(
-          refs.currentSessionId(),
+        // 会话 id 以工具上下文为准：用户在任务执行中切换活动会话也不会把计划挂错
+        const sessionId = ctx.sessionId || refs.currentSessionId()
+        const plan = refs.plans.propose(
+          sessionId,
           str(input, 'goal'),
           steps.map((s) => ({ title: String(s.title), detail: String(s.detail ?? '') }))
         )
+        refs.onPlanProposed?.(sessionId, plan)
         return { ok: true, output: '计划草稿已提交，等待用户确认。确认后按顺序逐项执行。' }
       } catch (e) {
         return { ok: false, output: '', error: `steps 必须是 JSON 数组: ${String(e)}` }

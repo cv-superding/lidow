@@ -11,7 +11,20 @@ interface MysqlConfig {
   database: string
 }
 
-const WRITE_PREFIX = /^(insert|update|delete|drop|alter|create|truncate|rename|replace|grant|revoke|call)\b/i
+const WRITE_PREFIX = /^(insert|update|delete|drop|alter|create|truncate|rename|replace|grant|revoke|call|merge|load|lock)\b/i
+
+/** 去掉前导注释/空白：块注释或行注释开头曾能绕过写操作确认 */
+function stripLeadingComments(sql: string): string {
+  let out = sql.trim()
+  for (;;) {
+    const next = out
+      .replace(/^\/\*[\s\S]*?\*\//, '')
+      .replace(/^(?:--|#)[^\n]*(\n|$)/, '')
+      .trim()
+    if (next === out) return out
+    out = next
+  }
+}
 
 function loadConfig(projectRoot: string): MysqlConfig {
   const cfgPath = join(projectRoot, '.lidow', 'mysql.json')
@@ -43,7 +56,10 @@ export const mysqlTool: ToolDef = {
     if (sql.includes(';')) return { ok: false, output: '', error: '仅允许单条 SQL（检测到多个分号）' }
     const maxRows = typeof input.maxRows === 'number' ? input.maxRows : 50
 
-    const isWrite = WRITE_PREFIX.test(sql)
+    const bare = stripLeadingComments(sql)
+    // WITH … DELETE 这类 CTE 写操作不以写关键字开头，也要走确认门
+    const isWrite =
+      WRITE_PREFIX.test(bare) || (/^with\b/i.test(bare) && /\b(insert|update|delete|replace|merge)\b/i.test(bare))
     if (isWrite) {
       const ok = await ctx.confirm(`执行写操作 SQL：${sql.slice(0, 160)}`)
       if (!ok) return { ok: false, output: '', error: '用户拒绝执行该写操作' }

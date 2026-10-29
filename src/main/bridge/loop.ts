@@ -11,7 +11,8 @@ import { backoffDelay, isContextExhausted } from './resilience'
 export interface LoopDeps {
   store: SessionStore
   tools: ToolRegistry
-  toolCtxBase: () => Omit<ToolContext, 'confirm'>
+  /** 工具执行上下文基座：按「当前会话」取，切项目后不能串根目录 */
+  toolCtxBase: (sessionId: string) => Omit<ToolContext, 'confirm'>
   confirm: (sessionId: string, reason: string) => Promise<boolean>
   /** 把消息送进网页（overlay 注入发送），resolve 于发送成功 */
   sendToPage: (sessionId: string, text: string) => Promise<void>
@@ -41,6 +42,8 @@ export interface LoopDeps {
   captureMemory: (content: string) => void
   /** 首轮注入的系统提示词 */
   systemPromptFor: (sessionId: string) => string
+  /** 取走本轮模型思考过程（折叠展示用；无思考时为空串） */
+  takeThinking: (sessionId: string) => string
   /** 把网页载体切到指定会话（自动续接用：新会话需要自己的 webview 绑定） */
   rebindToSession: (sessionId: string) => Promise<void>
 }
@@ -65,10 +68,57 @@ const COMPACT_INSTRUCTION =
   '4. 用中文，结构化输出，直接给摘要本身，不要复述本指令\n\n' +
   '# 待压缩对话\n\n'
 
+/** 工具调用的一句话摘要：折叠列表里只露关键信息（路径/命令/URL），不糊整段参数 */
+function toolSummary(call: ToolCall): string {
+  const pick = (k: string): string => {
+    const v = call.input[k]
+    return typeof v === 'string' ? v : ''
+  }
+  const oneLine = (s: string, max = 80): string => s.replace(/\s+/g, ' ').trim().slice(0, max)
+  switch (call.name) {
+    case 'read':
+    case 'write':
+    case 'edit':
+    case 'deleteFile':
+      return oneLine(pick('path'))
+    case 'bash':
+    case 'pwsh':
+      return oneLine(pick('command'))
+    case 'glob':
+    case 'grep':
+      return oneLine(pick('pattern'))
+    case 'webFetch':
+      return oneLine(pick('url'))
+    case 'webSearch':
+      return oneLine(pick('query'))
+    case 'mysql':
+      return oneLine(pick('sql'))
+    case 'mcpCall':
+      return [pick('server'), pick('tool')].filter(Boolean).join('.')
+    case 'runAgent':
+      return oneLine(pick('task'), 60)
+    case 'remember':
+    case 'forgetMemory':
+      return oneLine(pick('title') || pick('keyword'))
+    case 'planSubmit':
+      return oneLine(pick('goal'), 60)
+    case 'readSkill':
+      return oneLine(pick('name'))
+    case 'kbSearch':
+      return [pick('kb'), oneLine(pick('query'), 40)].filter(Boolean).join(' · ')
+    default: {
+      const first = Object.values(call.input).find((v) => typeof v === 'string')
+      return typeof first === 'string' ? oneLine(first, 60) : ''
+    }
+  }
+}
+
 interface RunningLoop {
   sessionId: string
   stopped: Set<StopLevel>
   resolveStop?: () => void
+  /** 当前工具批次的取消句柄：stop('tool') 用它中止正在执行的命令 */
+  abort?: AbortController
 }
 
 /**
@@ -79,6 +129,8 @@ export class AgentLoop {
   private running = new Map<string, RunningLoop>()
   /** 正在压缩的会话：压缩也是一轮 AI 对话，看门狗必须挂起，否则会把摘要请求误判为卡死 */
   private compacting = new Set<string>()
+  /** 压缩中的 promise：同一会话的压缩请求合并，避免两个 awaitReply 抢同一个网页 */
+  private compactRuns = new Map<string, Promise<void>>()
   /** 已接管的网页侧回复指纹：DOM 与网络层双通道会重复上报同一条回复 */
   private adoptedRecently = new Map<string, number>()
 
@@ -98,10 +150,45 @@ export class AgentLoop {
     r.stopped.add(level)
     Logger.info('loop', `停止请求 session=${sessionId} level=${level}`)
     if (level === 'generate' || level === 'all') this.deps.interruptPage(sessionId)
+    // 工具批次自带 AbortController：中止正在跑的 shell 命令并跳过剩余调用
+    if (level === 'tool' || level === 'all') r.abort?.abort()
     if ((level === 'auto-loop' || level === 'all') && r.resolveStop) r.resolveStop()
   }
 
+  /** 会话可能因自动续接而换 id：把 running 表中的键迁移到新会话 */
+  private rekeyRunning(state: RunningLoop, from: string, to: string): void {
+    if (from === to) return
+    if (this.running.get(from) === state) this.running.delete(from)
+    state.sessionId = to
+    this.running.set(to, state)
+  }
+
+  /** 从 running 表移除（键可能已经迁移，按对象匹配而不是按最初 id） */
+  private finishRunning(state: RunningLoop): void {
+    for (const [sid, s] of this.running) {
+      if (s === state) this.running.delete(sid)
+    }
+  }
+
+  private async waitWhileCompacting(sessionId: string): Promise<void> {
+    // 压缩通常几秒完成；极端情况下（摘要请求卡住）最多等 90 秒，
+    // 之后仍继续启动，交给 collectReply 的等待队列兜底。
+    if (this.compacting.has(sessionId)) {
+      this.deps.emit({ type: 'notice', sessionId, level: 'info', message: '上下文压缩中，任务将在压缩完成后自动开始' })
+    }
+    for (let i = 0; i < 450 && this.compacting.has(sessionId); i++) {
+      await this.sleep(200)
+    }
+  }
+
   async run(sessionId: string, userText: string): Promise<void> {
+    if (this.running.has(sessionId)) {
+      this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '当前会话已有任务在执行，已忽略' })
+      return
+    }
+    // 自动压缩也是一轮网页对话：等它结束再发新一轮，否则两个 awaitReply
+    // 抢同一个网页（表现为「已有等待中的回复请求」或把摘要当成任务回复）
+    await this.waitWhileCompacting(sessionId)
     if (this.running.has(sessionId)) {
       this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '当前会话已有任务在执行，已忽略' })
       return
@@ -110,6 +197,8 @@ export class AgentLoop {
     this.running.set(sessionId, state)
 
     try {
+      // 丢弃初始化提示/网页直发遗留的思考缓冲，避免挂到新任务的第一轮
+      this.deps.takeThinking(sessionId)
       const store = this.deps.store
       const firstTurn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
@@ -135,12 +224,12 @@ export class AgentLoop {
       }
       await this.toolLoop(sessionId, state, prompt)
     } catch (err) {
-      this.handleLoopError(sessionId, err)
+      this.handleLoopError(state.sessionId, err)
     } finally {
-      this.running.delete(sessionId)
+      this.finishRunning(state)
       // 任务收尾才是自动压缩的正确时机：此刻没有在途的发送/等待，
       // 且上一任务留下的长转录正是需要摘要的对象
-      this.maybeCompact(sessionId)
+      this.maybeCompact(state.sessionId)
     }
   }
 
@@ -152,6 +241,8 @@ export class AgentLoop {
    */
   async adoptExternalReply(sessionId: string, text: string): Promise<void> {
     if (this.running.has(sessionId)) return
+    // 压缩正在等摘要回复：不能再起一轮发送/等待，否则两边互相抢
+    if (this.compacting.has(sessionId)) return
     if (!text.trim()) return
     // 去重：同一条回复会经两条路到达（DOM stream-end 兜底 + 网络层 net-response），
     // 重复接管会弹两遍提示、执行两遍工具。按「会话 + 文本指纹 + 时间窗」拦掉。
@@ -172,6 +263,8 @@ export class AgentLoop {
     const state: RunningLoop = { sessionId, stopped: new Set() }
     this.running.set(sessionId, state)
     try {
+      // 网页直发的回复也可能带思考流：取走后随本轮落盘（无工具调用时自然丢弃）
+      const think = this.deps.takeThinking(sessionId)
       const parsed = parseToolCalls(text)
       if (parsed.calls.length === 0) {
         // 没有标准工具块。但如果是「有工具意图、格式野了」（XML/DSML/裸 JSON），
@@ -208,35 +301,61 @@ export class AgentLoop {
         // 入库用清理后的文本：方言标签不进转录（与 toolLoop 口径一致）
         text: parsed.cleanText || text,
         ts: Date.now(),
-        status: 'done'
+        status: 'streaming',
+        think: think || undefined
       }
       store.appendTurn(sessionId, turn)
       this.deps.emit({ type: 'session-updated', sessionId })
       const results: ToolResult[] = []
-      for (const call of parsed.calls) {
-        const result = await this.executeCall(sessionId, call)
-        results.push(result)
-        this.deps.emit({ type: 'tool-start', sessionId, result })
+      const abort = new AbortController()
+      state.abort = abort
+      try {
+        for (const call of parsed.calls) {
+          if (state.stopped.has('tool')) {
+            results.push({
+              callId: call.id,
+              name: call.name,
+              ok: false,
+              output: '',
+              error: '用户中止了工具执行',
+              durationMs: 0
+            })
+            break
+          }
+          const result = await this.executeCall(sessionId, call, abort.signal)
+          results.push(result)
+          store.patchTurn(sessionId, turn.id, { toolResults: results.slice() })
+          this.deps.emit({ type: 'tool-start', sessionId, result })
+        }
+      } finally {
+        state.abort = undefined
+        state.stopped.delete('tool')
       }
-      store.patchTurn(sessionId, turn.id, { toolResults: results })
+      store.patchTurn(sessionId, turn.id, { toolResults: results, status: 'done' })
+      this.deps.emit({ type: 'session-updated', sessionId })
       await this.toolLoop(
         sessionId,
         state,
         formatObservations(results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error })))
       )
     } catch (err) {
-      this.handleLoopError(sessionId, err)
+      this.handleLoopError(state.sessionId, err)
     } finally {
-      this.running.delete(sessionId)
-      this.maybeCompact(sessionId)
+      this.finishRunning(state)
+      this.maybeCompact(state.sessionId)
     }
   }
 
-  /** 取会话里最近一条用户消息（纠偏时还原原始任务） */
+  /** 取会话里最近一条用户消息（纠偏时还原原始任务）；续接会话没有用户轮次时沿血缘回溯 */
   private lastUserTextOf(sessionId: string): string {
-    const turns = this.deps.store.get(sessionId)?.turns ?? []
-    for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i]!.role === 'user') return turns[i]!.text
+    let sid: string | undefined = sessionId
+    for (let depth = 0; depth < 5 && sid; depth++) {
+      const session = this.deps.store.get(sid)
+      const turns = session?.turns ?? []
+      for (let i = turns.length - 1; i >= 0; i--) {
+        if (turns[i]!.role === 'user') return turns[i]!.text
+      }
+      sid = session?.parentSessionId
     }
     return ''
   }
@@ -245,14 +364,19 @@ export class AgentLoop {
     const msg = err instanceof Error ? err.message : String(err)
     Logger.warn('loop', `循环结束 session=${sessionId}: ${msg}`)
     this.deps.emit({ type: 'notice', sessionId, level: 'info', message: `任务结束：${msg}` })
-    this.deps.store.appendTurn(sessionId, {
-      id: `turn_${nanoid(8)}`,
-      role: 'system',
-      text: `[Lidow] ${msg}`,
-      ts: Date.now(),
-      status: 'stopped'
-    })
-    this.deps.emit({ type: 'session-updated', sessionId })
+    try {
+      this.deps.store.appendTurn(sessionId, {
+        id: `turn_${nanoid(8)}`,
+        role: 'system',
+        text: `[Lidow] ${msg}`,
+        ts: Date.now(),
+        status: 'stopped'
+      })
+      this.deps.emit({ type: 'session-updated', sessionId })
+    } catch (e) {
+      // 会话可能已被用户删除：错误轮次写不进去不能再抛（否则变成未处理 rejection）
+      Logger.warn('loop', `无法记录错误轮次（会话可能已删除）：${e instanceof Error ? e.message : String(e)}`)
+    }
   }
 
   /**
@@ -262,11 +386,23 @@ export class AgentLoop {
     const store = this.deps.store
     let prompt = initialPrompt
     let wildHintCount = 0
+    // 上下文耗尽会自动续接到新会话：此后所有落盘/发送/事件都以新 id 为准
+    let activeSid = sessionId
+    const collect = async (p: string): Promise<string> => {
+      const r = await this.collectReply(activeSid, p)
+      if (r.sessionId !== activeSid) {
+        const prev = activeSid
+        this.rekeyRunning(state, prev, r.sessionId)
+        activeSid = r.sessionId
+        Logger.info('loop', `任务已切换到续接会话 ${activeSid}（原 ${prev}）`)
+      }
+      return r.text
+    }
     for (let round = 0; round < MAX_TURNS; round++) {
       if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
 
       // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗 + 拒绝改写）
-      let reply = await this.collectReply(sessionId, prompt)
+      let reply = await collect(prompt)
       let rewriteCount = 0
       for (;;) {
         const mod = this.deps.securityMod()
@@ -277,13 +413,13 @@ export class AgentLoop {
         )
         if (!outcome.followUp) {
           if (outcome.exhausted) {
-            this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
+            this.deps.emit({ type: 'notice', sessionId: activeSid, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
           }
           break
         }
         rewriteCount++
         Logger.info('loop', `检测到拒绝，改写重试 ${rewriteCount}/${mod.maxRewrites}`)
-        reply = await this.collectReply(sessionId, outcome.followUp)
+        reply = await collect(outcome.followUp)
       }
 
       // 1.5 自定义拦截：命中即终止本轮，不执行工具
@@ -294,7 +430,7 @@ export class AgentLoop {
           Logger.warn('loop', `回复命中拦截规则: ${hit}`)
           this.deps.emit({
             type: 'notice',
-            sessionId,
+            sessionId: activeSid,
             level: 'warn',
             message: mod.customNotice || `回复命中拦截规则（${hit}），已阻止工具执行`
           })
@@ -305,6 +441,8 @@ export class AgentLoop {
       for (const marker of extractMemoryMarkers(reply)) {
         this.deps.captureMemory(marker)
       }
+      // 思考过程：取走本轮缓冲，随 assistant turn 落盘（UI 默认折叠，可展开查看）
+      const think = this.deps.takeThinking(activeSid)
       const intercepted = interceptCheck(reply, this.deps.securityMod().customPatterns) !== null
       // 先解析一次，后续入库/渲染/执行共用结果。
       // 入库文本用 cleanText：工具块与平台原生方言都不该给用户看。
@@ -314,10 +452,13 @@ export class AgentLoop {
         role: 'assistant',
         text: parsed.cleanText || reply,
         ts: Date.now(),
-        status: intercepted ? 'stopped' : 'done'
+        // 有工具调用时先标记 streaming：UI 据此显示「正在执行中 · Ns」计时；
+        // 工具批次结束后再改回 done。
+        status: intercepted ? 'stopped' : parsed.calls.length > 0 ? 'streaming' : 'done',
+        think: think || undefined
       }
-      store.appendTurn(sessionId, turn)
-      this.deps.emit({ type: 'session-updated', sessionId })
+      store.appendTurn(activeSid, turn)
+      this.deps.emit({ type: 'session-updated', sessionId: activeSid })
 
       if (intercepted) break
 
@@ -333,21 +474,21 @@ export class AgentLoop {
           if (wildHintCount++ >= MAX_WILD_HINTS) {
             Logger.warn('loop', `格式纠偏已达上限 ${MAX_WILD_HINTS} 次，放弃`)
             this.deps.emit({
-              type: 'notice', sessionId, level: 'warn',
+              type: 'notice', sessionId: activeSid, level: 'warn',
               message: 'AI 多次使用了不支持的调用格式，已停止自动纠正，请换个说法重新提问'
             })
             break
           }
           Logger.info('loop', `回复含野生工具格式，发纠偏提示（${wildHintCount}/${MAX_WILD_HINTS}）`)
           this.deps.emit({
-            type: 'notice', sessionId, level: 'info',
+            type: 'notice', sessionId: activeSid, level: 'info',
             message: 'AI 用了不支持的调用格式，已自动纠正并重试'
           })
-          prompt = FORMAT_FIX_PROMPT + this.lastUserTextOf(sessionId)
+          prompt = FORMAT_FIX_PROMPT + this.lastUserTextOf(activeSid)
           continue
         }
         // 纯答复，任务完成：窗口失焦时系统通知（用户切走了也能知道干完了）
-        this.deps.notifyDone?.(sessionId, parsed.cleanText.slice(0, 120))
+        this.deps.notifyDone?.(activeSid, parsed.cleanText.slice(0, 120))
         break
       }
       if (parsed.native) {
@@ -356,20 +497,46 @@ export class AgentLoop {
         wildHintCount = 0
       }
 
-      // 3. 执行工具（带确认门 + 网页内执行遮罩）
-      this.deps.toolMask?.(sessionId, true, `工具执行中（${parsed.calls.length} 个，第 ${round + 1} 轮）…`)
+      // 3. 执行工具（带确认门 + 网页内执行遮罩 + 可中止）
+      this.deps.toolMask?.(activeSid, true, `工具执行中（${parsed.calls.length} 个，第 ${round + 1} 轮）…`)
+      const abort = new AbortController()
+      state.abort = abort
       const results: ToolResult[] = []
+      // 工具组在 UI 上实时增长：节流写盘（长批次/大输出时避免每次调用都重写会话）
+      let lastPatchAt = 0
       try {
         for (const call of parsed.calls) {
           if (state.stopped.has('auto-loop')) break
-          const result = await this.executeCall(sessionId, call)
+          if (state.stopped.has('tool')) {
+            // 「停止工具」：不再启动后续调用，把取消结果回传给 AI
+            results.push({
+              callId: call.id,
+              name: call.name,
+              ok: false,
+              output: '',
+              error: '用户中止了工具执行',
+              durationMs: 0
+            })
+            break
+          }
+          const result = await this.executeCall(activeSid, call, abort.signal)
           results.push(result)
-          this.deps.emit({ type: 'tool-start', sessionId, result })
+          const now = Date.now()
+          if (now - lastPatchAt > 400 || results.length === parsed.calls.length) {
+            lastPatchAt = now
+            store.patchTurn(activeSid, turn.id, { toolResults: results.slice() })
+          }
+          this.deps.emit({ type: 'tool-start', sessionId: activeSid, result })
         }
       } finally {
-        this.deps.toolMask?.(sessionId, false)
+        state.abort = undefined
+        // 停止标志只作用于当前批次：下一轮 AI 正常调度工具不应继续被取消
+        state.stopped.delete('tool')
+        this.deps.toolMask?.(activeSid, false)
       }
-      store.patchTurn(sessionId, turn.id, { toolResults: results })
+      store.patchTurn(activeSid, turn.id, { toolResults: results, status: 'done' })
+      // 让 UI 收到最终状态（执行中 → 已完成、文件变更统计刷新）
+      this.deps.emit({ type: 'session-updated', sessionId: activeSid })
 
       if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
 
@@ -390,8 +557,11 @@ export class AgentLoop {
    *    最多 maxRetries 次；收到任何新内容即重置计时。
    *  - 失败重试：send/await 抛错（含限流）时按退避重发，429 用更长的等待。
    */
-  private async collectReply(sessionId: string, prompt: string): Promise<string> {
+  private async collectReply(sessionId: string, prompt: string): Promise<{ text: string; sessionId: string }> {
     const { watchdog: wdCfg, retry: retryCfg } = this.deps.settings()
+    // 停止标志按「调用时的 running 键」检查：续接会把键迁到新会话，
+    // 迁移由调用方（toolLoop）负责，这里用固定的 state 引用判断用户是否喊停
+    const runState = this.running.get(sessionId)
     // 上下文耗尽续接会把整个批次挪到新会话，所以 sid 需要可变
     let sid = sessionId
     let cur = prompt
@@ -404,11 +574,11 @@ export class AgentLoop {
 
     for (;;) {
       try {
-        return await this.awaitWithWatchdog(sid, cur, wdCfg)
+        return { text: await this.awaitWithWatchdog(sid, cur, wdCfg), sessionId: sid }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         // 用户主动停止：不要重试
-        if (this.running.get(sid)?.stopped.has('generate')) throw err
+        if (runState?.stopped.has('generate')) throw err
 
         // 上下文耗尽：不是普通失败，重试也没用 —— 压缩后带摘要开新会话继续。
         // 压缩流程自身也可能收到耗尽信号：此时再续接会无限递归，直接上抛。
@@ -576,17 +746,32 @@ export class AgentLoop {
         message: '上下文已用完，正在压缩并自动开新会话继续…'
       })
       // 先把已有内容压缩成摘要（compactNow 内部失败会回退本地摘要，不会抛）
-      await this.compactNow(sessionId, false)
+      await this.compactNow(sessionId, false, true)
       const session = this.deps.store.get(sessionId)
       if (!session) return null
+      const summary = this.lastSummaryOf(sessionId)
 
       const next = this.deps.store.create(session.projectId, session.providerId, sessionId)
       this.deps.store.update(next.id, (s) => ({ ...s, title: `${session.title}（续）`.slice(0, 40) }))
+      // 摘要必须落进新会话：调用方用 lastSummaryOf(next) 组装续接 prompt，
+      // 不落盘的话新会话的第一句话会丢掉全部压缩上下文。
+      if (summary) {
+        this.deps.store.appendTurn(next.id, {
+          id: `turn_${nanoid(8)}`,
+          role: 'system',
+          text: summary,
+          ts: Date.now(),
+          status: 'done'
+        })
+      }
       this.deps.emit({ type: 'session-updated', sessionId: next.id })
       Logger.info('loop', `上下文耗尽 → 新会话 ${next.id}（父 ${sessionId}）`)
 
       // 切网页载体到新会话；之后由调用方把摘要作为 prompt 发送
       await this.deps.rebindToSession(next.id)
+      // 渲染层需要把当前标签/活动会话迁到新会话，否则后续落盘都在新会话、
+      // 用户眼前还停在旧会话，也看不到续接后的回复
+      this.deps.emit({ type: 'session-switched', fromSessionId: sessionId, sessionId: next.id })
       this.deps.emit({
         type: 'notice',
         sessionId: next.id,
@@ -610,15 +795,26 @@ export class AgentLoop {
     return ''
   }
 
-  private async executeCall(sessionId: string, call: ToolCall): Promise<ToolResult> {
+  private async executeCall(sessionId: string, call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const started = Date.now()
+    const summary = toolSummary(call)
     const def = this.deps.tools.get(call.name)
     if (!def) {
-      return { callId: call.id, name: call.name, ok: false, output: '', error: `未知工具: ${call.name}`, durationMs: 0 }
+      return {
+        callId: call.id,
+        name: call.name,
+        ok: false,
+        output: '',
+        summary,
+        error: `未知工具: ${call.name}`,
+        durationMs: 0
+      }
     }
-    const base = this.deps.toolCtxBase()
+    const base = this.deps.toolCtxBase(sessionId)
     const ctx: ToolContext = {
       ...base,
+      sessionId,
+      signal,
       confirm: (reason) => this.deps.confirm(sessionId, reason)
     }
     try {
@@ -629,6 +825,7 @@ export class AgentLoop {
         ok: out.ok,
         output: out.output,
         display: out.display,
+        summary,
         error: out.error,
         durationMs: Date.now() - started
       }
@@ -638,6 +835,7 @@ export class AgentLoop {
         name: call.name,
         ok: false,
         output: '',
+        summary,
         error: String(e instanceof Error ? e.message : e),
         durationMs: Date.now() - started
       }
@@ -657,7 +855,11 @@ export class AgentLoop {
       Logger.info('loop', '压缩延后：会话正在执行任务')
       return
     }
-    void this.compactNow(sessionId, true)
+    if (this.compacting.has(sessionId)) return
+    // 子代理会话可能在压缩期间被删除：失败只记录，不能变成未处理 rejection
+    void this.compactNow(sessionId, true).catch((e) => {
+      Logger.warn('loop', `自动压缩失败：${e instanceof Error ? e.message : String(e)}`)
+    })
   }
 
   /**
@@ -667,9 +869,34 @@ export class AgentLoop {
    * 「为什么这么做」，后续轮次基于残缺上下文行动容易跑偏。
    * 摘要请求走同一网页会话，因此也受看门狗/重试保护。
    *
+   * 同一会话同时只跑一个压缩；automatic 触发撞上已有压缩时直接返回，
+   * 手动触发则等待同一个 promise。
+   *
    * @param auto 由阈值触发的自动压缩（用于区分提示文案）
+   * @param force 循环内部（上下文耗尽续接）调用：允许在任务运行中压缩
    */
-  async compactNow(sessionId: string, auto = false): Promise<void> {
+  async compactNow(sessionId: string, auto = false, force = false): Promise<void> {
+    // 任务执行中手动压缩会与循环的 awaitReply 抢同一网页，直接拒绝
+    if (!force && this.running.has(sessionId)) {
+      this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '任务执行中，暂时不能压缩上下文' })
+      return
+    }
+    const inflight = this.compactRuns.get(sessionId)
+    if (inflight) {
+      if (auto) return
+      await inflight
+      return
+    }
+    this.compacting.add(sessionId)
+    const run = this.doCompact(sessionId, auto).finally(() => {
+      this.compacting.delete(sessionId)
+      this.compactRuns.delete(sessionId)
+    })
+    this.compactRuns.set(sessionId, run)
+    await run
+  }
+
+  private async doCompact(sessionId: string, auto: boolean): Promise<void> {
     const session = this.deps.store.get(sessionId)
     if (!session) return
     const keep = 8
@@ -698,15 +925,12 @@ export class AgentLoop {
       message: auto ? '上下文接近上限，正在自动压缩…' : '正在压缩上下文…'
     })
 
-    this.compacting.add(sessionId)
     // 让 AI 写摘要；失败则回退本地摘要（保证压缩这件事一定完成，不卡住用户）
     let summary = ''
     try {
-      summary = (await this.collectReply(sessionId, COMPACT_INSTRUCTION + '\n\n' + transcript)).trim()
+      summary = (await this.collectReply(sessionId, COMPACT_INSTRUCTION + '\n\n' + transcript)).text.trim()
     } catch (e) {
       Logger.warn('loop', `AI 摘要失败，回退本地摘要：${e instanceof Error ? e.message : String(e)}`)
-    } finally {
-      this.compacting.delete(sessionId)
     }
     if (!summary) summary = this.buildFallbackSummary(oldTurns)
 

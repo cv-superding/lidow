@@ -92,6 +92,11 @@ export class SessionStore {
     }
   }
 
+  /** 索引里的会话元数据（不读整份会话文件，供按会话解析所属项目等热路径） */
+  meta(sessionId: string): SessionMeta | undefined {
+    return this.index.get(sessionId)
+  }
+
   private writeSession(session: Session): void {
     const tmp = `${this.fileOf(session.id)}.tmp`
     writeFileSync(tmp, JSON.stringify(session, null, 2), 'utf-8')

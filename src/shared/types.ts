@@ -27,6 +27,8 @@ export interface ToolResult {
   output: string
   /** 渲染端可视化卡片（不回传 AI） */
   display?: ToolDisplay
+  /** 一句话摘要（文件路径 / 命令 / URL），折叠列表里展示关键信息 */
+  summary?: string
   durationMs: number
   error?: string
 }
@@ -38,6 +40,8 @@ export interface ChatTurn {
   ts: number
   status: TurnStatus
   toolResults?: ToolResult[]
+  /** 模型思考过程：默认折叠，只在展开时显示（提升为可查看的活动记录） */
+  think?: string
   /** 生成速度 tokens/s（近似：按字符/4） */
   tps?: number
 }
@@ -93,6 +97,12 @@ export interface DomAdapter {
   newChat: string[]
   /** 已登录标志（存在=已登录） */
   loginFlag: string[]
+  /**
+   * 输入框下方的平台自带功能（纯净模式底栏按平台渲染）。
+   * 每个平台不一样：DeepSeek 是「深度思考/智能搜索」，豆包是「对话/项目/技能/快速」。
+   * keywords 用于在网页里定位那个按钮（点击时转发）。
+   */
+  composerActions?: { label: string; keywords: string[] }[]
 }
 
 export interface ProviderAccount {
@@ -247,6 +257,14 @@ export interface AppSettings {
   language: 'zh-CN' | 'en-US'
   pureMode: boolean
   dangerConfirm: boolean
+  /**
+   * 权限模式（对齐 ZCode 的四档）：
+   *  - plan      ：编辑前先出计划，用户确认后才动
+   *  - ask       ：改文件/执行命令前都问
+   *  - autonomous：只在有风险时问
+   *  - full      ：减少确认次数（危险命令仍拦）
+   */
+  permissionMode: 'plan' | 'ask' | 'autonomous' | 'full'
   ssrfProtection: boolean
   commandTimeoutMs: number
   sandboxTimeoutMs: number
@@ -342,6 +360,10 @@ export interface OverlayCommand {
     | 'set-project'
     | 'tool-mask'
     | 'reset-first-run'
+    | 'toggle-think'
+    | 'toggle-search'
+    | 'upload-file'
+    | 'click-keywords'
   text?: string
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
@@ -354,8 +376,12 @@ export interface OverlayCommand {
    * 那个输入框附近，而不是我们自己的侧栏菜单里。
    */
   projectRoot?: string | null
+  /** set-project：当前会话/项目是否已有对话记录（已初始化则不再弹首次引导） */
+  initialized?: boolean
   /** tool-mask：是否显示「工具执行中」遮罩（cuckoo 同款，防止执行期间乱点页面） */
   show?: boolean
+  /** click-keywords：要在页面里点击的按钮文案候选（平台功能各不相同） */
+  keywords?: string[]
 }
 
 export type OverlayEvent =
@@ -367,6 +393,8 @@ export type OverlayEvent =
   | { type: 'stream-end'; text: string }
   | { type: 'send-result'; ok: boolean; error?: string }
   | { type: 'float-menu-action'; action: string }
+  /** 网页开关状态（深度思考 / 智能搜索）——chip 高亮用 */
+  | { type: 'toggle-state'; think: boolean; search: boolean }
   /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */
   | { type: 'net-stream'; text: string; think?: string; finished: boolean }
   /** 网络层 hook：一轮回复完整结束（status 区分 stopped/error/finished） */

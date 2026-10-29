@@ -44,6 +44,12 @@ function visible(el: Element | null | undefined): el is Element {
   return style.visibility !== 'hidden' && style.display !== 'none'
 }
 
+/** 拼 innerHTML 前的转义（项目目录来自用户磁盘，不能直接插入标签） */
+function escapeHtml(s: string): string {
+  const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  return s.replace(/[&<>"']/g, (c) => map[c] ?? c)
+}
+
 function findFirst(selectors: string[], filter?: (el: Element, index: number) => boolean): Element | null {
   if (!selectors) return null
   let seen = 0
@@ -140,7 +146,10 @@ function click(el: Element): void {
   el.dispatchEvent(new MouseEvent('mousedown', base))
   el.dispatchEvent(new PointerEvent('pointerup', { ...base, pointerId: 1, isPrimary: true }))
   el.dispatchEvent(new MouseEvent('mouseup', base))
-  el.dispatchEvent(new MouseEvent('click', base))
+  const ev = new MouseEvent('click', base) as MouseEvent & { __lidowInternal?: boolean }
+  // 标记为 lidow 程序化点击：新对话监听到自己的合成点击时不能再弹引导
+  ev.__lidowInternal = true
+  el.dispatchEvent(ev)
 }
 
 // ---------- 消息/流式监听 ----------
@@ -151,6 +160,8 @@ let streaming = false
 let everFlag = false // 平台是否出现过流式标志（决定是否启用文本稳定兜底判定）
 let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
+/** 最近一次经 lidow 发出去的文本：部分平台把用户消息也匹配进 bubble，不能当回复 */
+let lastSentText = ''
 
 /** 取最后一个可见匹配（消息类选择器用户/AI 共用时，AI 回复必然在最后） */
 function findLast(selectors: string[]): Element | null {
@@ -219,6 +230,7 @@ function finishStream(): void {
   streaming = false
   const finalText = lastBubbleText()
   lastText = finalText
+  lastSentText = ''
   send({ type: 'stream-end', text: finalText })
 }
 
@@ -227,6 +239,14 @@ function watchMessages(): void {
   observer = new MutationObserver(() => {
     const flag = isStreaming()
     const text = lastBubbleText()
+
+    // 部分平台的 bubble 选择器同时命中用户消息：刚经由 lidow 发出的那段文本
+    // 不是 AI 回复，直接当基线吞掉，否则会触发一次假的流式开始/结束。
+    // 用去空白比较：气泡渲染会改写换行/空行。
+    if (text && lastSentText && text.replace(/\s+/g, '') === lastSentText.replace(/\s+/g, '')) {
+      lastText = text
+      return
+    }
 
     if (flag) {
       everFlag = true
@@ -288,6 +308,8 @@ async function doSend(text: string): Promise<void> {
     // 等待 React 状态稳定后再发送（cuckoo 做法：随机 2-4s；这里取 1.2s 折中）
     await new Promise((r) => setTimeout(r, 1200))
 
+    // 发送前记下最后一个 AI 气泡的文本（旧回复仍在页面上，不能当新回复处理）
+    const baseline = lastBubbleText()
     // 发送动作只执行一次：
     //   1) 精确点击发送按钮（过滤掉错误的 svg 包装元素——按钮必须可见且未禁用）
     //   2) 失败则 Enter 兜底（需要先 focus 输入框 + isComposing:false）
@@ -315,7 +337,10 @@ async function doSend(text: string): Promise<void> {
     send({ type: 'send-result', ok: true })
     streaming = false
     everFlag = false
-    lastText = ''
+    lastSentText = text
+    // 旧回复还在页面上：把它当基线，只有文本真的变化才视为新一轮回复。
+    // 此前重置成空串会让旧气泡被当成新回复，触发伪 stream-start/end。
+    lastText = baseline
   } catch (e) {
     send({ type: 'send-result', ok: false, error: String(e instanceof Error ? e.message : e) })
   }
@@ -447,10 +472,22 @@ function evaluateLoginNow(): void {
   //     而头像 class 名平台改版就变 —— 实测 DeepSeek 首页已登录却没有任何 avatar 元素，
   //     只靠 loginFlag 会永远判成未登录，初始化模态因此永不出现
   //  3) loginFlag 命中 → 已登录（兜底）
+  // 页面上有「登录 / 立即登录 / 注册」这样的按钮 → 明确未登录。
+  // 这条优先于输入框判断：豆包等平台的登录页也有 textarea（搜索框），
+  // 只看输入框会误判成已登录，于是在没登录的平台上弹初始化（实测踩中）。
+  const LOGIN_BTN_KWS = ['登录', '立即登录', '注册', 'Log in', 'Sign in', 'Sign up']
+  const loginBtn = [...document.querySelectorAll<HTMLElement>('button, div[role="button"], a')].find((el) => {
+    const t = (el.textContent ?? '').trim()
+    if (!t || t.length > 8) return false
+    if (el.closest('#lidow-first-run')) return false
+    return LOGIN_BTN_KWS.includes(t)
+  })
   const nowLoggedIn = onLoginPage
     ? false
-    : findFirst(adapter.input) !== null ||
-      (adapter.loginFlag.length > 0 && findFirst(adapter.loginFlag) !== null)
+    : loginBtn
+      ? false
+      : findFirst(adapter.input) !== null ||
+        (adapter.loginFlag.length > 0 && findFirst(adapter.loginFlag) !== null)
   if (nowLoggedIn !== loggedIn) {
     loggedIn = nowLoggedIn
     renderFirstRun()
@@ -478,6 +515,8 @@ setInterval(() => {
   // 状态快照：登录态误判时能直接看出是选择器问题还是页面结构变了
   exposeState({ loggedIn, projectKnown, projectRoot })
   send({ type: 'login-state', loggedIn })
+  // 开关状态跟平台实际按钮保持同步（用户也可能在网页里自己点）
+  reportToggleStates()
 }, 1000)
 
 // ---------- 平台环境提示弹窗自动关闭（仅处理已知警告文本，不触碰其它内容） ----------
@@ -582,6 +621,54 @@ let firstRunDismissed = false
 let loggedIn = false
 /** 是否已收到过主进程的明确 projectRoot 下发（区分"还没收到"与"确实没有项目"） */
 let projectKnown = false
+/** 主进程告知：当前会话/项目已有对话记录（已初始化，重载后不再弹引导） */
+let projectInitialized = false
+
+/**
+ * 引导关闭状态持久化（按项目目录记在页面 localStorage）。
+ *
+ * 为什么需要：平台在发出第一条消息后常常整页导航（/ → /a/chat/s/<id>），
+ * preload 随之重跑，内存里的 firstRunDismissed 被重置 —— 用户刚点完
+ * 「新建对话」初始化完，弹窗立刻又出现（实测踩中）。
+ * 用 localStorage 跨页面重载记住已初始化，同时保留显式「新建对话」重置入口。
+ */
+const FIRST_RUN_KEY_PREFIX = 'lidow:firstRunDismissed:'
+
+function firstRunKey(root: string): string {
+  return FIRST_RUN_KEY_PREFIX + root.toLowerCase()
+}
+
+function isFirstRunPersisted(root: string | null): boolean {
+  if (!root) return false
+  try {
+    return localStorage.getItem(firstRunKey(root)) === '1'
+  } catch {
+    return false
+  }
+}
+
+function persistFirstRunDismissed(root: string | null): void {
+  if (!root) return
+  try {
+    localStorage.setItem(firstRunKey(root), '1')
+  } catch {
+    /* 隐私模式/无存储时忽略 */
+  }
+}
+
+/** 显式开新对话时清除，让引导能在新对话里再次出现 */
+function clearFirstRunPersisted(): void {
+  try {
+    const keys: string[] = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(FIRST_RUN_KEY_PREFIX)) keys.push(k)
+    }
+    for (const k of keys) localStorage.removeItem(k)
+  } catch {
+    /* ignore */
+  }
+}
 
 /** 把引导状态写到 DOM 属性上（隔离世界的 window 主世界读不到，DOM 是共享的） */
 function exposeState(state: Record<string, unknown>): void {
@@ -597,16 +684,26 @@ function renderFirstRun(): void {
   // 显示条件：
   //  1) 登录已完成 —— 登录页上没有输入框，此时弹引导毫无意义
   //  2) 用户本次没有手动关掉
+  //  3) 当前目录此前没有初始化过（localStorage 持久化，跨页面重载有效）
+  //  4) 主进程确认当前会话/项目还没有对话记录
   // 注意：不再以「是否已有项目」为前提。需求是登录成功后无条件强制初始化一次，
   // 已打开项目的用户也应看到当前目录并确认/更换（此前带着 !projectRoot 判断，
   // 项目一打开就永不弹，等于功能不存在）。
-  const shouldShow = loggedIn && projectKnown && !firstRunDismissed
-  exposeState({ loggedIn, projectKnown, projectRoot, dismissed: firstRunDismissed, shouldShow })
+  const persisted = isFirstRunPersisted(projectRoot)
+  const shouldShow = loggedIn && projectKnown && !firstRunDismissed && !persisted && !projectInitialized
+  exposeState({ loggedIn, projectKnown, projectRoot, initialized: projectInitialized, dismissed: firstRunDismissed, shouldShow })
   if (!shouldShow) {
     existing?.remove()
     return
   }
-  if (existing) return
+  // 已显示：只有「目录变了」才重建内容。
+  // 直接 return 会导致选完新目录后弹窗仍显示旧路径（实测踩中）；
+  // 无条件重建又会把正在点按钮的用户打断（DOM 被替换）。
+  if (existing) {
+    const shown = existing.getAttribute('data-dir') ?? ''
+    if (shown === (projectRoot ?? '')) return
+    existing.remove()
+  }
 
   const style = new CSSStyleSheet()
   style.replaceSync(`
@@ -636,6 +733,11 @@ function renderFirstRun(): void {
     #lidow-first-run .fr-btn:hover{background:#3b5bdb;box-shadow:0 4px 12px rgba(77,107,254,.32);}
     #lidow-first-run .fr-btn:disabled{opacity:.6;cursor:not-allowed;}
     #lidow-first-run .fr-btn.ghost{background:transparent;color:#545a67;border:1px solid rgba(16,24,40,.14);font-weight:500;}
+    #lidow-first-run .fr-continue{margin-top:12px;width:100%;padding:10px 14px;border-radius:10px;
+      border:1px dashed rgba(16,24,40,.18);background:transparent;cursor:pointer;text-align:left;transition:all .18s;}
+    #lidow-first-run .fr-continue:hover{background:rgba(77,107,254,.06);border-color:rgba(77,107,254,.4);}
+    #lidow-first-run .fr-continue-title{display:block;font-size:12.5px;font-weight:600;color:#2f3640;}
+    #lidow-first-run .fr-continue-desc{display:block;margin-top:2px;font-size:11px;color:#8a8f9b;}
     #lidow-first-run .fr-btn.ghost:hover{background:rgba(16,24,40,.04);box-shadow:none;}
     @media (prefers-color-scheme: dark){
       #lidow-first-run .fr-card{background:#1a1a1a;border-color:rgba(255,255,255,.08);color:#e4e6eb;
@@ -659,16 +761,25 @@ function renderFirstRun(): void {
   const hasDir = Boolean(projectRoot)
   const box = document.createElement('div')
   box.id = 'lidow-first-run'
+  // 记录当前展示的目录：目录变化时据此判断要不要重建内容
+  box.setAttribute('data-dir', projectRoot ?? '')
   box.innerHTML =
     '<div class="fr-card">' +
     '<div class="fr-icon">📁</div>' +
     '<div class="fr-title">第一步：初始化项目</div>' +
     '<div class="fr-text">AI 需要一个工作目录才能读写你的文件。<br/>选定目录后再开始对话。</div>' +
-    `<div class="fr-dir${hasDir ? '' : ' empty'}">${hasDir ? projectRoot : '尚未选择目录'}</div>` +
+    `<div class="fr-dir${hasDir ? '' : ' empty'}">${hasDir ? escapeHtml(projectRoot ?? '') : '尚未选择目录'}</div>` +
     '<div class="fr-actions">' +
-    `<button class="fr-btn ${hasDir ? 'ghost' : ''}" data-act="pick">${hasDir ? '更换目录' : '选择目录'}</button>` +
-    (hasDir ? '<button class="fr-btn" data-act="confirm">使用此目录，开始</button>' : '') +
+    `<button class="fr-btn ghost" data-act="pick">${hasDir ? '更换目录' : '选择目录'}</button>` +
+    (hasDir ? '<button class="fr-btn" data-act="confirm">新建对话</button>' : '') +
     '</div>' +
+    // 继续上一个对话：把当前项目的对话摘要带进新窗口（相当于同一项目的延续）
+    (hasDir
+      ? '<button class="fr-continue" data-act="continue">' +
+        '<span class="fr-continue-title">延续上个对话</span>' +
+        '<span class="fr-continue-desc">把当前项目的对话摘要带进新窗口，接着做</span>' +
+        '</button>'
+      : '') +
     '</div>'
 
   // 已有目录：确认即关闭，并让主进程发一轮初始化提示词
@@ -679,8 +790,23 @@ function renderFirstRun(): void {
     btn.disabled = true
     btn.textContent = '初始化中…'
     firstRunDismissed = true
+    projectInitialized = true
+    // 关键：持久化本次初始化，页面随后整页导航/重载时 preload 重跑也不会再弹
+    persistFirstRunDismissed(projectRoot)
     box.remove()
     send({ type: 'float-menu-action', action: 'confirm-project' })
+  })
+  // 延续上个对话：压缩旧会话 → 摘要发进新对话（同一项目的上下文不丢）
+  box.querySelector<HTMLButtonElement>('[data-act="continue"]')?.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const btn = e.currentTarget as HTMLButtonElement
+    btn.disabled = true
+    btn.style.opacity = '0.6'
+    firstRunDismissed = true
+    projectInitialized = true
+    persistFirstRunDismissed(projectRoot)
+    box.remove()
+    send({ type: 'float-menu-action', action: 'continue-project' })
   })
   box.querySelector<HTMLButtonElement>('[data-act="pick"]')?.addEventListener('click', (e) => {
     e.stopPropagation()
@@ -697,6 +823,88 @@ function renderFirstRun(): void {
   })
 
   document.body.appendChild(box)
+}
+
+/**
+ * 找平台自己的「深度思考 / 智能搜索」开关按钮。
+ * 平台可能用 button、div[role=button]，文案也可能带括号后缀。
+ */
+function findToggleButton(keywords: string[]): HTMLElement | null {
+  const candidates = document.querySelectorAll<HTMLElement>('button, div[role="button"], [class*="button"]')
+  for (const kw of keywords) {
+    for (const el of candidates) {
+      const t = (el.textContent ?? '').trim()
+      if (t === kw || t.startsWith(kw)) return el
+    }
+  }
+  return null
+}
+
+/** 平台按钮是否处于「已激活」态：查常见标记（选中类、aria-pressed、高亮背景） */
+function isToggleActive(el: HTMLElement | null): boolean {
+  if (!el) return false
+  const cls = el.className || ''
+  if (/active|selected|checked|on/i.test(cls)) return true
+  if (el.getAttribute('aria-pressed') === 'true') return true
+  const bg = getComputedStyle(el).backgroundColor
+  // 激活态通常带浅色底（非透明、非纯白）
+  return bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' && bg !== 'rgb(255, 255, 255)'
+}
+
+/** 上报两个开关的真实状态（渲染层据此给 chip 上色） */
+function reportToggleStates(): void {
+  try {
+    const think = isToggleActive(findToggleButton(['深度思考', '深度思考（R1）']))
+    const search = isToggleActive(findToggleButton(['智能搜索', '联网搜索']))
+    send({ type: 'toggle-state', think, search })
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * 监听「用户自己点了平台的新对话按钮」。
+ *
+ * 此前只有主进程下发 new-chat 命令才会重置初始化模态 —— 但用户直接点网页里的
+ * 「开启新对话」按钮时走的是平台自己的逻辑，我们收不到任何信号，
+ * 于是新对话里没有初始化引导（实测：新对话窗口缺少入口）。
+ * 用捕获阶段的全局点击代理来补：命中新对话按钮文案就重置。
+ */
+function watchNativeNewChat(): void {
+  const NEW_CHAT_KWS = ['开启新对话', '新建对话', '新对话', '开始新对话', 'New chat']
+  document.addEventListener(
+    'click',
+    (ev) => {
+      try {
+        // lidow 自己发起的程序化点击（new-chat 命令、初始化发送等）不算用户开新对话
+        if ((ev as MouseEvent & { __lidowInternal?: boolean }).__lidowInternal) return
+        let el = ev.target as HTMLElement | null
+        // 我们自己弹窗里的按钮不算「平台的新对话」——否则点「新建对话」会命中
+        // 这里的 '新对话' 关键字，把 dismissed 重置、弹窗立刻重现（实测踩中）
+        if (el && el.closest('#lidow-first-run')) return
+        for (let i = 0; i < 4 && el; i++) {
+          if (el.id === 'lidow-first-run' || el.closest?.('#lidow-first-run')) return
+          const t = (el.textContent ?? '').trim()
+          if (t && NEW_CHAT_KWS.some((k) => t === k || t.startsWith(k))) {
+            // 等平台自己完成路由跳转后再弹，避免被它随后的渲染覆盖。
+            // 显式开新对话要解除「已初始化」标记，否则新对话里引导永远不再出现。
+            firstRunDismissed = true // 先压住，等 URL 真变了再放开
+            projectInitialized = false
+            clearFirstRunPersisted()
+            window.setTimeout(() => {
+              firstRunDismissed = false
+              renderFirstRun()
+            }, 900)
+            return
+          }
+          el = el.parentElement
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    true
+  )
 }
 
 // ---------- 工具执行遮罩（cuckoo tool-mask 同款）----------
@@ -758,6 +966,7 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
         adapter = cmd.adapter
         watchMessages()
         setupFloatingBall()
+        watchNativeNewChat()
       }
       break
     case 'tool-mask':
@@ -769,11 +978,14 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       // 显式重置：主进程在「新建对话/切换会话」时下发。
       // 只有这条路径能让初始化模态再弹 —— URL 变化一律不重置（防刚确认又弹）。
       firstRunDismissed = false
+      projectInitialized = false
+      clearFirstRunPersisted()
       renderFirstRun()
       break
     case 'set-project':
       projectRoot = cmd.projectRoot || null
       projectKnown = true
+      projectInitialized = Boolean(cmd.initialized)
       // 注意：这里不能重置 firstRunDismissed —— set-project 会在每次 configure
       // （切会话/重载页面）时下发，重置会让用户关掉的模态反复弹出来。
       // 只有「刚完成初始化」才需要重新评估，那由主进程在选完目录后单独通知。
@@ -783,11 +995,37 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       void doSend(cmd.text ?? '')
       break
     case 'new-chat':
-      // 新建对话 = 用户明确要开一个新会话 → 初始化模态重新弹一次。
-      // 这是唯一会让模态复现的入口，避免「刚确认完又弹」
-      firstRunDismissed = false
+      // 这里只是把网页切到一个新对话（切换会话/换绑载体时的技术动作），
+      // 不是用户要重新初始化项目：不能重置引导状态。
+      // 用户自己点平台「新对话」按钮的场景由 watchNativeNewChat 负责。
       doNewChat()
-      renderFirstRun()
+      break
+    case 'toggle-think':
+    case 'toggle-search': {
+      // 深度思考 / 智能搜索是平台自己的按钮：直接点它，比自己维护状态可靠
+      // （平台会在请求体里带 thinking_enabled / search_enabled，我们改不了那些字段）
+      const isThink = cmd.kind === 'toggle-think'
+      const kws = isThink ? ['深度思考', '深度思考（R1）'] : ['智能搜索', '联网搜索']
+      const hit = findToggleButton(kws)
+      if (hit) {
+        click(hit)
+        // 点击后回读一次真实激活态，让 UI 的 chip 变蓝（否则用户看不出开关状态）
+        window.setTimeout(() => reportToggleStates(), 120)
+      }
+      break
+    }
+    case 'click-keywords': {
+      // 通用：按文案候选点击平台自带按钮（底部 chip 转发）
+      const kws = cmd.keywords ?? []
+      if (kws.length > 0) {
+        const hit = findToggleButton(kws)
+        if (hit) click(hit)
+      }
+      break
+    }
+    case 'upload-file':
+      // 触发平台自己的文件选择器（页面内 input[type=file] 由平台逻辑处理）
+      document.querySelector<HTMLInputElement>('input[type="file"]')?.click()
       break
     case 'stop':
       doStop()

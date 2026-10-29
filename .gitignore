@@ -14,3 +14,17 @@ Thumbs.db
 .zcode/
 reference/
 .test-project/
+
+# 运行/调试残留（曾混入仓库的临时文件）
+*.log
+.cdp.mjs
+.probe.js
+.chk.js
+.verify.mjs
+.inject.mjs
+plugins.json
+
+# 编辑器/系统
+*.swp
+*.swo
+*~
