@@ -448,45 +448,53 @@ function PureModeSuggestion(): React.JSX.Element | null {
   return (
     <div
       className="fixed inset-0 z-[70] flex items-center justify-center px-6"
-      style={{ background: 'rgba(9,12,18,.44)', backdropFilter: 'blur(2px)' }}
+      style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
     >
       <div
-        className="anim-pop w-full max-w-[420px] rounded-[var(--r-xl)] p-5"
-        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: 'var(--shadow-lg)' }}
+        className="anim-pop w-full max-w-[388px] overflow-hidden rounded-[18px]"
+        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
       >
-        <div className="flex items-start gap-3">
-          <span
-            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
-            style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-          >
-            <IconPure size={17} />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="text-[14px] font-semibold">项目已初始化</div>
-            <div className="mt-1.5 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-              是否切换到纯净模式？只保留对话与网页，屏蔽多余界面，专注当前任务。
-            </div>
-            <div
-              className="mt-2.5 rounded-[var(--r-md)] px-2.5 py-2 text-[11.5px] leading-relaxed"
-              style={{ background: 'var(--bg-active)', color: 'var(--text-hint)' }}
+        <div className="px-5 pb-4 pt-5">
+          <div className="flex items-center gap-2.5">
+            <span
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px]"
+              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
             >
-              现在不切换也没关系：之后随时可以点击左下角的「纯净模式」进入。
-            </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button className="btn btn-sm btn-ghost" onClick={dismiss}>
-                稍后再说
-              </button>
-              <button
-                className="btn btn-sm btn-primary"
-                onClick={() => {
-                  dismiss()
-                  setPure(true)
-                }}
-              >
-                进入纯净模式
-              </button>
+              <IconPure size={15} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[14px] font-semibold leading-tight">项目已初始化</div>
+              <div className="mt-0.5 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                可以开始第一个任务了
+              </div>
             </div>
           </div>
+
+          <div className="mt-4 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+            切换到纯净模式，只保留对话与网页，屏蔽其余界面，专注当前任务。
+          </div>
+
+          <div className="mt-3 flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            <IconPure size={11} />
+            不想现在切换？之后随时可以从左侧栏底部的「纯净模式」进入。
+          </div>
+        </div>
+        <div
+          className="flex items-center justify-end gap-2 border-t px-5 py-3"
+          style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
+        >
+          <button className="btn btn-sm btn-ghost" onClick={dismiss}>
+            稍后再说
+          </button>
+          <button
+            className="btn btn-sm btn-primary"
+            onClick={() => {
+              dismiss()
+              setPure(true)
+            }}
+          >
+            进入纯净模式
+          </button>
         </div>
       </div>
     </div>
