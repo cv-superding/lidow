@@ -14,7 +14,12 @@ import {
   MemoryView,
   KnowledgeView,
   AuditView,
-  SettingsView
+  SettingsView,
+  SkillsView,
+  AgentsView,
+  McpView,
+  QuickCommandsView,
+  ProjectsView
 } from './views'
 import {
   RAIL_ICONS,
@@ -33,10 +38,15 @@ import { WindowControls, DragStrip } from './TitleBar'
 
 const RAIL: { id: ViewId; label: string }[] = [
   { id: 'home', label: '工作台' },
+  { id: 'projects', label: '工作区' },
   { id: 'sessions', label: '会话' },
   { id: 'files', label: '文件' },
   { id: 'tasks', label: '任务' },
+  { id: 'skills', label: '技能' },
+  { id: 'agents', label: '子代理' },
+  { id: 'mcp', label: 'MCP' },
   { id: 'plugins', label: '插件' },
+  { id: 'quick', label: '快捷指令' },
   { id: 'memory', label: '记忆' },
   { id: 'knowledge', label: '知识库' },
   { id: 'audit', label: '审计' },
@@ -75,7 +85,7 @@ export function LeftRail(): React.JSX.Element {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="flex flex-col gap-1 px-2 py-2.5">
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2.5">
         {RAIL.map((item) => {
           const Icon = RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
           const active = view === item.id
@@ -85,7 +95,10 @@ export function LeftRail(): React.JSX.Element {
               className="nav-item shrink-0"
               data-active={active}
               style={{
-                paddingLeft: expanded ? 10 : 0,
+                // 收起态要同时清掉右侧 padding 和 gap：.nav-item 默认 0 9px + gap 9px，
+                // 只改 paddingLeft 会让 18px 图标在 36px 按钮里偏左，右侧留一截空白。
+                padding: expanded ? '0 9px 0 10px' : 0,
+                gap: expanded ? 9 : 0,
                 justifyContent: expanded ? 'flex-start' : 'center',
                 height: 34
               }}
@@ -110,12 +123,13 @@ export function LeftRail(): React.JSX.Element {
         })}
       </div>
 
-      <div className="mt-auto px-2 pb-2.5">
+      <div className="mt-auto shrink-0 px-2 pb-2.5">
         <div className="divider-soft mb-1.5" />
         <button
           className="nav-item shrink-0"
           style={{
-            paddingLeft: expanded ? 10 : 0,
+            padding: expanded ? '0 9px 0 10px' : 0,
+            gap: expanded ? 9 : 0,
             justifyContent: expanded ? 'flex-start' : 'center',
             height: 34,
             color: pureMode ? 'var(--accent)' : undefined
@@ -259,7 +273,9 @@ function ProjectSwitcher(): React.JSX.Element {
                 style={{ background: isActive ? 'var(--bg-active)' : 'transparent', color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
                 onClick={() => {
                   setOpen(false)
-                  if (!isActive) void openProject(p.root)
+                  if (isActive) return
+                  if (useStore.getState().streamingText && !window.confirm('当前任务仍在生成，切换项目会中断它。继续？')) return
+                  void openProject(p.root)
                 }}
               >
                 <span className="min-w-0 flex-1">
@@ -556,10 +572,15 @@ export function AppShell(): React.JSX.Element {
               Page 自己的滚动区叠加成双层滚动容器，切换时还会重算两遍布局。 */}
           {showManager && (
             <div className="absolute inset-0 z-10" style={{ background: 'var(--bg)' }}>
+              {activeView === 'projects' && <ProjectsView />}
               {activeView === 'sessions' && <SessionsView />}
               {activeView === 'files' && <FilesView />}
               {activeView === 'tasks' && <TasksView />}
+              {activeView === 'skills' && <SkillsView />}
+              {activeView === 'agents' && <AgentsView />}
+              {activeView === 'mcp' && <McpView />}
               {activeView === 'plugins' && <PluginsView />}
+              {activeView === 'quick' && <QuickCommandsView />}
               {activeView === 'memory' && <MemoryView />}
               {activeView === 'knowledge' && <KnowledgeView />}
               {activeView === 'audit' && <AuditView />}

@@ -7,7 +7,7 @@ import type {
   DomAdapter,
   McpToolInfo,
   MemoryEntry,
-  PluginManifest,
+  InstalledPlugin,
   ProjectInfo,
   ProviderDescriptor,
   Session,
@@ -24,7 +24,21 @@ import type {
   McpServerConfig
 } from '@shared/types'
 
-export type ViewId = 'home' | 'sessions' | 'files' | 'tasks' | 'plugins' | 'memory' | 'knowledge' | 'audit' | 'settings'
+export type ViewId =
+  | 'home'
+  | 'projects'
+  | 'sessions'
+  | 'files'
+  | 'tasks'
+  | 'skills'
+  | 'agents'
+  | 'mcp'
+  | 'plugins'
+  | 'quick'
+  | 'memory'
+  | 'knowledge'
+  | 'audit'
+  | 'settings'
 
 /** 统一的项目解析：与 main 的 activeProjectId 对齐（修多项目时取错 projects[0]） */
 export function useProject(s: LidowState): ProjectInfo | null {
@@ -92,7 +106,7 @@ interface LidowState {
   memoryList: MemoryEntry[]
   mcpServers: McpServerConfig[]
   mcpTools: McpToolInfo[]
-  installedPlugins: PluginManifest[]
+  installedPlugins: InstalledPlugin[]
   /** 网页开关状态（深度思考 / 智能搜索），由 overlay 轮询上报 */
   toggleState: { think: boolean; search: boolean }
   marketResults: MarketPlugin[]
@@ -317,21 +331,25 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async openProject(root) {
     const before = get().activeProjectId
-    await api.openProject(root)
-    const state = await api.getAppState()
-    const changed = before !== state.activeProjectId
-    set((s) => ({
-      projects: state.projects,
-      activeProjectId: state.activeProjectId,
-      activeSession: null,
-      sessions: [],
-      plan: null,
-      // 切项目后标签上还挂着旧项目的会话（主进程已统一解绑）：清掉 sessionId，
-      // 让 WebviewTab 重新下发新项目的配置，避免初始化/发送复用旧会话。
-      tabs: changed ? s.tabs.map((t) => ({ ...t, sessionId: '' })) : s.tabs
-    }))
-    await get().refreshProviders()
-    await get().refreshSessions()
+    try {
+      await api.openProject(root)
+      const state = await api.getAppState()
+      const changed = before !== state.activeProjectId
+      set((s) => ({
+        projects: state.projects,
+        activeProjectId: state.activeProjectId,
+        activeSession: null,
+        sessions: [],
+        plan: null,
+        // 切项目后标签上还挂着旧项目的会话（主进程已统一解绑）：清掉 sessionId，
+        // 让 WebviewTab 重新下发新项目的配置，避免初始化/发送复用旧会话。
+        tabs: changed ? s.tabs.map((t) => ({ ...t, sessionId: '' })) : s.tabs
+      }))
+      await get().refreshProviders()
+      await get().refreshSessions()
+    } catch (e) {
+      get().notice(`打开项目失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
   },
 
   async refreshProviders() {

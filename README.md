@@ -48,6 +48,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 - 智能任务拆解（planSubmit 确认卡）、**人机共用任务看板**（AI todoWrite 与用户双向同步）、
   项目模板一键初始化、本地知识库挂载检索、多账号一键切换、自定义快捷指令（斜杠菜单）、全局热键
 - 多端同步：飞书 / 企业微信 / 钉钉群机器人推送
+- 管理页：工作区 / 会话 / 文件 / 任务 / 技能 / 子代理 / MCP / 插件 / 快捷指令 / 记忆 / 知识库 / 审计 / 设置（搜索、筛选、统计与空态操作齐备）
 
 ## 快速开始
 
@@ -77,5 +78,31 @@ npm run dist:mac   # macOS dmg
 
 - [cuckoo-code](https://github.com/wangyongpeng90/cuckoo-code)：架构基座与选择器实测来源
 - [lingya](https://github.com/cymylive/lingya)：安全 MOD、webSearch、多端同步思路来源
+- [dsh-webin](https://github.com/cv-superding/dsh-webin)：DSH 网页化运行与接入参考
 
 Lidow 以 GPL-3.0 发布，继承并回馈上游开源生态。
+
+## 赞助与交流
+
+Lidow 完全免费、开源，不收取任何 API 费用。如果它帮你节省了时间，欢迎请作者喝杯咖啡——
+赞助将用于项目的持续维护、平台适配与文档完善。**赞助完全自愿，不影响任何功能使用。**
+
+感谢每一位支持者，是你们让这个项目能一直更新下去。
+
+<div align="center">
+
+| 微信支付 | 支付宝 |
+| :---: | :---: |
+| <img src="docs/assets/wechat-pay.png" width="280" alt="微信支付" /> | <img src="docs/assets/alipay.jpg" width="280" alt="支付宝" /> |
+
+**扫码请作者喝杯咖啡 ☕**
+
+</div>
+
+### 交流群
+
+QQ 群：**287603167** —— 反馈问题、交流用法、获取更新。
+
+<div align="center">
+  <img src="docs/assets/qq-group.png" width="300" alt="Lidow QQ 群 287603167" />
+</div>

@@ -8,7 +8,7 @@ import type {
   McpServerConfig,
   McpToolInfo,
   MemoryEntry,
-  PluginManifest,
+  InstalledPlugin,
   ProjectInfo,
   ProviderDescriptor,
   QuickCommand,
@@ -31,6 +31,8 @@ export interface LidowApi {
   pickDirectory(): Promise<string | null>
   openProject(root: string): Promise<ProjectInfo>
   closeProject(projectId: string): Promise<void>
+  /** 从项目列表移除（不删除磁盘文件）；当前项目需先切换走 */
+  removeProject(projectId: string): Promise<void>
   quit(): void
 
   // Provider / 账号
@@ -84,13 +86,13 @@ export interface LidowApi {
   listMcpTools(): Promise<McpToolInfo[]>
 
   // 插件
-  listInstalledPlugins(): Promise<PluginManifest[]>
+  listInstalledPlugins(): Promise<InstalledPlugin[]>
   /** 内置精选插件（本地直装，不依赖网络） */
   listBuiltinPlugins(): Promise<MarketPlugin[]>
   searchMarket(query: string, category?: string): Promise<{ items: MarketPlugin[]; warning?: string }>
-  installPlugin(id: string): Promise<PluginManifest[]>
-  uninstallPlugin(id: string): Promise<PluginManifest[]>
-  togglePlugin(id: string, enabled: boolean): Promise<PluginManifest[]>
+  installPlugin(id: string): Promise<InstalledPlugin[]>
+  uninstallPlugin(id: string): Promise<InstalledPlugin[]>
+  togglePlugin(id: string, enabled: boolean): Promise<InstalledPlugin[]>
 
   // DSH
   dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }>

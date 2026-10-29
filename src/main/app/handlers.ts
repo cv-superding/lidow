@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, shell, nativeTheme } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
@@ -52,6 +52,7 @@ export function registerHandlers(
     return ctx.openProject(r)
   })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
+  R('removeProject', (projectId: string) => ctx.removeProject(String(projectId)))
   R('quit', () => app.quit())
 
   // ---------- 窗口控制（自绘标题栏） ----------
@@ -298,7 +299,13 @@ export function registerHandlers(
   R('readFileContent', (projectId: string, relPath: string) => {
     const project = ctx.projects.find((p) => p.id === String(projectId))
     if (!project) throw new Error('项目不存在')
-    return readFileSync(join(project.root, String(relPath)), 'utf-8')
+    const abs = resolve(join(project.root, String(relPath)))
+    const rel = relative(project.root, abs)
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('路径越界')
+    const raw = readFileSync(abs, 'utf-8')
+    if (raw.includes('\u0000')) return '（二进制文件，暂不支持预览）'
+    // 大文件全量塞进渲染进程会卡死：预览截断到 300k
+    return raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw
   })
   R('openPathInSystem', (path: string) => void shell.openPath(String(path)))
 
@@ -448,7 +455,7 @@ export function registerHandlers(
     return ctx.overlay.sendCmdToWebContents(id, {
       kind: 'set-project',
       projectRoot: root,
-      initialized: project ? ctx.projectInitialized(project.id) : false
+      initialized: ctx.settings.get().pureMode || (project ? ctx.projectInitialized(project.id) : false)
     })
   })
   /** 透传网页内交互命令（深度思考/智能搜索/上传文件） */
@@ -461,6 +468,9 @@ export function registerHandlers(
   })
   R('setPureMode', (on: boolean) => {
     ctx.settings.set({ pureMode: Boolean(on) })
+    // 退出纯净模式后重新评估首次引导：纯净模式下网页被对话面板遮住，
+    // 弹窗只会藏在后面；退出后新会话需要正常提示一次初始化。
+    if (ctx.lastSessionId) ctx.configureOverlay(ctx.lastSessionId)
   })
   R('checkUpdate', () => ctx.updateCheck())
   R('downloadUpdate', () =>

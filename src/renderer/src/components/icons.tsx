@@ -367,10 +367,15 @@ export function IconHand({ size, className }: P): React.JSX.Element {
 
 export const RAIL_ICONS = {
   home: IconHome,
+  projects: IconFolderOpen,
   sessions: IconChat,
   files: IconFolder,
   tasks: IconCheck,
+  skills: IconBulb,
+  agents: IconHand,
+  mcp: IconGlobe,
   plugins: IconPlugin,
+  quick: IconSpark,
   memory: IconBrain,
   knowledge: IconBook,
   audit: IconHistory,

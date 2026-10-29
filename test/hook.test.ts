@@ -146,19 +146,22 @@ describe('DeepSeek hook 注入源码', () => {
     expect(text).toContain('继续')
   })
 
-  it('重复快照不能清空类型表（思考内容不许漏进正文）', async () => {
-    // 回归：此前每次快照都清空 fragmentTypes，后续的增量补丁无类型可查，
-    // THINK 的内容被当成 RESPONSE 整段漏进气泡（用户实测）。
+  it('顶层 {v} 增量必须按当前片段类型归类（思考不能漏进正文）', async () => {
+    // 回归：DeepSeek 的思考/正文绝大多数增量是顶层 {"v":"..."} 帧，
+    // 此前一律当正文 → 思考整段漏进气泡（用户实测 + 分享页 DOM 证实）。
     const sse = [
-      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户说"}]}}}',
+      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户想知道"}]}}}',
       '',
-      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户说，先看文件"}]}}}',
+      // 重复快照不能清空类型表，也不能重复追加内容
+      'data: {"v":{"response":{"fragments":[{"type":"THINK","content":"用户想知道"}]}}}',
       '',
-      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，再回答"}',
+      'data: {"v":"当前目录下有什么"}',
       '',
-      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"正文回答"}]}',
+      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，先看文件"}',
       '',
-      'data: {"p":"response/fragments/-1/content","o":"APPEND","v":"，结尾"}',
+      'data: {"p":"response/fragments","o":"APPEND","v":[{"type":"RESPONSE","content":"正文"}]}',
+      '',
+      'data: {"v":"回答"}',
       '',
       'data: {"p":"response/status","v":"FINISHED"}',
       ''
@@ -166,10 +169,10 @@ describe('DeepSeek hook 注入源码', () => {
     const cap = await runHook(sse, 32)
     expect(cap.response).toHaveLength(1)
     const text = cap.response[0]!.text
-    expect(text).toBe('正文回答，结尾')
-    expect(text).not.toContain('用户说')
+    expect(text).toBe('正文回答')
+    expect(text).not.toContain('当前目录')
     const think = cap.thinks[cap.thinks.length - 1] ?? ''
-    expect(think).toBe('用户说，先看文件，再回答')
+    expect(think).toBe('用户想知道当前目录下有什么，先看文件')
   })
 
   it('hook 提取的文本能被工具解析器解析出 write 调用', async () => {

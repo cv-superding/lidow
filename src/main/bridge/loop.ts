@@ -1,6 +1,5 @@
-import type { AppSettings, ChatTurn, StopLevel, ToolCall, ToolResult } from '@shared/types'
+import type { AppSettings, ChatTurn, Session, StopLevel, ToolCall, ToolResult } from '@shared/types'
 import { nanoid } from 'nanoid'
-import type { SessionStore } from '@main/session/store'
 import type { ToolRegistry } from '@main/tools/registry'
 import type { ToolContext } from '@main/tools/types'
 import { formatObservations, looksLikeWildToolIntent, parseToolCalls } from './parser'
@@ -8,11 +7,26 @@ import { attemptRewrite, extractMemoryMarkers, interceptCheck } from '@main/secu
 import { Logger } from '@main/infra/log'
 import { backoffDelay, isContextExhausted } from './resilience'
 
+/**
+ * 循环实际使用的会话存储能力。
+ * 注意：deps.store 是「按会话路由到所属项目」的门面，不是完整 SessionStore，
+ * 没有 create/delete。新建会话必须走 createSession 依赖，否则运行期报
+ * “store.create is not a function”（实测导致自动续接一直失败）。
+ */
+export interface LoopSessionStore {
+  get(sessionId: string): Session | null
+  appendTurn(sessionId: string, turn: ChatTurn): Session
+  patchTurn(sessionId: string, turnId: string, patch: Partial<ChatTurn>): Session
+  update(sessionId: string, fn: (s: Session) => Session): Session
+}
+
 export interface LoopDeps {
-  store: SessionStore
+  store: LoopSessionStore
   tools: ToolRegistry
   /** 工具执行上下文基座：按「当前会话」取，切项目后不能串根目录 */
   toolCtxBase: (sessionId: string) => Omit<ToolContext, 'confirm'>
+  /** 在指定项目里新建会话（自动续接用；routed 门面没有 create） */
+  createSession: (projectId: string, providerId: string, parentSessionId: string) => Session
   confirm: (sessionId: string, reason: string) => Promise<boolean>
   /** 把消息送进网页（overlay 注入发送），resolve 于发送成功 */
   sendToPage: (sessionId: string, text: string) => Promise<void>
@@ -751,7 +765,7 @@ export class AgentLoop {
       if (!session) return null
       const summary = this.lastSummaryOf(sessionId)
 
-      const next = this.deps.store.create(session.projectId, session.providerId, sessionId)
+      const next = this.deps.createSession(session.projectId, session.providerId, session.id)
       this.deps.store.update(next.id, (s) => ({ ...s, title: `${session.title}（续）`.slice(0, 40) }))
       // 摘要必须落进新会话：调用方用 lastSummaryOf(next) 组装续接 prompt，
       // 不落盘的话新会话的第一句话会丢掉全部压缩上下文。

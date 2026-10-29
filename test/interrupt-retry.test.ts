@@ -89,6 +89,15 @@ describe('loop 的看门狗必须能判死本轮', () => {
     const withCompact = finallyParts.filter((x) => x.includes('maybeCompact(state.sessionId)'))
     expect(withCompact.length).toBeGreaterThanOrEqual(2)
   })
+
+  it('自动续接必须走 createSession 依赖（routed store 没有 create）', () => {
+    // 回归：deps.store 是按会话路由的门面，只有 get/appendTurn/patch/update。
+    // 之前直接调 store.create → “this.deps.store.create is not a function”，
+    // 压缩成功后任务仍然终止（实测）。
+    expect(src).toContain('this.deps.createSession(')
+    expect(src).not.toMatch(/this\.deps\.store\.create\(/)
+    expect(src).toContain('interface LoopSessionStore')
+  })
 })
 
 describe('输入框填入必须严格校验（防消息被截断）', () => {

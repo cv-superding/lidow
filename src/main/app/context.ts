@@ -13,7 +13,7 @@ import type { ToolContext, ToolDef } from '@main/tools/types'
 import { ProviderRegistry } from '@main/providers/registry'
 import { SessionStore } from '@main/session/store'
 import { OverlayManager } from '@main/bridge/overlayManager'
-import { AgentLoop } from '@main/bridge/loop'
+import { AgentLoop, type LoopSessionStore } from '@main/bridge/loop'
 import { listAgents } from '@main/ecosystem/skills'
 import { MemoryStore } from '@main/ecosystem/memory'
 import { AuditLedger } from '@main/ecosystem/audit'
@@ -71,14 +71,13 @@ const DEFAULT_SETTINGS: AppSettings = {
 }
 
 /** 循环所需的会话存储门面：按会话所属项目动态路由（修复上游 #24 串扰的根） */
-function routedSessionFacade(resolve: (sessionId: string) => SessionStore): SessionStore {
-  const facade = {
-    appendTurn: (id: string, t: Parameters<SessionStore['appendTurn']>[1]) => resolve(id).appendTurn(id, t),
-    patchTurn: (id: string, tid: string, p: Parameters<SessionStore['patchTurn']>[2]) => resolve(id).patchTurn(id, tid, p),
-    update: (id: string, fn: Parameters<SessionStore['update']>[1]) => resolve(id).update(id, fn),
-    get: (id: string) => resolve(id).get(id)
+function routedSessionFacade(resolve: (sessionId: string) => SessionStore): LoopSessionStore {
+  return {
+    appendTurn: (id, t) => resolve(id).appendTurn(id, t),
+    patchTurn: (id, tid, p) => resolve(id).patchTurn(id, tid, p),
+    update: (id, fn) => resolve(id).update(id, fn),
+    get: (id) => resolve(id).get(id)
   }
-  return facade as unknown as SessionStore
 }
 
 /** 全量运行时上下文：main 进程内一切管理器的聚合点 */
@@ -207,6 +206,9 @@ export class AppContext {
 
     this.loop = new AgentLoop({
       store: routedSessionFacade((id) => this.sessionStoreOf(this.sessionProjectOf(id))),
+      // 自动续接要新建会话：必须走真实 SessionStore（门面没有 create）
+      createSession: (projectId, providerId, parentSessionId) =>
+        this.sessionStoreOf(projectId).create(projectId, providerId, parentSessionId),
       tools: this.tools,
       // 按会话取根目录：任务运行中切换活动项目不能把工具写到另一个项目
       toolCtxBase: (sessionId) => this.toolCtx(sessionId),
@@ -321,10 +323,14 @@ export class AppContext {
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()
       const root = project?.root ?? null
+      const sid = this.overlay.sessionOfWebContents(webContentsId)
+      const session = sid ? this.sessionOf(sid) : null
       this.overlay.sendCmdToWebContents(webContentsId, {
         kind: 'set-project',
         projectRoot: root,
-        initialized: project ? this.projectInitialized(project.id) : false
+        initialized:
+          this.settings.get().pureMode ||
+          (session ? session.turns.length > 0 : project ? this.projectInitialized(project.id) : false)
       })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
@@ -488,11 +494,13 @@ export class AppContext {
     // 用「会话所属项目」而不是全局 activeProject —— 多项目并行时，
     // 全局值可能指向另一个项目，会让当前会话明明没目录却看不到引导。
     const ownProject = this.projects.find((p) => p.id === session.projectId)
+    // 已有轮次的会话 / 纯净模式（网页被对话面板遮住，弹窗只会藏在后面）不再弹引导。
+    // 新会话在普通视图下仍会提示一次初始化；退出纯净模式会重新下发并补弹。
+    const pure = this.settings.get().pureMode
     this.overlay.sendCmd(sessionId, {
       kind: 'set-project',
       projectRoot: ownProject?.root ?? null,
-      // 项目已有对话记录 = 初始化过：换会话/页面重载都不再弹首次引导
-      initialized: this.projectInitialized(session.projectId)
+      initialized: pure || session.turns.length > 0
     })
     // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
@@ -701,7 +709,11 @@ export class AppContext {
       this.emit({ type: 'projects-changed', sessionId: '' })
       // 所有网页（含发起方）同步新目录 → 浮窗消失；发起方无需会话绑定。
       // 已初始化过的项目不再弹首次引导，空目录才需要确认。
-      this.overlay.broadcastCmd({ kind: 'set-project', projectRoot: root, initialized: this.projectInitialized(opened.id) })
+      this.overlay.broadcastCmd({
+        kind: 'set-project',
+        projectRoot: root,
+        initialized: this.settings.get().pureMode || this.projectInitialized(opened.id)
+      })
       // 当前活动会话如果已绑定，顺带重配（hook 的系统提示词要带上新目录）
       if (this.lastSessionId) this.configureOverlay(this.lastSessionId)
       Logger.info('project', `网页引导初始化项目: ${root}`)
@@ -824,6 +836,8 @@ export class AppContext {
   }
 
   openProject(root: string): ProjectInfo {
+    // 目录已被删除/移动时不要“复活”它（mkdir 递归会重建整棵目录树）
+    if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`目录不存在或不是文件夹：${root}`)
     const prevActive = this.projectStore.get().activeProjectId
     let p = this.projects.find((x) => x.root === root)
     if (!p) {
@@ -842,6 +856,20 @@ export class AppContext {
       this.lastSessionId = ''
     }
     return p
+  }
+
+  /** 从项目列表移除（不删除磁盘文件）；当前项目需先切换走 */
+  removeProject(projectId: string): void {
+    const p = this.projects.find((x) => x.id === projectId)
+    if (!p) return
+    const active = this.projectStore.get().activeProjectId
+    if (active === projectId) throw new Error('请先切换到其他项目，再移除当前项目')
+    this.projects = this.projects.filter((x) => x.id !== projectId)
+    this.projectStore.set({ projects: this.projects, activeProjectId: active })
+    this.projectDirs.delete(projectId)
+    this.sessionStores.delete(projectId)
+    this.providerRegistries.delete(projectId)
+    Logger.info('project', `已从列表移除项目: ${p.root}（磁盘文件未删除）`)
   }
 
   /**
@@ -1044,7 +1072,9 @@ export class AppContext {
       if (depth > 2 || lines.length > 60) return
       let entries: string[]
       try {
-        entries = readdirSync(dir).filter((n) => !EXCL.has(n) && !n.startsWith('.'))
+        entries = readdirSync(dir)
+          .filter((n) => !EXCL.has(n) && !n.startsWith('.'))
+          .sort((a, b) => a.localeCompare(b, 'zh-CN'))
       } catch {
         return
       }
@@ -1093,6 +1123,8 @@ export class AppContext {
           children: isDir && level < depth ? walk(full, level + 1) : undefined
         })
       }
+      // 目录优先、同类型按名称排序：文件树/预览面板可读性
+      nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, 'zh-CN') : a.type === 'dir' ? -1 : 1))
       return nodes
     }
     return walk(abs, 0)

@@ -50,12 +50,14 @@ interface ExtractResult {
  */
 interface ExtractCtx {
   fragmentTypes: string[]
-  /** 每个片段已消费的 content 长度：重复快照/快照+补丁重叠时不重复追加 */
-  seen?: number[]
+  /** 当前正在追加的片段下标（-1 = 未知）：顶层 {v:"..."} 帧靠它区分 THINK / 正文 */
+  currentIndex: number
+  /** 是否已经处理过首个快照（后续快照只同步类型，不重复追加内容） */
+  observed: boolean
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
-function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }): ExtractResult | null {
+function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], currentIndex: -1, observed: false }): ExtractResult | null {
   const f = frame as Record<string, unknown>
   if (!f || typeof f !== 'object') return null
   const p = typeof f.p === 'string' ? f.p : undefined
@@ -83,27 +85,25 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }
   }
 
   // 快照帧：{v:{response:{fragments:[{type,content}...]}}} —— 回复首段内容在这里。
-  // 类型表按「当前流」累加，不能每次快照都清空：连续快照若只带部分片段，
-  // 清空后增量补丁会把 THINK 的内容误判成 RESPONSE（思考整段漏进气泡）。
+  // 类型表整体替换；只有首个快照消费内容（后续快照可能是重复/更新，避免重复追加）。
   if (p === undefined && v && typeof v === 'object') {
     const resp = (v as Record<string, unknown>).response as Record<string, unknown> | undefined
     if (resp && typeof resp === 'object') {
       const frags = resp.fragments
       if (Array.isArray(frags) && frags.length > 0) {
+        const types = frags.map((fr) => String((fr as { type?: string })?.type ?? 'RESPONSE').toUpperCase())
+        ctx.fragmentTypes = types
+        ctx.currentIndex = types.length - 1
+        const first = !ctx.observed
+        ctx.observed = true
+        if (!first) return null
         const merged: ExtractResult = {}
-        const seen = ctx.seen ?? (ctx.seen = [])
         for (let i = 0; i < frags.length; i++) {
-          const fr = frags[i] as { type?: string; content?: string; text?: string }
-          const type = String(fr?.type ?? 'RESPONSE').toUpperCase()
-          ctx.fragmentTypes[i] = type
+          const fr = frags[i] as { content?: string; text?: string }
           const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
           if (!content) continue
-          const already = seen[i] ?? 0
-          if (content.length <= already) continue
-          const delta = content.slice(already)
-          seen[i] = content.length
-          if (type === 'THINK') merged.think = (merged.think ?? '') + delta
-          else merged.text = (merged.text ?? '') + delta
+          if (types[i] === 'THINK') merged.think = (merged.think ?? '') + content
+          else merged.text = (merged.text ?? '') + content
         }
         return Object.keys(merged).length > 0 ? merged : null
       }
@@ -113,43 +113,41 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [] }
   // fragments APPEND：{ p: '<path>/fragments', o: 'APPEND', v: [{type, content}...] }
   if (p && p.endsWith('/fragments') && f.o === 'APPEND' && Array.isArray(v)) {
     const merged: ExtractResult = {}
-    const seen = ctx.seen ?? (ctx.seen = [])
     for (const frag of v) {
       const fr = frag as { type?: string; content?: string; text?: string }
       const type = String(fr?.type ?? 'RESPONSE').toUpperCase()
       ctx.fragmentTypes.push(type)
       const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
-      seen[ctx.fragmentTypes.length - 1] = content.length
       if (!content) continue
       if (type === 'THINK') merged.think = (merged.think ?? '') + content
       else merged.text = (merged.text ?? '') + content
     }
+    ctx.currentIndex = ctx.fragmentTypes.length - 1
     return Object.keys(merged).length > 0 ? merged : null
   }
 
   // 文本增量补丁：p 形如 response/fragments/-1/content
   if (p && typeof v === 'string') {
-    if (/reasoning_content|thinking_content$/.test(p)) return { think: v }
+    // reasoning_content / thinking_content 独立帧：内容已包含在 THINK 片段里，
+    // 再追加会重复（对齐 cuckoo：这类帧直接忽略）
+    if (/reasoning_content|thinking_content$/.test(p)) return null
     if (/(content|text|markdown|delta)$/.test(p)) {
       // 按片段下标判断它到底是 THINK 还是正文：
-      // -1 表示最后一段。不查类型表的话，思考内容会被当正文显示（实测踩中）
+      // -1 表示当前片段。不查类型表的话，思考内容会被当正文显示（实测踩中）
       const m = /\/fragments\/(-?\d+)\//.exec(p)
-      let idx = -1
-      if (m) {
-        const raw = Number(m[1])
-        idx = raw === -1 ? ctx.fragmentTypes.length - 1 : raw
-      }
-      if (idx >= 0) {
-        const seen = ctx.seen ?? (ctx.seen = [])
-        seen[idx] = (seen[idx] ?? 0) + v.length
-      }
+      const raw = m ? Number(m[1]) : -1
+      const idx = raw === -1 ? ctx.currentIndex : raw
       const type = idx >= 0 ? ctx.fragmentTypes[idx] ?? '' : ''
       if (type === 'THINK') return { think: v }
       return { text: v }
     }
   }
-  // 顶层 {v: string} 帧
-  if (p === undefined && typeof v === 'string') return { text: v }
+  // 顶层 {v: string} 帧：DeepSeek 思考/正文的绝大多数增量都是这种形式，
+  // 必须按当前片段类型归类 —— 此前一律当正文，导致思考整段漏进气泡。
+  if (p === undefined && typeof v === 'string') {
+    const type = ctx.fragmentTypes[ctx.currentIndex] ?? ''
+    return type === 'THINK' ? { think: v } : { text: v }
+  }
   return null
 }
 
@@ -249,7 +247,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     var decoder = new TextDecoder();
     var frameDecoder = createDecoder();
     // 每条流独立类型表：多个请求（重试/并发）不能互相清空
-    var streamCtx = { fragmentTypes: [] };
+    var streamCtx = { fragmentTypes: [], currentIndex: -1, observed: false };
     var text = '', think = '', finished = false, incomplete = false, exhausted = false, dispatched = false, lastEmit = 0;
     var accTokens = null;
 
@@ -407,7 +405,7 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     // progress 事件不可靠，改用 readystatechange + 轮询增量读取。
     var lastLen = 0;
     // 新一轮 XHR 流的独立类型表
-    var streamCtx = { fragmentTypes: [] };
+    var streamCtx = { fragmentTypes: [], currentIndex: -1, observed: false };
     var acc = { text: '', think: '', finished: false, incomplete: false, exhausted: false, dispatched: false };
     var timer = null;
 

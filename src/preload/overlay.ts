@@ -192,6 +192,11 @@ function lastBubbleText(): string {
   // 否则解析器看不到 ```lidow ... ``` 边界（工具块永远解析失败）
   const el = bubble as HTMLElement
   const clone = el.cloneNode(true) as HTMLElement
+  // 思考区不属于回复正文：DOM 兜底时若把 .ds-think-content 一起抓进去，
+  // 本地转录里就会「思考整段漏进气泡」（DeepSeek 分享页 DOM 已证实）
+  clone
+    .querySelectorAll('[class*="think" i], [class*="reasoning" i], [data-testid*="think" i]')
+    .forEach((t) => t.remove())
   clone.querySelectorAll('pre, code[class*="language"], [class*="code-block"]').forEach((codeEl) => {
     const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
     const text = codeEl.textContent ?? ''
@@ -633,6 +638,8 @@ let projectInitialized = false
  * 用 localStorage 跨页面重载记住已初始化，同时保留显式「新建对话」重置入口。
  */
 const FIRST_RUN_KEY_PREFIX = 'lidow:firstRunDismissed:'
+/** 持久化只用于挡住「初始化后紧接着的页面跳转/重载」，不永久压制后续新会话的引导 */
+const FIRST_RUN_TTL_MS = 5 * 60_000
 
 function firstRunKey(root: string): string {
   return FIRST_RUN_KEY_PREFIX + root.toLowerCase()
@@ -641,7 +648,11 @@ function firstRunKey(root: string): string {
 function isFirstRunPersisted(root: string | null): boolean {
   if (!root) return false
   try {
-    return localStorage.getItem(firstRunKey(root)) === '1'
+    const raw = localStorage.getItem(firstRunKey(root))
+    if (!raw) return false
+    const ts = Number(raw)
+    // 旧格式 '1' 视为过期：避免历史版本的一次初始化把引导永久压掉
+    return Number.isFinite(ts) && Date.now() - ts < FIRST_RUN_TTL_MS
   } catch {
     return false
   }
@@ -650,7 +661,7 @@ function isFirstRunPersisted(root: string | null): boolean {
 function persistFirstRunDismissed(root: string | null): void {
   if (!root) return
   try {
-    localStorage.setItem(firstRunKey(root), '1')
+    localStorage.setItem(firstRunKey(root), String(Date.now()))
   } catch {
     /* 隐私模式/无存储时忽略 */
   }
