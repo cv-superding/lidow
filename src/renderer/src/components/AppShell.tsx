@@ -3,8 +3,8 @@ import { useStore, useProject, type ViewId } from '../store'
 import { api } from '../api'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
-import { PureModeShell, PreviewPanel } from './PureModeShell'
-import { TerminalPanel } from './TerminalPanel'
+import { PureModeShell } from './PureModeShell'
+import { RightDock } from './RightDock'
 import { HelpPanel } from './HelpPanel'
 import { UpdatePrompt } from './UpdatePrompt'
 import {
@@ -33,7 +33,9 @@ import {
   IconDownload,
   IconHelp,
   IconTerminal,
-  IconSidebarToggle
+  IconSidebarToggle,
+  IconPanelRight,
+  IconFolderColor
 } from './icons'
 import { WindowControls, DragStrip } from './TitleBar'
 
@@ -88,7 +90,8 @@ export function LeftRail(): React.JSX.Element {
     >
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2.5">
         {RAIL.map((item) => {
-          const Icon = RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
+          // 资源管理器用彩色文件夹，和 Qoder 的文件入口一致
+          const Icon = item.id === 'files' ? IconFolderColor : RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
           const active = view === item.id
           return (
             <button
@@ -158,13 +161,7 @@ export function LeftRail(): React.JSX.Element {
 }
 
 /** 顶栏：品牌 | 项目面包屑 | 运行态 + 窗口控制。整条可拖拽窗口 */
-function TopBar({
-  terminalOpen,
-  setTerminalOpen
-}: {
-  terminalOpen: boolean
-  setTerminalOpen: (v: boolean) => void
-}): React.JSX.Element {
+function TopBar(): React.JSX.Element {
   const view = useStore((s) => s.view)
   const streamingText = useStore((s) => s.streamingText)
   const stop = useStore((s) => s.stop)
@@ -210,10 +207,7 @@ function TopBar({
             停止
           </button>
         )}
-        <TopActions
-          terminalOpen={terminalOpen}
-          onOpenTerminal={() => setTerminalOpen(!terminalOpen)}
-        />
+        <TopActions />
       </div>
       <WindowControls />
     </div>
@@ -310,17 +304,15 @@ function ProjectSwitcher(): React.JSX.Element {
   )
 }
 
-/** 顶栏右侧功能按钮：导出 / 帮助 / 终端 / 侧栏开关（对齐 ZCode 顶栏） */
-function TopActions({
-  terminalOpen,
-  onOpenTerminal
-}: {
-  terminalOpen: boolean
-  onOpenTerminal: () => void
-}): React.JSX.Element {
+/** 顶栏右侧功能按钮：导出 / 帮助 / 工具侧栏 / 终端 / 侧栏开关 */
+function TopActions(): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const railPinned = useStore((s) => s.railPinned)
   const setRailPinned = useStore((s) => s.setRailPinned)
+  const auxPanel = useStore((s) => s.auxPanel)
+  const toggleAux = useStore((s) => s.toggleAux)
+  const openAux = useStore((s) => s.openAux)
+  const closeAux = useStore((s) => s.closeAux)
   const [helpOpen, setHelpOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const exportRef = useRef<HTMLDivElement>(null)
@@ -411,12 +403,22 @@ function TopActions({
         <IconHelp size={15} />
       </button>
 
-      {/* 终端 */}
+      {/* 工具侧栏（文件 / 任务 / 审阅） */}
+      <button
+        className={iconCls}
+        title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
+        style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
+        onClick={() => (auxPanel === 'files' ? closeAux() : openAux('files'))}
+      >
+        <IconPanelRight size={15} />
+      </button>
+
+      {/* 终端（右侧面板） */}
       <button
         className={iconCls}
         title="终端 (Ctrl `)"
-        style={{ color: terminalOpen ? 'var(--accent)' : undefined }}
-        onClick={onOpenTerminal}
+        style={{ color: auxPanel === 'terminal' ? 'var(--accent)' : undefined }}
+        onClick={() => toggleAux('terminal')}
       >
         <IconTerminal size={15} />
       </button>
@@ -434,12 +436,6 @@ function TopActions({
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
     </>
   )
-}
-
-/** 纯净模式右侧文件预览（无项目时不渲染） */
-function PurePreview(): React.JSX.Element | null {
-  const project = useProject(useStore())
-  return project ? <PreviewPanel projectId={project.id} /> : null
 }
 
 /** 初始化完成后的模式建议：是否立刻进入纯净模式（可稍后从左侧栏进入） */
@@ -538,35 +534,17 @@ export function AppShell(): React.JSX.Element {
   const pureView = useStore((s) => s.pureView)
   const notices = useStore((s) => s.notices)
   const confirmRequest = useStore((s) => s.confirmRequest)
-  const [terminalOpen, setTerminalOpen] = useState(false)
-  // 终端高度记忆（拖拽后保持，下次打开仍是这个高度）
-  const [terminalHeight, setTerminalHeight] = useState(() => {
-    try {
-      const raw = Number(window.localStorage.getItem('lidow:terminalHeight'))
-      return Number.isFinite(raw) && raw >= 120 && raw <= 720 ? raw : 300
-    } catch {
-      return 300
-    }
-  })
-
-  useEffect(() => {
-    try {
-      window.localStorage.setItem('lidow:terminalHeight', String(terminalHeight))
-    } catch {
-      /* 隐私模式忽略 */
-    }
-  }, [terminalHeight])
 
   useEffect(() => {
     void useStore.getState().boot()
   }, [])
 
-  // 终端快捷键：Ctrl ` 开合
+  // 终端快捷键：Ctrl ` 开合右侧终端面板
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.ctrlKey && e.key === '`') {
         e.preventDefault()
-        setTerminalOpen((v) => !v)
+        useStore.getState().toggleAux('terminal')
       }
     }
     window.addEventListener('keydown', onKey)
@@ -598,11 +576,7 @@ export function AppShell(): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
-      {pureMode ? (
-        <DragStrip terminalOpen={terminalOpen} onToggleTerminal={() => setTerminalOpen((v) => !v)} />
-      ) : (
-        <TopBar terminalOpen={terminalOpen} setTerminalOpen={setTerminalOpen} />
-      )}
+      {pureMode ? <DragStrip /> : <TopBar />}
 
       <div className="flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}
@@ -644,20 +618,9 @@ export function AppShell(): React.JSX.Element {
           )}
         </div>
 
-        {/* 纯净模式文件预览（仅对话主区） */}
-        {pureMode && pureView === 'home' && <PurePreview />}
+        {/* 右侧工具侧栏：文件 / 任务 / 终端 / 审阅 */}
+        <RightDock />
       </div>
-
-      {/* 内置终端：底部抽屉，高度可拖拽（拖拽条在面板顶部） */}
-      {terminalOpen && (
-        <div className="shrink-0" style={{ height: terminalHeight }}>
-          <TerminalPanel
-            onClose={() => setTerminalOpen(false)}
-            height={terminalHeight}
-            onHeightChange={setTerminalHeight}
-          />
-        </div>
-      )}
 
       {/* 更新提示：发现新版本 / 下载进度 / 自动安装倒计时 */}
       <UpdatePrompt />

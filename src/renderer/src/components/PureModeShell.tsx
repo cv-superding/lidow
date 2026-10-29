@@ -5,7 +5,6 @@ import { ResizeHandle } from './ResizeHandle'
 import {
   IconPlus,
   IconSearch,
-  IconFolder,
   IconChevronLeft,
   IconChevronRight,
   IconClose,
@@ -30,105 +29,6 @@ function relTime(ts: number): string {
   return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
-/** 右侧文件预览面板：可折叠的文件树 + 内容预览 */
-export function PreviewPanel({ projectId }: { projectId: string }): React.JSX.Element | null {
-  const fileTree = useStore((s) => s.fileTree)
-  const selectedFile = useStore((s) => s.selectedFile)
-  const open = useStore((s) => s.previewOpen)
-  const setPreviewOpen = useStore((s) => s.setPreviewOpen)
-  const previewWidth = useStore((s) => s.previewWidth)
-  const setPreviewWidth = useStore((s) => s.setPreviewWidth)
-
-  useEffect(() => {
-    if (open) void api.readFileTree(projectId, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
-  }, [projectId, open])
-
-  const load = (p: string): void => {
-    void api.readFileContent(projectId, p).then((content) => useStore.setState({ selectedFile: { path: p, content } }))
-  }
-
-  const renderNodes = (items: typeof fileTree, depth: number): React.JSX.Element[] =>
-    items.map((n) => (
-      <div key={n.path}>
-        <button
-          className="flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[5px] pr-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-          style={{
-            paddingLeft: 7 + depth * 12,
-            color: selectedFile?.path === n.path ? 'var(--text)' : n.type === 'dir' ? 'var(--text-body)' : 'var(--text-dim)',
-            background: selectedFile?.path === n.path ? 'var(--bg-active)' : 'transparent'
-          }}
-          onClick={() => n.type === 'file' && load(n.path)}
-        >
-          <span
-            className="shrink-0"
-            style={{ color: n.type === 'dir' ? 'var(--accent)' : 'var(--text-hint)', opacity: n.type === 'dir' ? 0.9 : 0.7 }}
-          >
-            {n.type === 'dir' ? <IconFolder size={12} /> : <IconFile size={12} />}
-          </span>
-          <span className="truncate">{n.name}</span>
-        </button>
-        {n.children && renderNodes(n.children, depth + 1)}
-      </div>
-    ))
-
-  return (
-    <div
-      className="relative flex shrink-0 flex-col border-l"
-      style={{
-        width: open ? previewWidth : 0,
-        overflow: 'hidden',
-        borderColor: open ? 'var(--border)' : 'transparent',
-        background: 'var(--surface)',
-        transition: 'width var(--dur-slow) var(--ease-emph), border-color var(--dur) ease'
-      }}
-    >
-      {open && (
-        <ResizeHandle
-          width={previewWidth}
-          onResize={setPreviewWidth}
-          min={220}
-          max={640}
-          title="拖动调整预览宽度（双击复位）"
-          side="left"
-        />
-      )}
-      {open && (
-        <>
-          <div className="flex h-9 shrink-0 items-center gap-1.5 border-b px-2.5" style={{ borderColor: 'var(--border)' }}>
-            <span className="text-label flex-1">文件</span>
-            <button
-              title="收起文件面板"
-              className="btn btn-ghost btn-icon btn-sm"
-              onClick={() => setPreviewOpen(false)}
-            >
-              <IconChevronRight size={13} />
-            </button>
-          </div>
-          <div className="max-h-[42%] min-h-0 overflow-y-auto px-1.5 py-1.5">{renderNodes(fileTree, 0)}</div>
-          <div className="min-h-0 flex-1 overflow-auto border-t px-3 py-3" style={{ borderColor: 'var(--border)' }}>
-            {selectedFile ? (
-              <>
-                <div className="mb-2 truncate font-mono text-[11px]" style={{ color: 'var(--text-hint)' }}>
-                  {selectedFile.path}
-                </div>
-                <pre className="whitespace-pre-wrap font-mono text-[11.5px] leading-[1.65]" style={{ color: 'var(--text-body)' }}>
-                  {selectedFile.content}
-                </pre>
-              </>
-            ) : (
-              <div className="flex h-full items-center justify-center text-center text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
-                从上方选择一个文件
-                <br />
-                预览内容会显示在这里
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
 /**
  * 纯净模式侧栏：
  * ① 项目头（项目名 + 切换）
@@ -146,10 +46,10 @@ export function PureModeShell(): React.JSX.Element {
   const setPureView = useStore((s) => s.setPureView)
   const setPure = useStore((s) => s.setPure)
   const pureView = useStore((s) => s.pureView)
-  const previewOpen = useStore((s) => s.previewOpen)
+  const auxPanel = useStore((s) => s.auxPanel)
+  const toggleAux = useStore((s) => s.toggleAux)
   const sidebarWidth = useStore((s) => s.sidebarWidth)
   const setSidebarWidth = useStore((s) => s.setSidebarWidth)
-  const setPreviewOpen = useStore((s) => s.setPreviewOpen)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState('')
@@ -419,9 +319,9 @@ export function PureModeShell(): React.JSX.Element {
         </button>
         <button
           className="btn btn-ghost btn-icon btn-sm"
-          title={previewOpen ? '收起文件预览' : '展开文件预览'}
-          style={{ color: previewOpen ? 'var(--accent)' : undefined }}
-          onClick={() => setPreviewOpen(!previewOpen)}
+          title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
+          style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
+          onClick={() => toggleAux('files')}
         >
           <IconFile size={14} />
         </button>

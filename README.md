@@ -57,6 +57,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 
 **体验**
 - 三栏极简布局（Cursor 风格）：图标栏 hover 展开 + 沉浸 webview 标签 + 可收起 Harness 面板
+- **右侧工具侧栏**（Qoder 风格）：文件 / 任务 / 终端 / 审阅，可拖拽调宽；文件变更卡一键展开 diff 审阅
 - 可视化工具卡片：diff 对比 / 实时终端 / 表格 / 文件列表
 - 深浅双主题 + 自定义主色；纯净模式一键隐藏全部 UI
 - 智能任务拆解（planSubmit 确认卡）、**人机共用任务看板**（AI todoWrite 与用户双向同步）、

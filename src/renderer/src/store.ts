@@ -24,6 +24,17 @@ import type {
   McpServerConfig
 } from '@shared/types'
 
+/** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
+export type AuxPanel = 'files' | 'tasks' | 'terminal' | 'review'
+
+/** 审阅面板里的单个文件改动 */
+export interface ReviewFile {
+  path: string
+  patch: string
+  add: number
+  del: number
+}
+
 export type ViewId =
   | 'home'
   | 'projects'
@@ -92,18 +103,19 @@ interface LidowState {
   activeTabId: string | null
   view: ViewId
   rightOpen: boolean
-  /** 纯净模式右侧文件预览面板是否展开（默认收起，避免空白边条） */
-  previewOpen: boolean
-  setPreviewOpen(open: boolean): void
   /** 纯净模式侧栏宽度（拖拽分隔线调整，持久化到 localStorage） */
   sidebarWidth: number
   setSidebarWidth(w: number): void
   /** 工作台左栏是否为展开态（悬停展开 / 拖拽后固定） */
   railPinned: boolean
   setRailPinned(v: boolean): void
-  /** 纯净模式右侧文件预览宽度（拖拽调整） */
-  previewWidth: number
-  setPreviewWidth(w: number): void
+  /** 右侧工具侧栏当前面板；null = 收起 */
+  auxPanel: AuxPanel | null
+  auxWidth: number
+  openAux(panel: AuxPanel): void
+  toggleAux(panel: AuxPanel): void
+  closeAux(): void
+  setAuxWidth(w: number): void
   pureMode: boolean
   /** 纯净模式主区当前面板（home=网页对话；其余为该面板视图），不改变 pureMode */
   pureView: ViewId
@@ -140,6 +152,11 @@ interface LidowState {
   todos: TaskItem[]
   fileTree: Awaited<ReturnType<typeof api.readFileTree>>
   selectedFile: { path: string; content: string } | null
+  /** 右栏审阅：当前任务的 diff 文件列表 */
+  reviewFiles: ReviewFile[]
+  reviewActivePath: string
+  openReview(files: ReviewFile[]): void
+  setReviewFile(path: string): void
 
   boot(): Promise<void>
   setView(v: ViewId): void
@@ -213,7 +230,6 @@ export const useStore = create<LidowState>((set, get) => ({
   activeTabId: null,
   view: 'home',
   rightOpen: true,
-  previewOpen: false,
   // 记住上次拖拽的侧栏宽度（localStorage 读不到时用默认 268）
   sidebarWidth: (() => {
     try {
@@ -224,12 +240,13 @@ export const useStore = create<LidowState>((set, get) => ({
     }
   })(),
   railPinned: false,
-  previewWidth: (() => {
+  auxPanel: null,
+  auxWidth: (() => {
     try {
-      const raw = Number(window.localStorage.getItem('lidow:previewWidth'))
-      return Number.isFinite(raw) && raw >= 220 && raw <= 640 ? raw : 320
+      const raw = Number(window.localStorage.getItem('lidow:auxWidth'))
+      return Number.isFinite(raw) && raw >= 280 && raw <= 620 ? raw : 340
     } catch {
-      return 320
+      return 340
     }
   })(),
   pureMode: false,
@@ -260,6 +277,8 @@ export const useStore = create<LidowState>((set, get) => ({
   todos: [],
   fileTree: [],
   selectedFile: null,
+  reviewFiles: [],
+  reviewActivePath: '',
 
   async boot() {
     // 幂等：React StrictMode 会让 effect 跑两次，重复注册监听器会导致
@@ -301,8 +320,30 @@ export const useStore = create<LidowState>((set, get) => ({
   toggleRight() {
     set({ rightOpen: !get().rightOpen })
   },
-  setPreviewOpen(open) {
-    set({ previewOpen: open })
+  openAux(panel) {
+    set({ auxPanel: panel })
+  },
+  toggleAux(panel) {
+    set({ auxPanel: get().auxPanel === panel ? null : panel })
+  },
+  closeAux() {
+    set({ auxPanel: null })
+  },
+  setAuxWidth(w) {
+    const next = Math.min(620, Math.max(280, Math.round(w)))
+    set({ auxWidth: next })
+    try {
+      window.localStorage.setItem('lidow:auxWidth', String(next))
+    } catch {
+      /* 隐私模式忽略 */
+    }
+  },
+  openReview(files) {
+    if (files.length === 0) return
+    set({ auxPanel: 'review', reviewFiles: files, reviewActivePath: files[0]!.path })
+  },
+  setReviewFile(path) {
+    set({ reviewActivePath: path })
   },
   setSidebarWidth(w) {
     const next = Math.min(520, Math.max(200, Math.round(w)))
@@ -315,15 +356,6 @@ export const useStore = create<LidowState>((set, get) => ({
   },
   setRailPinned(v) {
     set({ railPinned: v })
-  },
-  setPreviewWidth(w) {
-    const next = Math.min(640, Math.max(220, Math.round(w)))
-    set({ previewWidth: next })
-    try {
-      window.localStorage.setItem('lidow:previewWidth', String(next))
-    } catch {
-      /* 隐私模式忽略 */
-    }
   },
   setPureView(v) {
     set({ pureView: v })

@@ -8,7 +8,7 @@ import {
   IconClose,
   IconPlus,
   IconCheck,
-  IconFile,
+  IconFolderColor,
   IconTerminal,
   IconSettings
 } from './icons'
@@ -51,15 +51,9 @@ export function WindowControls(): React.JSX.Element {
 }
 
 /** 纯模式右上工具条：新建 / 任务 / 文件 / 终端 / 设置（Qoder 同款胶囊） */
-function PureToolbar({
-  terminalOpen,
-  onToggleTerminal
-}: {
-  terminalOpen: boolean
-  onToggleTerminal: () => void
-}): React.JSX.Element {
-  const previewOpen = useStore((s) => s.previewOpen)
-  const setPreviewOpen = useStore((s) => s.setPreviewOpen)
+function PureToolbar(): React.JSX.Element {
+  const auxPanel = useStore((s) => s.auxPanel)
+  const toggleAux = useStore((s) => s.toggleAux)
   const setPureView = useStore((s) => s.setPureView)
   const btn = 'flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
   const idle = { color: 'var(--text-dim)' } as const
@@ -86,25 +80,27 @@ function PureToolbar({
       <button className={btn} style={idle} title="新建任务 (Ctrl N)" onClick={() => void newTask()}>
         <IconPlus size={14} />
       </button>
-      <button className={btn} style={idle} title="任务看板" onClick={() => setPureView('tasks')}>
+      <button
+        className={btn}
+        style={auxPanel === 'tasks' ? active : idle}
+        title="任务面板"
+        onClick={() => toggleAux('tasks')}
+      >
         <IconCheck size={14} />
       </button>
       <button
         className={btn}
-        style={previewOpen ? active : idle}
-        title={previewOpen ? '收起文件预览' : '展开文件预览'}
-        onClick={() => {
-          setPreviewOpen(!previewOpen)
-          if (!previewOpen) setPureView('home')
-        }}
+        style={auxPanel === 'files' ? active : idle}
+        title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
+        onClick={() => toggleAux('files')}
       >
-        <IconFile size={14} />
+        <IconFolderColor size={15} />
       </button>
       <button
         className={btn}
-        style={terminalOpen ? active : idle}
+        style={auxPanel === 'terminal' ? active : idle}
         title="终端 (Ctrl `)"
-        onClick={onToggleTerminal}
+        onClick={() => toggleAux('terminal')}
       >
         <IconTerminal size={14} />
       </button>
@@ -116,19 +112,13 @@ function PureToolbar({
 }
 
 /** 纯模式顶部拖拽条：左侧留白可拖拽，右侧工具条 + 窗口控件 */
-export function DragStrip({
-  terminalOpen,
-  onToggleTerminal
-}: {
-  terminalOpen: boolean
-  onToggleTerminal: () => void
-}): React.JSX.Element {
+export function DragStrip(): React.JSX.Element {
   return (
     <div
       className="flex h-9 shrink-0 items-center justify-end border-b"
       style={{ borderColor: 'var(--border)', background: 'var(--sidebar)', WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
-      <PureToolbar terminalOpen={terminalOpen} onToggleTerminal={onToggleTerminal} />
+      <PureToolbar />
       <WindowControls />
     </div>
   )

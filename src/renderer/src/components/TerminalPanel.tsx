@@ -47,12 +47,15 @@ function AnsiText({ text }: { text: string }): React.JSX.Element {
  */
 export function TerminalPanel({
   onClose,
-  height,
-  onHeightChange
+  height = 0,
+  onHeightChange = () => undefined,
+  embedded = false
 }: {
   onClose: () => void
-  height: number
-  onHeightChange: (h: number) => void
+  height?: number
+  onHeightChange?: (h: number) => void
+  /** 嵌入右侧栏：隐藏拖拽条与标题栏，由 Dock 头部承担 */
+  embedded?: boolean
 }): React.JSX.Element {
   const [blocks, setBlocks] = useState<Block[]>([])
   const [input, setInput] = useState('')
@@ -144,45 +147,57 @@ export function TerminalPanel({
 
   return (
     <div className="flex h-full flex-col" style={{ background: 'var(--surface-sunken)' }}>
-      {/* 拖拽条 */}
-      <div
-        className="group relative h-[5px] shrink-0 cursor-ns-resize"
-        style={{ background: 'var(--border)' }}
-        onMouseDown={(e) => {
-          dragging.current = true
-          startY.current = e.clientY
-          startH.current = height
-          document.body.style.cursor = 'ns-resize'
-          document.body.style.userSelect = 'none'
-          e.preventDefault()
-        }}
-      >
-        <span
-          className="pointer-events-none absolute left-1/2 top-1/2 h-[2px] w-8 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-0 transition-opacity group-hover:opacity-100"
-          style={{ background: 'var(--accent)' }}
-        />
-      </div>
+      {!embedded && (
+        <div
+          className="group relative h-[5px] shrink-0 cursor-ns-resize"
+          style={{ background: 'var(--border)' }}
+          onMouseDown={(e) => {
+            dragging.current = true
+            startY.current = e.clientY
+            startH.current = height
+            document.body.style.cursor = 'ns-resize'
+            document.body.style.userSelect = 'none'
+            e.preventDefault()
+          }}
+        >
+          <span
+            className="pointer-events-none absolute left-1/2 top-1/2 h-[2px] w-8 -translate-x-1/2 -translate-y-1/2 rounded-full opacity-0 transition-opacity group-hover:opacity-100"
+            style={{ background: 'var(--accent)' }}
+          />
+        </div>
+      )}
 
-      {/* 标题栏 */}
-      <div
-        className="flex h-9 shrink-0 items-center gap-2 border-b px-3"
-        style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
-      >
-        <span style={{ color: 'var(--text-dim)' }}>
-          <IconTerminal size={13} />
-        </span>
-        <span className="text-[12px] font-medium">终端</span>
-        <span className="truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-          {cwd}
-        </span>
-        <span className="flex-1" />
-        <button className="btn btn-sm btn-ghost" title="清空输出" onClick={() => setBlocks([])}>
-          <IconTrash size={12} /> 清空
-        </button>
-        <button className="btn btn-ghost btn-icon btn-sm" title="关闭终端" onClick={onClose}>
-          <IconClose size={12} />
-        </button>
-      </div>
+      {embedded ? (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b px-2" style={{ borderColor: 'var(--border-soft)' }}>
+          <span className="truncate font-mono text-[10px]" style={{ color: 'var(--text-hint)' }} title={cwd}>
+            {cwd}
+          </span>
+          <span className="flex-1" />
+          <button className="btn btn-sm btn-ghost" title="清空输出" onClick={() => setBlocks([])}>
+            <IconTrash size={11} />
+          </button>
+        </div>
+      ) : (
+        <div
+          className="flex h-9 shrink-0 items-center gap-2 border-b px-3"
+          style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
+        >
+          <span style={{ color: 'var(--text-dim)' }}>
+            <IconTerminal size={13} />
+          </span>
+          <span className="text-[12px] font-medium">终端</span>
+          <span className="truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+            {cwd}
+          </span>
+          <span className="flex-1" />
+          <button className="btn btn-sm btn-ghost" title="清空输出" onClick={() => setBlocks([])}>
+            <IconTrash size={12} /> 清空
+          </button>
+          <button className="btn btn-ghost btn-icon btn-sm" title="关闭终端" onClick={onClose}>
+            <IconClose size={12} />
+          </button>
+        </div>
+      )}
 
       {/* 输出区 */}
       <div
@@ -192,7 +207,9 @@ export function TerminalPanel({
         {blocks.length === 0 && (
           <div className="flex h-full flex-col items-center justify-center gap-1 text-center text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
             <div>在这里直接运行命令，AI 不会参与</div>
-            <div className="text-[10.5px]">↑ ↓ 翻阅历史 · Enter 执行 · 拖顶部横条调整高度</div>
+            <div className="text-[10.5px]">
+              ↑ ↓ 翻阅历史 · Enter 执行{embedded ? '' : ' · 拖顶部横条调整高度'}
+            </div>
           </div>
         )}
         {blocks.map((b) => (

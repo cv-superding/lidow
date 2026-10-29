@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import hljs from 'highlight.js'
-import { useStore } from '../store'
+import { useStore, type ReviewFile } from '../store'
 import { api } from '../api'
 import { stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
@@ -213,9 +213,9 @@ function ToolGroup({
   )
 }
 
-/** 文件变更统计：按 diff 汇总「N 个文件已修改 +X -Y」 */
-function diffStats(results: ToolResult[]): { files: number; add: number; del: number } {
-  const byPath = new Map<string, { add: number; del: number }>()
+/** 收集本轮 diff：同一文件多次编辑取最后一次，供右栏审阅展示 */
+function diffFiles(results: ToolResult[]): ReviewFile[] {
+  const byPath = new Map<string, ReviewFile>()
   for (const r of results) {
     if (!r.ok || r.display?.kind !== 'diff') continue
     let add = 0
@@ -225,27 +225,25 @@ function diffStats(results: ToolResult[]): { files: number; add: number; del: nu
       if (line.startsWith('+')) add++
       else if (line.startsWith('-')) del++
     }
-    // 同一文件多次编辑取最后一次的行数（累计相加会重复计算历史内容）
-    byPath.set(r.display.path, { add, del })
+    byPath.set(r.display.path, { path: r.display.path, patch: r.display.patch, add, del })
   }
-  let add = 0
-  let del = 0
-  for (const v of byPath.values()) {
-    add += v.add
-    del += v.del
-  }
-  return { files: byPath.size, add, del }
+  return [...byPath.values()]
 }
 
 function ChangeCard({ results, running }: { results: ToolResult[]; running: boolean }): React.JSX.Element | null {
-  const stats = diffStats(results)
-  if (stats.files === 0) return null
+  const files = diffFiles(results)
+  if (files.length === 0) return null
+  const stats = {
+    files: files.length,
+    add: files.reduce((n, f) => n + f.add, 0),
+    del: files.reduce((n, f) => n + f.del, 0)
+  }
   return (
     <button
       className="flex items-center gap-2 self-center rounded-[var(--r-lg)] px-3 py-2 text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
       style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
-      title="查看审计记录"
-      onClick={() => useStore.getState().setPureView('audit')}
+      title="在右侧审阅变更"
+      onClick={() => useStore.getState().openReview(files)}
     >
       {running ? (
         <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />

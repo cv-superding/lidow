@@ -37,6 +37,35 @@ export function IconFolder({ size, className }: P): React.JSX.Element {
   )
 }
 
+/** 彩色文件夹：资源管理器入口（对齐 Qoder 的黄色文件夹图标） */
+export function IconFolderColor({ size = 16, className }: P): React.JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" className={className}>
+      <path
+        fill="#E9A514"
+        d="M1.5 4.2c0-.8.6-1.4 1.4-1.4h2.9l1.3 1.5h6c.8 0 1.4.6 1.4 1.4v6.2c0 .8-.6 1.4-1.4 1.4H2.9c-.8 0-1.4-.6-1.4-1.4V4.2Z"
+      />
+      <path
+        fill="#FFC83D"
+        d="M1.5 6.2h13v5.7c0 .8-.6 1.4-1.4 1.4H2.9c-.8 0-1.4-.6-1.4-1.4V6.2Z"
+      />
+      <rect x="4" y="8.2" width="7" height="3.8" rx=".8" fill="#2F6BDE" />
+      <rect x="4.8" y="7.5" width="5.4" height="1.2" rx=".6" fill="#7FA8FF" />
+    </svg>
+  )
+}
+
+/** 右侧工具栏 */
+export function IconPanelRight({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <rect x="2" y="2.5" width="12" height="11" rx="2" />
+      <path d="M9.5 2.5v11" />
+      <path d="M11.2 5.2h1.2M11.2 7.2h1.2" />
+    </svg>
+  )
+}
+
 export function IconCheck({ size, className }: P): React.JSX.Element {
   return (
     <svg {...base(size)} className={className}>
