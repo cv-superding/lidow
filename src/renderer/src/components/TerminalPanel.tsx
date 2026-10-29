@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api'
+import { useStore } from '../store'
 import { parseAnsi, hasAnsi, type AnsiSpan } from '../ansi'
 import { IconTerminal, IconClose, IconArrowUp, IconTrash } from './icons'
 
@@ -66,9 +67,13 @@ export function TerminalPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const nextId = useRef(1)
+  const projectId = useStore((s) => s.activeProjectId)
 
   useEffect(() => {
     void api.terminalCwd().then(setCwd).catch(() => setCwd(''))
+  }, [projectId])
+
+  useEffect(() => {
     inputRef.current?.focus()
   }, [])
 

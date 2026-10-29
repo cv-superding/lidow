@@ -59,7 +59,7 @@ export interface LoopDeps {
   /** 取走本轮模型思考过程（折叠展示用；无思考时为空串） */
   takeThinking: (sessionId: string) => string
   /** 把网页载体切到指定会话（自动续接用：新会话需要自己的 webview 绑定） */
-  rebindToSession: (sessionId: string) => Promise<void>
+  rebindToSession: (sessionId: string, fromSessionId?: string) => Promise<void>
 }
 
 const MAX_TURNS = 40 // 单次任务最大工具循环轮数，防失控
@@ -218,7 +218,11 @@ export class AgentLoop {
       // 旧会话没有这个标记时，有历史轮次就视为已注入过，避免升级后又重复一遍。
       const before = store.get(sessionId)
       const repeatPrompt = this.deps.settings().injectSystemPromptEveryTurn
-      const promptSentBefore = before?.systemPromptSent ?? (before?.turns.length ?? 0) > 0
+      // 有历史轮次但 flag 为 false（旧版本/异常落盘）也按“已发过”处理，
+      // 避免升级后给正在用的会话再插一整段系统提示词。
+      const promptSentBefore = before
+        ? before.systemPromptSent !== false || before.turns.length > 0
+        : false
       const firstTurn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'user',
@@ -237,14 +241,18 @@ export class AgentLoop {
       // 默认只发一次：网页版会保留同一对话的历史，每轮重复注入既污染正文又占上下文。
       // 需要兼容平台清空上下文的情况时，可在设置里开启「每轮重复注入系统提示词」。
       let prompt = userText
+      let injectedPrompt = false
       if (repeatPrompt || !promptSentBefore) {
         const sys = this.deps.systemPromptFor(sessionId)
         if (sys) {
           prompt = sys + '\n\n---\n\n# 用户任务\n\n' + userText
-          store.update(sessionId, (s) => ({ ...s, systemPromptSent: true }))
+          injectedPrompt = true
         }
       }
       await this.toolLoop(sessionId, state, prompt)
+      // 只有本轮真正跑完才记为已注入；发送失败/未连接时保留 false，
+      // 下一条用户消息还能补上系统提示词。
+      if (injectedPrompt) store.update(sessionId, (s) => ({ ...s, systemPromptSent: true }))
     } catch (err) {
       this.handleLoopError(state.sessionId, err)
     } finally {
@@ -616,7 +624,11 @@ export class AgentLoop {
           const summary = this.lastSummaryOf(next)
           const handoff = this.deps.settings().autoContinue.handoffPrompt
           sid = next
-          cur = [summary, handoff, this.lastUserTextOf(prev)].filter(Boolean).join('\n\n---\n\n')
+          // 新会话是新的网页对话，必须带上系统提示词，否则续接后的首轮
+          // 没有工具协议/工作目录，AI 会答“我没有文件访问权限”。
+          const sys = this.deps.systemPromptFor(next)
+          cur = [sys, summary, handoff, this.lastUserTextOf(prev)].filter(Boolean).join('\n\n---\n\n')
+          if (sys) this.deps.store.update(next, (s) => ({ ...s, systemPromptSent: true }))
           // 交接提示成了这一轮的「任务原文」：后续发送类失败要重发的是它
           originalPrompt = cur
           continue
@@ -793,7 +805,7 @@ export class AgentLoop {
       Logger.info('loop', `上下文耗尽 → 新会话 ${next.id}（父 ${sessionId}）`)
 
       // 切网页载体到新会话；之后由调用方把摘要作为 prompt 发送
-      await this.deps.rebindToSession(next.id)
+      await this.deps.rebindToSession(next.id, session.id)
       // 渲染层需要把当前标签/活动会话迁到新会话，否则后续落盘都在新会话、
       // 用户眼前还停在旧会话，也看不到续接后的回复
       this.deps.emit({ type: 'session-switched', fromSessionId: sessionId, sessionId: next.id })

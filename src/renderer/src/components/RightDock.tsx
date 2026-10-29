@@ -57,11 +57,10 @@ export function RightDock(): React.JSX.Element | null {
           return (
             <button
               key={t.id}
-              className="flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[11.5px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
-              style={{
-                background: active ? 'var(--accent-soft)' : 'transparent',
-                color: active ? 'var(--accent)' : 'var(--text-dim)'
-              }}
+              className={`flex h-7 items-center gap-1 rounded-[var(--r-sm)] px-2 text-[11.5px] transition-colors duration-[110ms] ${
+                active ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-hover)]'
+              }`}
+              style={{ color: active ? 'var(--accent)' : 'var(--text-dim)' }}
               onClick={() => openAux(t.id)}
               title={t.label}
             >
@@ -119,6 +118,8 @@ function FilesPanel(): React.JSX.Element {
       return
     }
     let alive = true
+    // 切项目立即清空旧树/旧预览，避免新请求返回前还能点到上一个项目的文件
+    useStore.setState({ fileTree: [], selectedFile: null })
     setLoading(true)
     void api
       .readFileTree(pid, '', 3)
@@ -156,11 +157,12 @@ function FilesPanel(): React.JSX.Element {
     items.map((n) => (
       <div key={n.path}>
         <button
-          className="flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[4px] pr-2 text-left text-[11.5px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
+          className={`flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[4px] pr-2 text-left text-[11.5px] transition-colors duration-[110ms] ${
+            selectedFile?.path === n.path ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+          }`}
           style={{
             paddingLeft: 6 + depth * 12,
-            color: selectedFile?.path === n.path ? 'var(--text)' : n.type === 'dir' ? 'var(--text-body)' : 'var(--text-dim)',
-            background: selectedFile?.path === n.path ? 'var(--bg-active)' : 'transparent'
+            color: selectedFile?.path === n.path ? 'var(--text)' : n.type === 'dir' ? 'var(--text-body)' : 'var(--text-dim)'
           }}
           onClick={() => n.type === 'file' && openFile(n.path)}
         >
@@ -267,6 +269,15 @@ function TasksPanel(): React.JSX.Element {
         <span className="flex-1" />
         <button
           className="btn btn-sm btn-ghost"
+          title="刷新任务"
+          onClick={() =>
+            void api.listTodos().then((t) => useStore.setState({ todos: t })).catch(() => undefined)
+          }
+        >
+          <IconRefresh size={12} />
+        </button>
+        <button
+          className="btn btn-sm btn-ghost"
           disabled={done === 0}
           onClick={() => void api.clearDoneTodos().then((t) => useStore.setState({ todos: t }))}
         >
@@ -366,8 +377,10 @@ function ReviewPanel(): React.JSX.Element {
           return (
             <button
               key={f.path}
-              className="flex w-full items-center gap-1.5 rounded-[var(--r-sm)] px-2 py-1 text-left text-[11.5px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
-              style={{ background: isActive ? 'var(--bg-active)' : 'transparent', color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
+              className={`flex w-full items-center gap-1.5 rounded-[var(--r-sm)] px-2 py-1 text-left text-[11.5px] transition-colors duration-[110ms] ${
+                isActive ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+              }`}
+              style={{ color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
               onClick={() => setReviewFile(f.path)}
               title={f.path}
             >

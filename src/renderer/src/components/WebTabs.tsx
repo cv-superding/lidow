@@ -313,7 +313,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
         if (cur.wcId !== wcId) st.setTabWcId(tab.id, wcId)
         // 没有会话（还没初始化项目就先打开了 AI 页面）：
         // 下发 adapter（登录态轮询依赖它）+ 项目目录（决定是否弹引导）
-        void api.syncProjectToWebview(wcId, tab.adapter, tab.providerId).catch(() => undefined)
+        void api.syncProjectToWebview(wcId, tab.adapter, tab.providerId, tab.accountId).catch(() => undefined)
       }
     }
     const onAttached = (): void => {

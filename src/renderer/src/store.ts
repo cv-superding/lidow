@@ -139,7 +139,7 @@ interface LidowState {
   /** 已发送、等待网页开始回复的会话（用于“正在思考”加载态） */
   pendingReplySessionId: string
   pendingSince: number
-  confirmRequest: { callId: string; reason: string } | null
+  confirmRequest: { callId: string; reason: string; sessionId?: string } | null
   plan: TaskPlan | null
   notices: { level: string; message: string; ts: number }[]
   /** 应用内更新状态（main 自动检查 + 下载进度） */
@@ -206,6 +206,8 @@ interface LidowState {
 
 /** boot 进行中的 promise：并发/重复调用共享同一次（防监听器重复注册） */
 let bootPromise: Promise<void> | null = null
+/** 会话/标签切换序号：异步 getSession 返回时用来丢弃过期响应 */
+let sessionSeq = 0
 
 export const useStore = create<LidowState>((set, get) => ({
   booted: false,
@@ -213,6 +215,7 @@ export const useStore = create<LidowState>((set, get) => ({
   settings: {
     theme: 'dark',
     accent: '#8dff4f',
+    desktopPet: true,
     language: 'zh-CN',
     pureMode: false,
     dangerConfirm: true,
@@ -314,6 +317,12 @@ export const useStore = create<LidowState>((set, get) => ({
     void api
       .getUpdateState()
       .then((u) => set({ updateState: u }))
+      .catch(() => undefined)
+    // 启动即加载快捷指令：此前只有访问「快捷指令」管理页后才写进 store，
+    // 直接进纯净模式输入 / 看不到已保存的自定义指令。
+    void api
+      .listQuickCommands()
+      .then((c) => set({ quickCmds: c }))
       .catch(() => undefined)
     if (state.projects.length > 0) {
       await get().refreshProviders()
@@ -491,12 +500,20 @@ export const useStore = create<LidowState>((set, get) => ({
       await api.openProject(root)
       const state = await api.getAppState()
       const changed = before !== state.activeProjectId
+      sessionSeq++
       set((s) => ({
         projects: state.projects,
         activeProjectId: state.activeProjectId,
         activeSession: null,
         sessions: [],
         plan: null,
+        streamingText: '',
+        streamingTps: 0,
+        thinkingText: '',
+        pendingReplySessionId: '',
+        confirmRequest: null,
+        reviewFiles: [],
+        reviewActivePath: '',
         // 切项目后标签上还挂着旧项目的会话（主进程已统一解绑）：清掉 sessionId，
         // 让 WebviewTab 重新下发新项目的配置，避免初始化/发送复用旧会话。
         tabs: changed ? s.tabs.map((t) => ({ ...t, sessionId: '' })) : s.tabs
@@ -542,14 +559,45 @@ export const useStore = create<LidowState>((set, get) => ({
     const s = await api.createSession(project.id, providerId, undefined, account)
     // 关键：新建后必须把新会话设为 activeSession，
     // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
-    set({ activeSession: s, view: 'home', pureView: 'home' })
+    set({
+      activeSession: s,
+      view: 'home',
+      pureView: 'home',
+      reviewFiles: [],
+      reviewActivePath: '',
+      streamingText: '',
+      streamingTps: 0,
+      thinkingText: '',
+      pendingReplySessionId: '',
+      confirmRequest: null
+    })
     await get().refreshSessions()
     await get().openProviderTab(providerId, s.id, account)
   },
 
   async openSession(id) {
-    const s = await api.getSession(id)
-    set({ activeSession: s, view: 'home', pureView: 'home', rightOpen: true, plan: await api.getActivePlan(id) })
+    const seq = ++sessionSeq
+    const [s, plan] = await Promise.all([api.getSession(id), api.getActivePlan(id).catch(() => null)])
+    if (seq !== sessionSeq) return // 期间用户又切了会话/标签/项目
+    const same = get().activeSession?.id === id
+    set({
+      activeSession: s,
+      view: 'home',
+      pureView: 'home',
+      rightOpen: true,
+      plan,
+      ...(same
+        ? {}
+        : {
+            streamingText: '',
+            streamingTps: 0,
+            thinkingText: '',
+            pendingReplySessionId: '',
+            confirmRequest: null,
+            reviewFiles: [],
+            reviewActivePath: ''
+          })
+    })
     // 打开会话后立刻把承载网页绑定到该会话：
     // 否则纯净模式直接发送会报「网页未连接」（loop 找不到 channel）。
     if (s) {
@@ -606,8 +654,13 @@ export const useStore = create<LidowState>((set, get) => ({
       connected: false,
       loggedIn: false
     }
-    // 用函数式更新：两次并发打开（双击平台/纯净模式与点击重叠）不会互相覆盖
-    set((s) => ({ tabs: [...s.tabs, tab], activeTabId: tab.id }))
+    // 用函数式更新并按 id 去重：两次并发 attach（双击/纯净模式与点击重叠）
+    // 会生成同一个确定性 tab.id，直接 push 会产生重复 key 和互相覆盖的 webview。
+    set((s) =>
+      s.tabs.some((t) => t.id === tab.id)
+        ? { activeTabId: tab.id }
+        : { tabs: [...s.tabs, tab], activeTabId: tab.id }
+    )
     // 首次创建：webview 尚未渲染/attach，等它自己的 wcId 就绪后绑定。
     if (sessionId) {
       const wcId = await waitWebviewWcId(tab.id, 60)
@@ -622,20 +675,41 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   setActiveTab(id) {
+    const seq = ++sessionSeq
     set({ activeTabId: id })
     // 切换网页标签 = 切换当前会话：不同步的话发送会把旧会话的提示词
     // 写进新标签的平台页面（跨平台串台），顶栏导出等操作也指向旧会话。
     const tab = get().tabs.find((t) => t.id === id)
     const sid = tab?.sessionId
-    if (!sid || sid === get().activeSession?.id) return
-    void api.getSession(sid).then(async (sess) => {
-      if (!sess) return
-      set({ activeSession: sess })
-      try {
-        set({ plan: await api.getActivePlan(sid) })
-      } catch {
-        /* 计划读取失败不影响会话切换 */
-      }
+    if (!sid) {
+      // 空标签（还没绑定会话）不能继续沿用旧 activeSession，否则新建任务会走错平台
+      set({
+        activeSession: null,
+        plan: null,
+        streamingText: '',
+        streamingTps: 0,
+        thinkingText: '',
+        pendingReplySessionId: '',
+        confirmRequest: null
+      })
+      return
+    }
+    if (sid === get().activeSession?.id) return
+    // 先清掉旧会话的流式/确认/审阅状态，避免异步加载期间把旧内容画到新标签下
+    set({
+      activeSession: null,
+      plan: null,
+      streamingText: '',
+      streamingTps: 0,
+      thinkingText: '',
+      pendingReplySessionId: '',
+      confirmRequest: null,
+      reviewFiles: [],
+      reviewActivePath: ''
+    })
+    void Promise.all([api.getSession(sid), api.getActivePlan(sid).catch(() => null)]).then(([sess, plan]) => {
+      if (seq !== sessionSeq || get().activeTabId !== id) return // 期间又切走了
+      set({ activeSession: sess, plan: sess ? plan : null })
     })
   },
 
@@ -645,17 +719,13 @@ export const useStore = create<LidowState>((set, get) => ({
     // 缺了这句，WebTabs 的补绑 effect 会「绑定→更新tab→effect重跑→再绑定」死循环，
     // 每秒打爆主进程几十次 bindSession + hook 注入（实测应用因此假死）。
     if (prev && prev.sessionId === sessionId && webContentsId > 0 && prev.wcId === webContentsId) return
-    const switched = prev && prev.sessionId && prev.sessionId !== sessionId
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t))
     }))
     if (webContentsId > 0) {
-      // 主进程 bindSession 会解除同一 webview 上的旧会话绑定（单绑定不变量）
+      // 主进程 bindSession 会解除同一 webview 上的旧会话绑定（单绑定不变量），
+      // 并在首次绑定/换绑时负责 landSession（落到新对话或会话自己的 URL）。
       await api.bindSession(sessionId, webContentsId)
-      // 会话切换 = 换一个网页会话承载：重置页面到新对话（净模式切换会话的关键）
-      // 切换会话必须落回该会话自己的对话：有平台侧 URL 导航回去（历史完整恢复），
-      // 只发 newChat 的话旧会话永远是空的 —— 上下文全丢
-      if (switched) void api.landSession(sessionId)
     } else {
       // 没有 wcId 就等于没绑定：主进程收不到 bindSession，hook 不注入，
       // 网页里无论发什么都到不了 lidow（AI 会说「我没有工作目录」）。
@@ -730,7 +800,8 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async stop(level) {
     set({ pendingReplySessionId: '' })
-    await api.stop(level)
+    // 只停当前会话：之前没有 sessionId，会连带停掉另一个标签的任务
+    await api.stop(get().activeSession?.id ?? '', level)
   },
 
   async answerConfirm(ok) {
@@ -846,29 +917,39 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'ui-pure-suggestion': {
         // 已在纯净模式里就不用再问一次
         if (get().pureMode) break
-        // 初始化是主进程直接建会话并绑定网页的，渲染层标签可能还不知道这个 session；
-        // 不补上 sessionId，进纯净模式就会打开一个空对话（用户反馈）。
+        // 初始化是主进程直接建会话并绑定网页的，渲染层标签可能还不知道这个 session。
+        // 必须按 webContentsId 找对应标签，不能盲写当前活动标签（多平台会串台）。
         const sid = e.sessionId
-        set((st) => ({
-          pureSuggestion: true,
-          tabs: st.tabs.map((t) => (t.id === st.activeTabId ? { ...t, sessionId: sid } : t))
-        }))
+        const st0 = get()
+        const target =
+          (e.webContentsId !== undefined ? st0.tabs.find((t) => t.wcId === e.webContentsId) : undefined) ??
+          st0.tabs.find((t) => e.providerId && t.providerId === e.providerId && !t.sessionId)
+        if (target) {
+          set((st) => ({
+            pureSuggestion: true,
+            tabs: st.tabs.map((t) => (t.id === target.id ? { ...t, sessionId: sid } : t))
+          }))
+        } else {
+          set({ pureSuggestion: true })
+        }
         void api
           .getSession(sid)
           .then((sess) => {
-            if (sess && !get().pureMode) set({ activeSession: sess })
+            if (!sess || get().pureMode) return
+            // 只在该会话对应的标签仍是当前标签时接管，避免覆盖用户刚切到的会话
+            if (target && get().activeTabId === target.id) set({ activeSession: sess })
           })
           .catch(() => undefined)
         break
       }
-      case 'session-updated':
+      case 'session-updated': {
         // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时
         // 不能把用户眼前正在滚动的流式输出打没
-        if (e.sessionId === s.activeSession?.id) {
+        if (e.sessionId === get().activeSession?.id) {
           set({ streamingText: '', streamingTps: 0, thinkingText: '' })
         }
         void api.getSession(e.sessionId).then((sess) => {
-          if (sess && sess.id === s.activeSession?.id) {
+          if (sess && sess.id === get().activeSession?.id) {
             set({ activeSession: sess })
             // 回复轮已落盘（assistant），清掉「等待首包」加载态
             if (sess.turns[sess.turns.length - 1]?.role === 'assistant') {
@@ -876,8 +957,9 @@ export const useStore = create<LidowState>((set, get) => ({
             }
           }
         })
-        void s.refreshSessions()
+        void get().refreshSessions()
         break
+      }
       case 'session-switched': {
         // 自动续接：主进程已把网页绑定到新会话，视图和标签状态都要跟上，
         // 否则后续消息会重新绑回旧会话、续接后的回复也看不到。
@@ -909,7 +991,7 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'tool-confirm-required':
         // 只记录待确认项，不切视图：纯净模式自带内联确认卡（ChatPanel 内），
         // 强制 pureMode:false 会把用户踢出正在看的对话界面（实测严重打断）
-        set({ confirmRequest: { callId: e.callId, reason: e.reason } })
+        set({ confirmRequest: { callId: e.callId, reason: e.reason, sessionId: e.sessionId } })
         break
       case 'plan-proposed':
         // 计划卡片同样在纯净模式内联呈现，不强制退出。
@@ -933,10 +1015,9 @@ export const useStore = create<LidowState>((set, get) => ({
         set({ toggleState: { think: e.think, search: e.search } })
         break
       case 'ui-toggle-pure': {
-        const next = !get().pureMode
-        set({ pureMode: next })
-        // 热键切换也要落盘：否则重启后又回到旧模式
-        void api.setPureMode(next)
+        // 复用 setPure 的完整进入逻辑（pureView 归位、绑定/加载当前会话），
+        // 只 set pureMode 会停在设置页或显示旧会话。
+        get().setPure(!get().pureMode)
         break
       }
       case 'ui-new-session': {

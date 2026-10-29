@@ -7,6 +7,7 @@ import { PureModeShell } from './PureModeShell'
 import { RightDock } from './RightDock'
 import { HelpPanel } from './HelpPanel'
 import { UpdatePrompt } from './UpdatePrompt'
+import { WhalePet } from './WhalePet'
 import {
   SessionsView,
   FilesView,
@@ -265,8 +266,10 @@ function ProjectSwitcher(): React.JSX.Element {
             return (
               <button
                 key={p.id}
-                className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-                style={{ background: isActive ? 'var(--bg-active)' : 'transparent', color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
+                className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] ${
+                  isActive ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+                }`}
+                style={{ color: isActive ? 'var(--text)' : 'var(--text-dim)' }}
                 onClick={() => {
                   setOpen(false)
                   if (isActive) return
@@ -594,6 +597,8 @@ function SessionDeleteDialog(): React.JSX.Element | null {
 /** 危险操作确认浮层 */
 function ConfirmOverlay(): React.JSX.Element {
   const { confirmRequest, answerConfirm } = useStore()
+  const sessions = useStore((s) => s.sessions)
+  const activeSession = useStore((s) => s.activeSession)
   if (!confirmRequest) return <></>
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-6 z-50 flex justify-center px-4">
@@ -609,6 +614,11 @@ function ConfirmOverlay(): React.JSX.Element {
             !
           </span>
           <span className="text-[13px] font-semibold">危险操作需要确认</span>
+          {confirmRequest.sessionId && confirmRequest.sessionId !== activeSession?.id && (
+            <span className="ml-2 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+              来自「{sessions.find((s) => s.id === confirmRequest.sessionId)?.title ?? '其他会话'}」
+            </span>
+          )}
         </div>
         <div className="mb-3 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
           {confirmRequest.reason}
@@ -720,6 +730,9 @@ export function AppShell(): React.JSX.Element {
         {/* 右侧工具侧栏：文件 / 任务 / 终端 / 审阅 */}
         <RightDock />
       </div>
+
+      {/* 鲸鱼娘桌宠（dsh-pet 素材，MIT） */}
+      <WhalePet />
 
       {/* 更新提示：发现新版本 / 下载进度 / 自动安装倒计时 */}
       <UpdatePrompt />

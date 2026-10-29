@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, shell, nativeTheme, webContents } from 'electron'
+import { app, BrowserWindow, shell, nativeTheme, webContents } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
@@ -7,6 +7,7 @@ import { TodoBoard } from '@main/ecosystem/todos'
 import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
 import { deleteDeepSeekChat } from '@main/bridge/webChatDelete'
+import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { Logger } from '@main/infra/log'
 import type { DomAdapter, McpServerConfig, ProviderDescriptor, QuickCommand, StopLevel } from '@shared/types'
 
@@ -44,10 +45,7 @@ export function registerHandlers(
     applyNativeTheme(next.theme)
     return next
   })
-  R('pickDirectory', async () => {
-    const res = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-    return res.canceled ? null : res.filePaths[0] ?? null
-  })
+  R('pickDirectory', () => showDirectoryPicker(parentWindowFor()))
   R('openProject', (root: string) => {
     const r = String(root ?? '')
     if (!r || r === 'undefined' || !r.match(/^[A-Za-z]:[/\\]/)) throw new Error('无效的项目路径: ' + r)
@@ -118,7 +116,9 @@ export function registerHandlers(
         // 正在被网页承载 / 正在执行的会话不能删：删了之后回复会落进不存在的会话
         if (ctx.overlay.wcIdOfSession(m.id) !== undefined) continue
         if (ctx.loop.runningSessionIds().includes(m.id)) continue
-        if ((store.get(m.id)?.turns.length ?? 0) === 0) store.delete(m.id)
+        const s = store.get(m.id)
+        // 只看 turns 会误删「只在网页里聊过」的会话（没有本地轮次但有 providerUrl）
+        if (s && s.turns.length === 0 && !s.providerUrl && !s.systemPromptSent) store.delete(m.id)
       }
     }
     return store.create(
@@ -134,7 +134,11 @@ export function registerHandlers(
     let removed = 0
     for (const m of store.list()) {
       if (m.id === keepSessionId) continue
-      if ((store.get(m.id)?.turns.length ?? 0) === 0) {
+      // 正在被网页承载 / 正在执行的会话不能删：删了之后回复会落进不存在的会话
+      if (ctx.overlay.wcIdOfSession(m.id) !== undefined) continue
+      if (ctx.loop.runningSessionIds().includes(m.id)) continue
+      const s = store.get(m.id)
+      if (s && s.turns.length === 0 && !s.providerUrl && !s.systemPromptSent) {
         ctx.overlay.unbindSession(m.id)
         store.delete(m.id)
         removed++
@@ -177,7 +181,10 @@ export function registerHandlers(
       const store = ctx.sessionStoreOf(project)
       store.delete(sid)
       // 已没有“带轮次”的会话 → 项目回到未初始化，网页需要重新出现初始化入口
-      const stillInitialized = store.list().some((m) => (store.get(m.id)?.turns.length ?? 0) > 0)
+      const stillInitialized = store.list().some((m) => {
+        const s = store.get(m.id)
+        return Boolean(s && (s.turns.length > 0 || s.providerUrl || s.systemPromptSent))
+      })
       if (!stillInitialized) ctx.resetProjectInitialization(project, wcId)
     }
     // 离开被删除的对话：否则网页仍停留在已删除会话，甚至继续接管后续消息。
@@ -202,8 +209,10 @@ export function registerHandlers(
     void ctx.loop.run(String(sessionId), String(text))
     void ctx.sync.pushAll(`Lidow 收到新任务：${String(text).slice(0, 200)}`)
   })
-  R('stop', (level: StopLevel) => {
-    ctx.stopAll((level ?? 'all') as StopLevel)
+  R('stop', (sessionId: string, level: StopLevel) => {
+    const sid = String(sessionId ?? '')
+    if (sid) ctx.loop.stop(sid, (level ?? 'all') as StopLevel)
+    else ctx.stopAll((level ?? 'all') as StopLevel)
   })
   R('newChat', (sessionId: string) => {
     ctx.overlay.sendCmd(String(sessionId), { kind: 'new-chat' })
@@ -475,8 +484,26 @@ export function registerHandlers(
         message: '原会话正在执行任务：切换到其他会话后该任务无法继续'
       })
     }
+    // 换绑时清理被抛弃的空会话（0 轮次）：否则每点一次「新建任务」又切走，
+    // 侧栏就多一个空壳会话，看起来像多了几个对话窗口。
+    if (prev && prev !== sid && !ctx.loop.isRunning(prev)) {
+      const prevSession = ctx.sessionOf(prev)
+      // 有网页对话地址或已发过提示词的空会话不是“空壳”，不能当垃圾清理
+      if (prevSession && prevSession.turns.length === 0 && !prevSession.providerUrl && !prevSession.systemPromptSent) {
+        const prevProject = findProjectOfSession(ctx, prev)
+        if (prevProject) ctx.sessionStoreOf(prevProject).delete(prev)
+        ctx.overlay.unbindSession(prev)
+        ctx.emit({ type: 'session-updated', sessionId: prev })
+      }
+    }
     ctx.overlay.bindSession(sid, wcId)
+    const boundSession = ctx.sessionOf(sid)
+    if (boundSession) ctx.registerWebviewProvider(wcId, boundSession.providerId, boundSession.accountId)
     ctx.configureOverlay(sid)
+    // 首次绑定/换绑必须把页面落到该会话自己的对话：
+    // 新会话没有 providerUrl → 切到新对话，避免它继承网页当前那条旧对话
+    // （否则会出现两个 Lidow 会话指向同一个网页对话）。
+    if (prev !== sid) void ctx.landSession(sid)
   })
   /**
    * 还没有会话时（无项目也能进 AI 页面）给网页侧下发运行所需配置：
@@ -485,8 +512,9 @@ export function registerHandlers(
    */
   /** 让页面落到指定会话自己的对话（有 providerUrl 导航回原对话，否则开新聊天） */
   R('landSession', (sessionId: string) => ctx.landSession(String(sessionId)))
-  R('syncProjectToWebview', (webContentsId: number, adapter?: unknown, providerId?: string) => {
+  R('syncProjectToWebview', (webContentsId: number, adapter?: unknown, providerId?: string, accountId?: string) => {
     const id = Number(webContentsId)
+    if (providerId) ctx.registerWebviewProvider(id, String(providerId), accountId ? String(accountId) : undefined)
     // 渲染层可能还没拿到 adapter（无会话时 tab 记录可能是空的）。
     // 按 providerId 精确查表，不要随便拿一个平台的 adapter ——
     // 每个平台的 avatar 选择器不同，用错会导致登录态误判。
@@ -499,10 +527,12 @@ export function registerHandlers(
     if (ad) ctx.overlay.sendCmdToWebContents(id, { kind: 'configure', adapter: ad })
     const project = ctx.activeProject()
     const root = project?.root ?? null
+    // 没有绑定会话 = 新开的网页/新窗口：即使项目已有历史，也给一个初始化入口，
+    // 否则用户无法把新对话接到当前项目（只能看一个没有 Lidow 引导的空白页）。
     return ctx.overlay.sendCmdToWebContents(id, {
       kind: 'set-project',
       projectRoot: root,
-      initialized: ctx.settings.get().pureMode || (project ? ctx.projectInitialized(project.id) : false)
+      initialized: ctx.settings.get().pureMode
     })
   })
   /** 透传网页内交互命令（深度思考/智能搜索/上传文件） */

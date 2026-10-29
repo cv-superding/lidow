@@ -58,7 +58,7 @@ export interface LidowApi {
   // Agent 循环
   sendPrompt(sessionId: string, text: string): Promise<void>
   newChat(sessionId: string): Promise<void>
-  stop(level: StopLevel): Promise<void>
+  stop(sessionId: string, level: StopLevel): Promise<void>
   confirmTool(callId: string, approved: boolean, rememberChoice?: boolean): Promise<void>
   /** 确认/放弃计划：第一个参数是会话 id（计划按会话存储） */
   confirmPlan(sessionId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]): Promise<void>
@@ -155,7 +155,7 @@ export interface LidowApi {
   /** 切换会话后把页面落到该会话自己的对话（providerUrl 或新聊天） */
   landSession(sessionId: string): Promise<void>
   /** 无会话时下发 adapter 与项目目录（决定是否弹首次引导） */
-  syncProjectToWebview(webContentsId: number, adapter?: DomAdapter, providerId?: string): Promise<boolean>
+  syncProjectToWebview(webContentsId: number, adapter?: DomAdapter, providerId?: string, accountId?: string): Promise<boolean>
   setPureMode(on: boolean): Promise<void>
   /** 触发网页内交互（深度思考 / 智能搜索 / 上传文件） */
   overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
@@ -198,7 +198,7 @@ export type LidowEvent =
   | { type: 'session-updated'; sessionId: string }
   | { type: 'update-state'; state: UpdateState }
   /** 项目初始化完成：询问是否切到纯净模式（可稍后从左侧栏进入） */
-  | { type: 'ui-pure-suggestion'; sessionId: string }
+  | { type: 'ui-pure-suggestion'; sessionId: string; webContentsId?: number; providerId?: string }
   /** 网页侧会话标题变化（平台自动命名/用户重命名），只更新元数据，不清流式文本 */
   | { type: 'session-title'; sessionId: string; title: string }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */

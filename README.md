@@ -16,7 +16,7 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-123%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-128%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 
@@ -63,6 +63,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / 豆包 / 通义千问 / 文心一言 / K
 - 智能任务拆解（planSubmit 确认卡）、**人机共用任务看板**（AI todoWrite 与用户双向同步）、
   项目模板一键初始化、本地知识库挂载检索、多账号一键切换、自定义快捷指令（斜杠菜单）、全局热键
 - 多端同步：飞书 / 企业微信 / 钉钉群机器人推送
+- 鲸鱼娘桌宠：来自 dsh-pet 的透明动画，待机呼吸 / AI 工作时思考 / 点击互动，可拖动、可关闭
 - 内置自动更新：启动自动检查、应用内下载进度条、下载完成自动重启安装（便携版引导下载页）
 - 管理页：工作区 / 会话 / 文件 / 任务 / 技能 / 子代理 / MCP / 插件 / 快捷指令 / 记忆 / 知识库 / 审计 / 设置（搜索、筛选、统计与空态操作齐备）
 
@@ -96,6 +97,7 @@ npm run dist:mac   # macOS dmg
 - [lingya](https://github.com/cymylive/lingya)：安全 MOD、webSearch、多端同步思路来源
 - [dsh-webin](https://github.com/cv-superding/dsh-webin)：DSH 网页化运行与接入参考
 - [dsh-deepseek-web-login](https://github.com/cv-superding/dsh-deepseek-web-login)：DeepSeek 网页登录态与接入方式参考
+- [dsh-pet](https://github.com/PC2005-cloud/dsh-pet)：鲸鱼娘桌宠动画素材（MIT，见 `src/renderer/src/assets/pet/LICENSE-dsh-pet.txt`）
 
 Lidow 以 GPL-3.0 发布，继承并回馈上游开源生态。
 

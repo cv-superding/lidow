@@ -9,7 +9,7 @@ import { api } from '../api'
 import { stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
-import type { ChatTurn, ToolResult } from '@shared/types'
+import type { ChatTurn, SkillMeta, ToolResult } from '@shared/types'
 import {
   IconArrowUp,
   IconStop,
@@ -384,8 +384,9 @@ function PermissionPicker(): React.JSX.Element {
             return (
               <button
                 key={m.id}
-                className="flex w-full items-start gap-2.5 rounded-[var(--r-sm)] px-2 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-                style={{ background: active ? 'var(--bg-active)' : 'transparent' }}
+                className={`flex w-full items-start gap-2.5 rounded-[var(--r-sm)] px-2 py-2 text-left transition-colors duration-[100ms] ${
+                  active ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+                }`}
                 onClick={() => {
                   setOpen(false)
                   void api.updateSettings({ permissionMode: m.id }).then((next) => useStore.setState({ settings: next }))
@@ -426,6 +427,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const confirmRequest = useStore((s) => s.confirmRequest)
   const answerConfirm = useStore((s) => s.answerConfirm)
   const plan = useStore((s) => s.plan)
+  const sessions = useStore((s) => s.sessions)
   const quickCmds = useStore((s) => s.quickCmds)
   const toggleState = useStore((s) => s.toggleState)
   // 不能写成 useStore((s) => s.currentComposerActions())：
@@ -444,6 +446,19 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const [input, setInput] = useState('')
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
+  const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
+  const projectId = useStore((s) => s.activeProjectId)
+  const [skills, setSkills] = useState<SkillMeta[]>([])
+
+  // 打开斜杠菜单时重新扫描技能/快捷指令：新装的技能和刚保存的指令不需要重启软件
+  useEffect(() => {
+    if (!slashOpen) return
+    void api.listSkills().then(setSkills).catch(() => setSkills([]))
+    void api
+      .listQuickCommands()
+      .then((c) => useStore.setState({ quickCmds: c }))
+      .catch(() => undefined)
+  }, [slashOpen, projectId])
   const scrollRef = useRef<HTMLDivElement>(null)
   /** 用户是否停留在底部（用滚动事件维护；更新后再算会因单次增长过大永久失效） */
   const stickRef = useRef(true)
@@ -555,10 +570,31 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       ...SLASH_COMMANDS.map((c) => ({ key: c.cmd, trigger: c.cmd, label: c.desc, template: c.cmd })),
       ...quickCmds
         .filter((q) => q.enabled)
-        .map((q) => ({ key: `q_${q.id}`, trigger: `/${q.trigger}`, label: q.name, template: q.template }))
+        .map((q) => ({ key: `q_${q.id}`, trigger: `/${q.trigger}`, label: q.name, template: q.template })),
+      // 技能也作为斜杠命令暴露；输入后由 AI 调 readSkill 读取正文（渐进披露，不塞满上下文）
+      ...skills
+        .filter((s) => s.name.trim())
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((s) => ({
+          key: `skill_${s.path}`,
+          trigger: `/${s.name.trim().replace(/^\/+/, '').replace(/\s+/g, '-')}`,
+          label: `技能 · ${s.description || s.name}`,
+          template: `请使用技能「${s.name.trim()}」完成任务：`
+        }))
     ],
-    [quickCmds]
+    [quickCmds, skills]
   )
+  const slashFiltered = useMemo(() => {
+    const q = input.startsWith('/') ? input.slice(1).trim().toLowerCase() : ''
+    if (!q) return slashItems
+    return slashItems.filter(
+      (c) => c.trigger.toLowerCase().includes(q) || c.label.toLowerCase().includes(q)
+    )
+  }, [slashItems, input])
+
+  useEffect(() => {
+    if (slashOpen) slashSelectedRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [slashOpen, slashIndex, slashFiltered.length])
 
   const empty = turns.length === 0 && !streamingText
 
@@ -730,8 +766,15 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             className="anim-pop rounded-[var(--r-lg)] p-3"
             style={{ background: 'var(--danger-soft)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)' }}
           >
-            <div className="mb-1 text-[12.5px] font-semibold" style={{ color: 'var(--danger)' }}>
-              危险操作确认
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <span className="text-[12.5px] font-semibold" style={{ color: 'var(--danger)' }}>
+                危险操作确认
+              </span>
+              {confirmRequest.sessionId && confirmRequest.sessionId !== activeSession?.id && (
+                <span className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                  来自「{sessions.find((s) => s.id === confirmRequest.sessionId)?.title ?? '其他会话'}」
+                </span>
+              )}
             </div>
             <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-body)' }}>
               {confirmRequest.reason}
@@ -750,42 +793,48 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
       {/* 输入区 */}
       <div className="relative shrink-0 px-6 pb-4 pt-1">
-        {slashOpen && (
-          <div
-            className="anim-pop absolute bottom-full left-6 mb-1.5 w-[320px] overflow-hidden rounded-[var(--r-lg)] p-1"
-            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
-          >
-            <div className="text-label px-2 py-1.5">指令</div>
-            {slashItems.map((c, i) => (
-              <button
-                key={c.key}
-                className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms]"
-                style={{ background: i === slashIndex ? 'var(--bg-active)' : 'transparent' }}
-                onMouseEnter={() => setSlashIndex(i)}
-                onClick={() => {
-                  setInput(c.template.includes('{{input}}') ? c.template : `${c.template} `)
-                  setSlashOpen(false)
-                }}
-              >
-                <span className="font-mono text-[11.5px]" style={{ color: 'var(--accent)' }}>
-                  {c.trigger}
-                </span>
-                <span className="truncate" style={{ color: 'var(--text-dim)' }}>
-                  {c.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
         <div
-          className="mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[130ms]"
+          className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[130ms]"
           style={{
             background: 'var(--surface-raised)',
             border: '1px solid var(--border-strong)',
             boxShadow: 'var(--shadow)'
           }}
         >
+          {/* 斜杠菜单锚定在输入框上，而不是整块输入区（否则会偏到侧栏附近） */}
+          {slashOpen && (
+            <div
+              className="anim-pop absolute bottom-full left-0 z-50 mb-1.5 max-h-[320px] w-[320px] overflow-y-auto rounded-[var(--r-lg)] p-1"
+              style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+            >
+              <div className="text-label px-2 py-1.5">指令</div>
+              {slashFiltered.map((c, i) => (
+                <button
+                  key={c.key}
+                  ref={i === slashIndex ? slashSelectedRef : undefined}
+                  className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms]"
+                  style={{ background: i === slashIndex ? 'var(--bg-active)' : 'transparent' }}
+                  onMouseEnter={() => setSlashIndex(i)}
+                  onClick={() => {
+                    setInput(c.template.includes('{{input}}') ? c.template : `${c.template} `)
+                    setSlashOpen(false)
+                  }}
+                >
+                  <span className="font-mono text-[11.5px]" style={{ color: 'var(--accent)' }}>
+                    {c.trigger}
+                  </span>
+                  <span className="truncate" style={{ color: 'var(--text-dim)' }}>
+                    {c.label}
+                  </span>
+                </button>
+              ))}
+              {slashFiltered.length === 0 && (
+                <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                  没有匹配的指令或技能
+                </div>
+              )}
+            </div>
+          )}
           <textarea
             className="max-h-44 min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 text-[13.5px] leading-[1.6] outline-none"
             style={{ color: 'var(--text)' }}
@@ -799,17 +848,20 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             onKeyDown={(e) => {
               if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 e.preventDefault()
-                const n = slashItems.length
-                setSlashIndex((i) => (e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n))
+                const n = slashFiltered.length
+                if (n > 0) setSlashIndex((i) => (e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n))
                 return
               }
               if (slashOpen && e.key === 'Enter') {
-                e.preventDefault()
-                const item = slashItems[slashIndex]
+                const item = slashFiltered[slashIndex]
                 if (item) {
+                  e.preventDefault()
                   setInput(item.template.includes('{{input}}') ? item.template : `${item.template} `)
                   setSlashOpen(false)
+                  return
                 }
+                // 没有匹配时不吞回车：先收起菜单，下一次 Enter 正常发送
+                setSlashOpen(false)
                 return
               }
               if (e.key === 'Escape') {

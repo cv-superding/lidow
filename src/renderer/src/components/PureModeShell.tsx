@@ -147,11 +147,8 @@ export function PureModeShell(): React.JSX.Element {
           <span className="text-[10.5px] font-normal opacity-60">Ctrl N</span>
         </button>
         <button
-          className={navBtn}
-          style={{
-            color: pureView === 'tasks' ? 'var(--text)' : 'var(--text-dim)',
-            background: pureView === 'tasks' ? 'var(--bg-hover)' : 'transparent'
-          }}
+          className={`${navBtn} ${pureView === 'tasks' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
+          style={{ color: pureView === 'tasks' ? 'var(--text)' : 'var(--text-dim)' }}
           onClick={() => setPureView('tasks')}
         >
           <span className="flex w-4 justify-center">
@@ -160,11 +157,8 @@ export function PureModeShell(): React.JSX.Element {
           <span className="flex-1 truncate text-left">自动化</span>
         </button>
         <button
-          className={navBtn}
-          style={{
-            color: pureView === 'plugins' ? 'var(--text)' : 'var(--text-dim)',
-            background: pureView === 'plugins' ? 'var(--bg-hover)' : 'transparent'
-          }}
+          className={`${navBtn} ${pureView === 'plugins' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
+          style={{ color: pureView === 'plugins' ? 'var(--text)' : 'var(--text-dim)' }}
           onClick={() => setPureView('plugins')}
         >
           <span className="flex w-4 justify-center">

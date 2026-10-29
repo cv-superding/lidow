@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Notification, webContents } from 'electron'
+import { app, BrowserWindow, Notification, webContents } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -26,6 +26,7 @@ import { SyncService } from '@main/sync/service'
 import { CredentialVault } from '@main/infra/vault'
 import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
+import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
 import type { AppSettings, FileNode, ProjectInfo } from '@shared/types'
@@ -34,6 +35,7 @@ import { HOOKS, buildHookSource } from '@main/providers/hooks'
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'graphite',
   accent: '#4f6bed',
+  desktopPet: true,
   language: 'zh-CN',
   pureMode: false,
   dangerConfirm: true,
@@ -92,17 +94,27 @@ const GENERIC_CHAT_TITLES = new Set([
  * 网页标题 → 会话名：去掉平台后缀（如「读文件 - DeepSeek」），过滤首页通用标题。
  * 平台会按内容自动命名，用户也可能在网页侧重命名，Lidow 侧栏应跟随网页。
  */
+function isGenericTitlePart(part: string, providerName: string): boolean {
+  const p = part.toLowerCase()
+  return (
+    GENERIC_CHAT_TITLES.has(p) ||
+    p === providerName.toLowerCase() ||
+    p.includes('探索未至之境') ||
+    p.includes('抖音旗下')
+  )
+}
+
 function cleanChatTitle(raw: string | undefined, providerName: string): string {
   let t = (raw ?? '').replace(/\s+/g, ' ').trim()
   if (!t) return ''
-  const parts = t.split(/\s+[-|·]\s+/)
+  const parts = t.split(/\s+[-|·]\s+/).map((x) => x.trim()).filter(Boolean)
   if (parts.length > 1) {
-    const tail = parts[parts.length - 1]!.toLowerCase()
-    if (tail.includes(providerName.toLowerCase()) || tail.includes('deepseek')) {
-      t = parts.slice(0, -1).join(' - ').trim()
-    }
+    // 只剔除尾部平台名/首页标语，避免把「ChatGPT - 使用指南」这类
+    // 以平台名开头的真实标题削成「使用指南」。
+    while (parts.length > 1 && isGenericTitlePart(parts[parts.length - 1]!, providerName)) parts.pop()
+    t = parts.join(' - ').trim()
   }
-  if (!t || GENERIC_CHAT_TITLES.has(t.toLowerCase())) return ''
+  if (!t || isGenericTitlePart(t, providerName)) return ''
   return t.slice(0, 60)
 }
 
@@ -143,6 +155,8 @@ export class AppContext {
   /** 各会话最近一次思考流（net hook 上报的是累计文本）：随 assistant turn 落盘，UI 折叠展示 */
   private thinkBuffers = new Map<string, string>()
   private projectDirs = new Map<string, string>()
+  /** webContents → 平台/账号：首次初始化时没有会话绑定，靠它建对话到正确的平台 */
+  private wcProviders = new Map<number, { providerId: string; accountId?: string }>()
   private sessionStores = new Map<string, SessionStore>()
   private providerRegistries = new Map<string, ProviderRegistry>()
   private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
@@ -273,7 +287,8 @@ export class AppContext {
       takeThinking: (sessionId) => this.takeThinking(sessionId),
       // 自动续接：新会话需要自己的网页绑定。这里只做主进程侧绑定，
       // 前端会通过 session-updated 事件跟上（切到新会话视图）。
-      rebindToSession: async (sessionId: string) => this.rebindWebview(sessionId),
+      rebindToSession: async (sessionId: string, fromSessionId?: string) =>
+        this.rebindWebview(sessionId, fromSessionId),
       // 工具执行遮罩：本地执行期间盖住网页（防误操作 + 明确状态）
       toolMask: (sessionId, show, text) => {
         this.overlay.sendCmd(sessionId, { kind: 'tool-mask', show, text })
@@ -350,6 +365,17 @@ export class AppContext {
       const onHome = Boolean(home) && url.split('#')[0] === home
       // 登录页/首页不算对话页，不覆盖已记录的对话 URL
       const shouldRecordUrl = !loginPage && !onHome && url !== session.providerUrl
+      if (shouldRecordUrl) {
+        // 同一网页对话不能同时归属两个 Lidow 会话；否则两边发送都会写进同一个
+        // 平台对话，历史互相污染。网页侧手动切换对话时宁可忽略这次导航。
+        const conflict = this.sessionStoreOf(session.projectId)
+          .list()
+          .find((m) => m.id !== sessionId && m.providerUrl === url)
+        if (conflict) {
+          Logger.warn('nav', `忽略重复对话 URL session=${sessionId.slice(-6)} 已属于 ${conflict.id.slice(-6)}`)
+          return
+        }
+      }
       const cleanTitle = cleanChatTitle(title, descriptor?.name ?? session.providerId)
       const nextTitle = cleanTitle && cleanTitle !== session.title ? cleanTitle : session.title
       const nextUrl = shouldRecordUrl ? url : session.providerUrl
@@ -375,16 +401,22 @@ export class AppContext {
       this.overlay.sendCmdToWebContents(webContentsId, {
         kind: 'set-project',
         projectRoot: root,
+        // 初始化是「项目级」状态：项目里任一历史会话有轮次，就不该再弹引导。
+        // 之前只看当前绑定会话的轮次，新建空会话后会误判成未初始化（实测反复弹窗）。
+        // 绑定会话时按项目判断；尚未绑定（新开网页/新窗口）则显示初始化入口，
+        // 让用户能把这个新对话接到当前项目（项目已有历史也允许再开一个）。
         initialized:
-          this.settings.get().pureMode ||
-          (session ? session.turns.length > 0 : project ? this.projectInitialized(project.id) : false)
+          this.settings.get().pureMode || (session ? this.projectInitialized(session.projectId) : false)
       })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
     }
 
     app.on('web-contents-created', (_e, wc) => {
-      wc.on('destroyed', () => this.overlay.disposeWebContents(wc.id))
+      wc.on('destroyed', () => {
+        this.overlay.disposeWebContents(wc.id)
+        this.wcProviders.delete(wc.id)
+      })
       // 嵌入式 webview 环境漂白：UA 去除 Electron 标识，对齐真实 Chrome（缓解平台"使用环境异常"误判）
       if (wc.getType() === 'webview') {
         try {
@@ -408,6 +440,8 @@ export class AppContext {
   }
 
   private focusWindow(): void {
+    // 目录选择框打开时不要抢焦点：否则原生对话框会被主窗口压到后面
+    if (isDirectoryPickerOpen()) return
     const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed())
     if (!win) return
     if (win.isMinimized()) win.restore()
@@ -423,8 +457,10 @@ export class AppContext {
    * 恢复完整历史），全新会话才开新聊天。否则子代理跑完切回父会话时，
    * 页面停在子代理的对话里，父会话后续消息全部发进错误上下文。
    */
-  private async rebindWebview(sessionId: string): Promise<void> {
-    const prev = this.lastSessionId
+  private async rebindWebview(sessionId: string, fromSessionId?: string): Promise<void> {
+    // 必须用调用方指定的来源会话取 webview：全局 lastSessionId 可能已被
+    // 另一个标签的发送/切换改走，多标签下会把子代理提示送进别人的对话。
+    const prev = fromSessionId ?? this.lastSessionId
     const prevWcId = prev ? this.overlay.wcIdOfSession(prev) : undefined
     if (prev && prev !== sessionId) this.overlay.unbindSession(prev)
     this.lastSessionId = sessionId
@@ -444,9 +480,18 @@ export class AppContext {
     const wc = wcId ? webContents.fromId(wcId) : undefined
     if (!wc) return
     const session = this.sessionOf(sessionId)
-    if (session?.providerUrl && wc.getURL() !== session.providerUrl) {
-      await wc.loadURL(session.providerUrl).catch(() => undefined)
+    if (session?.providerUrl) {
+      if (wc.getURL() !== session.providerUrl) await wc.loadURL(session.providerUrl).catch(() => undefined)
       return
+    }
+    // 没有平台对话 URL：这个会话要开一条新的网页对话，旧对话里的系统提示词
+    // 不再有效，必须重置标记，否则后续消息会误以为 prompt 已经发过。
+    if (session) {
+      this.sessionStoreOf(session.projectId).update(sessionId, (s) => ({
+        ...s,
+        providerUrl: undefined,
+        systemPromptSent: false
+      }))
     }
     this.overlay.sendCmd(sessionId, { kind: 'new-chat' })
   }
@@ -547,7 +592,7 @@ export class AppContext {
     this.overlay.sendCmd(sessionId, {
       kind: 'set-project',
       projectRoot: ownProject?.root ?? null,
-      initialized: pure || session.turns.length > 0
+      initialized: pure || (ownProject ? this.projectInitialized(ownProject.id) : session.turns.length > 0)
     })
     // 网络层 hook 由主进程注入主世界（preload 的 webFrame 在隔离世界，hook 不到页面 fetch）。
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
@@ -668,7 +713,7 @@ export class AppContext {
         }
 
         const providerId = parent.providerId
-        const child = this.sessionStoreOf(project.id).create(project.id, providerId)
+        const child = this.sessionStoreOf(project.id).create(project.id, providerId, undefined, parent.accountId)
         this.sessionStoreOf(project.id).update(child.id, (s) => ({
           ...s,
           title: `[子代理] ${agentName || '通用'}：${task.slice(0, 18)}`
@@ -681,7 +726,7 @@ export class AppContext {
         Logger.info('loop', `子代理启动 session=${child.id} agent=${agentName || '通用'} 任务=${task.slice(0, 40)}`)
         try {
           // 换绑网页 → 跑子任务 → 切回父会话（工具执行间隙网页本来就空闲）
-          await this.rebindWebview(child.id)
+          await this.rebindWebview(child.id, parentSessionId)
           await this.loop.run(child.id, prompt)
           const turns = this.sessionStoreOf(project.id).get(child.id)?.turns ?? []
           const last = [...turns].reverse().find((t) => t.role === 'assistant')
@@ -698,7 +743,7 @@ export class AppContext {
           // 当前持有的 wcId 来恢复。先解绑的话 rebind 拿不到 wcId，父会话
           // 失去网页绑定，主循环下一轮直接报「网页未连接」。
           if (parentSessionId) {
-            await this.rebindWebview(parentSessionId)
+            await this.rebindWebview(parentSessionId, child.id)
             this.emit({ type: 'session-updated', sessionId: parentSessionId })
           }
           this.overlay.unbindSession(child.id)
@@ -718,6 +763,16 @@ export class AppContext {
 
   activeProjectId(): string | null {
     return this.projectStore.get().activeProjectId
+  }
+
+  /** renderer 打开标签时登记该 webview 的平台/账号（无会话初始化时使用） */
+  registerWebviewProvider(webContentsId: number, providerId: string, accountId?: string): void {
+    if (!providerId) return
+    this.wcProviders.set(webContentsId, { providerId, accountId })
+  }
+
+  webviewProvider(webContentsId: number): { providerId: string; accountId?: string } | undefined {
+    return this.wcProviders.get(webContentsId)
   }
 
   /** 确认就绪的项目（一旦有带轮次的会话就缓存为已初始化，避免每次 configure 扫盘） */
@@ -756,7 +811,10 @@ export class AppContext {
     try {
       const store = this.sessionStoreOf(projectId)
       for (const m of store.list()) {
-        if ((store.get(m.id)?.turns.length ?? 0) > 0) {
+        const s = store.get(m.id)
+        // 有轮次、有网页对话地址、或已发过系统提示词，都说明这个项目已经初始化过。
+        // 只看轮次会把「用户直接在网页里聊」的会话误判成空项目，反复弹引导。
+        if (s && (s.turns.length > 0 || Boolean(s.providerUrl) || Boolean(s.systemPromptSent))) {
           this.initializedProjects.add(projectId)
           return true
         }
@@ -772,11 +830,10 @@ export class AppContext {
    * 按 webContentsId 触发（首次使用场景没有会话绑定，configureOverlay 会空转，
    * 网页浮窗将永远不消失）；选完对所有已连接 webview 广播 set-project。
    */
-  private async pickAndOpenProject(_webContentsId: number): Promise<void> {
+  private async pickAndOpenProject(webContentsId: number): Promise<void> {
     try {
-      const res = await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
-      if (res.canceled || !res.filePaths[0]) return
-      const root = res.filePaths[0]
+      const root = await showDirectoryPicker(parentWindowFor(webContentsId))
+      if (!root) return
       const opened = this.openProject(root)
       // 渲染层据此刷新项目下拉/目录条/会话列表
       this.emit({ type: 'projects-changed', sessionId: '' })
@@ -826,10 +883,30 @@ export class AppContext {
           Logger.warn('project', `初始化：会话 ${sessionId} 已不存在，改为新建`)
           this.overlay.unbindSession(sessionId)
         }
-        // 平台取当前 webview 对应的 provider（无则用内置第一个）
+        // 平台必须取当前 webview 对应的平台：此前永远取内置第一个（DeepSeek），
+        // 在豆包/Kimi 页面初始化会把会话记成 deepseek，后续绑定/导航全错。
         const reg = this.providerRegistryOf(project.id)
-        const providerId = reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
-        const created = this.sessionStoreOf(project.id).create(project.id, providerId)
+        const wcInfo = this.wcProviders.get(webContentsId)
+        const wcUrl = webContents.fromId(webContentsId)?.getURL() ?? ''
+        let host = ''
+        try {
+          host = new URL(wcUrl).host
+        } catch {
+          /* about:blank 等 */
+        }
+        const matched = reg.list().find((p) => {
+          try {
+            return p.enabled && Boolean(p.home) && new URL(p.home).host === host
+          } catch {
+            return false
+          }
+        })
+        const providerId = wcInfo?.providerId ?? matched?.id ?? reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
+        const providerDesc = reg.get(providerId)
+        const accountId =
+          wcInfo?.accountId ?? providerDesc?.activeAccountId ?? providerDesc?.accounts[0]?.id ?? undefined
+        const created = this.sessionStoreOf(project.id).create(project.id, providerId, undefined, accountId)
+        this.registerWebviewProvider(webContentsId, providerId, accountId)
         sessionId = created.id
         this.overlay.bindSession(sessionId, webContentsId)
         this.lastSessionId = sessionId
@@ -848,7 +925,12 @@ export class AppContext {
       initStore.update(sessionId, (x) => ({ ...x, systemPromptSent: true }))
       this.emit({ type: 'session-updated', sessionId })
       // 初始化完成：询问是否切到纯净模式（稍后也可从左侧栏进入）
-      this.emit({ type: 'ui-pure-suggestion', sessionId })
+      this.emit({
+        type: 'ui-pure-suggestion',
+        sessionId,
+        webContentsId,
+        providerId: this.sessionOf(sessionId)?.providerId
+      })
       Logger.info('project', `已发送初始化提示词 session=${sessionId} len=${sys.length}`)
     } catch (e) {
       Logger.warn('project', `发送初始化提示词失败：${e instanceof Error ? e.message : String(e)}`)
@@ -868,7 +950,14 @@ export class AppContext {
       // 找到该 webview 已绑定的会话；没有就用最近一个
       const currentId = this.overlay.sessionOfWebContents?.(webContentsId) ?? this.lastSessionId
       const store = this.sessionStoreOf(project.id)
-      const sessions = store.list().filter((m) => (store.get(m.id)?.turns.length ?? 0) > 0)
+      const bound = currentId ? this.sessionOf(currentId) : null
+      const wcInfo = this.wcProviders.get(webContentsId)
+      const providerId = bound?.providerId ?? wcInfo?.providerId
+      // 只延续当前 webview 所属平台的历史，避免在 Kimi 页面延续出 DeepSeek 会话
+      const sessions = store.list().filter(
+        (m) =>
+          (store.get(m.id)?.turns.length ?? 0) > 0 && (!providerId || m.providerId === providerId)
+      )
       const prior = sessions.find((m) => m.id === currentId) ?? sessions[0]
       if (!prior) {
         // 没有历史对话：退化为普通初始化
@@ -893,9 +982,10 @@ export class AppContext {
         .join('\n\n')
 
       // 新会话承载这次新对话
-      const created = store.create(project.id, prior.providerId)
+      const created = store.create(project.id, prior.providerId, undefined, prior.accountId)
       store.update(created.id, (x) => ({ ...x, title: `延续：${prior.title}`.slice(0, 40) }))
       this.overlay.bindSession(created.id, webContentsId)
+      this.registerWebviewProvider(webContentsId, prior.providerId, prior.accountId)
       this.lastSessionId = created.id
       this.emit({ type: 'session-updated', sessionId: created.id })
 
@@ -909,7 +999,12 @@ export class AppContext {
         level: 'info',
         message: '已把上个对话的摘要带进这个新窗口'
       })
-      this.emit({ type: 'ui-pure-suggestion', sessionId: created.id })
+      this.emit({
+        type: 'ui-pure-suggestion',
+        sessionId: created.id,
+        webContentsId,
+        providerId: prior.providerId
+      })
     } catch (e) {
       Logger.warn('project', `延续对话失败：${e instanceof Error ? e.message : String(e)}`)
     }
@@ -932,6 +1027,9 @@ export class AppContext {
     // 否则初始化/新任务会复用旧项目的会话（其文件可能已随目录删除而不存在），
     // 表现为「初始化失败：会话不存在」以及初始化完又弹一次引导。
     if (prevActive && prevActive !== p.id) {
+      // 切项目会解绑网页；旧项目的循环如果继续跑，工具会继续写旧目录。
+      // 渲染层确认文案写的是“会中断”，这里必须真的停掉。
+      this.stopAll('all')
       for (const sid of this.overlay.boundSessionIds()) this.overlay.unbindSession(sid)
       this.lastSessionId = ''
     }

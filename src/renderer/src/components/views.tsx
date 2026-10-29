@@ -441,10 +441,11 @@ function TreeNodes({
       {sorted.map((n) => (
         <div key={n.path}>
           <button
-            className="flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[5px] pr-2 text-left text-[12.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+            className={`flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[5px] pr-2 text-left text-[12.5px] transition-colors duration-[130ms] ${
+              selected === n.path ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+            }`}
             style={{
               paddingLeft: 7 + depth * 14,
-              background: selected === n.path ? 'var(--bg-active)' : 'transparent',
               color: n.type === 'dir' ? 'var(--text-body)' : selected === n.path ? 'var(--text)' : 'var(--text-dim)'
             }}
             onClick={() => n.type === 'file' && onOpen(n.path)}
@@ -1339,7 +1340,7 @@ export function SkillsView(): React.JSX.Element {
         <Empty
           icon={<IconBulb size={18} />}
           title="还没有技能"
-          hint="在项目的 .lidow/skills 或用户目录的 ~/.lidow/skills 放一个 SKILL.md（name + description + 正文），AI 会在需要时用 readSkill 读取。"
+          hint="在 .lidow/skills/<技能名>/SKILL.md（或平铺的 .md）放 name + description + 正文；重新打开会话后 AI 会用 readSkill 读取，技能也会出现在输入框 / 菜单。"
           action={
             dir ? (
               <button className="btn btn-primary btn-sm" onClick={() => void api.revealPath(dir)}>
@@ -1876,9 +1877,10 @@ export function SettingsView(): React.JSX.Element {
             return (
               <button
                 key={sec.id}
-                className="flex w-full items-center rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[12px] transition-colors duration-[110ms] hover:bg-[var(--surface)]"
+                className={`flex w-full items-center rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[12px] transition-colors duration-[110ms] ${
+                  active ? 'bg-[var(--surface)]' : 'hover:bg-[var(--surface)]'
+                }`}
                 style={{
-                  background: active ? 'var(--surface)' : 'transparent',
                   color: active ? 'var(--text)' : 'var(--text-dim)',
                   fontWeight: active ? 500 : 400
                 }}
@@ -1957,6 +1959,15 @@ export function SettingsView(): React.JSX.Element {
             <button className="btn btn-sm btn-ghost" onClick={() => patch({ accent: '#4f6bed' })}>
               恢复默认
             </button>
+          </div>
+
+          <div className="mt-4 border-t pt-3" style={{ borderColor: 'var(--border-soft)' }}>
+            <ToggleRow
+              label="鲸鱼娘桌宠"
+              desc="来自 dsh-pet 的桌宠：待机呼吸、AI 工作时思考、点击互动，可拖动位置"
+              checked={s.desktopPet}
+              onChange={(v) => patch({ desktopPet: v })}
+            />
           </div>
         </SettingGroup>
 

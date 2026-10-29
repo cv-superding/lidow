@@ -259,6 +259,8 @@ export type StopLevel = 'generate' | 'tool' | 'auto-loop' | 'all'
 export interface AppSettings {
   theme: ThemeMode
   accent: string
+  /** 鲸鱼娘桌宠（素材来自 dsh-pet，可拖动/点击互动） */
+  desktopPet: boolean
   language: 'zh-CN' | 'en-US'
   pureMode: boolean
   dangerConfirm: boolean
