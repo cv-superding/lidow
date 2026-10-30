@@ -3,14 +3,16 @@ import { api } from '../api'
 import { useProject, useStore, type AuxPanel } from '../store'
 import { ResizeHandle } from './ResizeHandle'
 import { TerminalPanel } from './TerminalPanel'
-import { PureToolbar } from './TitleBar'
 import {
   IconCheck,
   IconClose,
+  IconDiff,
   IconFile,
   IconFolder,
   IconFolderColor,
-  IconRefresh
+  IconList,
+  IconRefresh,
+  IconTerminal
 } from './icons'
 import type { TaskItem } from '@shared/types'
 
@@ -27,12 +29,21 @@ export function RightDock(): React.JSX.Element | null {
   const width = useStore((s) => s.auxWidth)
   const setWidth = useStore((s) => s.setAuxWidth)
   const closeAux = useStore((s) => s.closeAux)
+  const openAux = useStore((s) => s.openAux)
+  const todos = useStore((s) => s.todos)
+  const reviewFiles = useStore((s) => s.reviewFiles)
   if (!panel) return null
+  const tabs = [
+    { id: 'files' as const, label: '文件', icon: IconFile, count: 0 },
+    { id: 'tasks' as const, label: '任务', icon: IconList, count: todos.filter((t) => t.status !== 'done' && t.status !== 'skipped').length },
+    { id: 'terminal' as const, label: '终端', icon: IconTerminal, count: 0 },
+    { id: 'review' as const, label: '审阅', icon: IconDiff, count: reviewFiles.length }
+  ]
 
   return (
     <div
-      className="relative flex h-full shrink-0 flex-col border-l"
-      style={{ width, borderColor: 'var(--border)', background: 'var(--surface)' }}
+      className="right-dock relative flex h-full shrink-0 flex-col border-l"
+      style={{ width, borderColor: 'var(--border)', background: 'var(--surface)', zIndex: 40 }}
     >
       <ResizeHandle
         side="left"
@@ -42,11 +53,35 @@ export function RightDock(): React.JSX.Element | null {
         max={620}
         title="拖动调整右侧面板宽度（双击复位）"
       />
-      <div className="flex h-11 shrink-0 items-center gap-1.5 border-b px-3" style={{ borderColor: 'var(--border)' }}>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-          {PANEL_TITLES[panel]}
-        </span>
-        <PureToolbar />
+      <div className="flex h-11 shrink-0 items-center gap-2 border-b px-2.5" style={{ borderColor: 'var(--border)' }}>
+        <div className="flex min-w-0 flex-1 items-center gap-[2px] rounded-[var(--r-md)] p-[3px]" style={{ background: 'var(--surface-sunken)' }}>
+          {tabs.map((tab) => {
+            const Icon = tab.icon
+            const active = panel === tab.id
+            return (
+              <button
+                key={tab.id}
+                className="flex h-6 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-[var(--r-sm)] px-1.5 text-[11.5px] transition-colors duration-[110ms]"
+                style={{
+                  background: active ? 'var(--surface)' : 'transparent',
+                  color: active ? 'var(--text)' : 'var(--text-dim)',
+                  boxShadow: active ? 'var(--shadow-sm)' : 'none',
+                  fontWeight: active ? 500 : 400
+                }}
+                onClick={() => openAux(tab.id)}
+                title={PANEL_TITLES[tab.id]}
+              >
+                <Icon size={12} />
+                <span className="truncate">{tab.label}</span>
+                {tab.count > 0 && (
+                  <span className="text-[9.5px] tabular-nums" style={{ color: 'var(--text-hint)' }}>
+                    {tab.count}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
         <button
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--r-sm)] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
           style={{ color: 'var(--text-hint)' }}
@@ -144,7 +179,7 @@ function FilesPanel(): React.JSX.Element {
           onClick={() => n.type === 'file' && openFile(n.path)}
         >
           <span className="shrink-0">{n.type === 'dir' ? <IconFolderColor size={13} /> : <IconFile size={12} />}</span>
-          <span className="truncate">{n.name}</span>
+          <span className="min-w-0 flex-1 truncate">{n.name}</span>
         </button>
         {n.children && renderNodes(n.children, depth + 1)}
       </div>

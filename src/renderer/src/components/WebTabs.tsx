@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DEFAULT_ACCOUNT_ID, accountKeyOf, useStore } from '../store'
 import { api } from '../api'
 import { registerWebview } from '../webviews'
-import { IconPlus, IconClose, IconFolder, IconChevronLeft } from './icons'
+import { IconPlus, IconClose, IconFolder, IconChevronLeft, IconChevronRight } from './icons'
 
 /** 选目录并打开项目；入口在网页浮窗，这里只作为工作台空态的手动入口 */
 async function pickAndOpen(): Promise<void> {
@@ -368,14 +368,36 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
 function HomeEmpty(): React.JSX.Element {
   const providers = useStore((s) => s.providers)
   const projects = useStore((s) => s.projects)
+  const activeProjectId = useStore((s) => s.activeProjectId)
   const openProject = useStore((s) => s.openProject)
   const createSession = useStore((s) => s.createSession)
   const setView = useStore((s) => s.setView)
   const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>([])
+  const [pickId, setPickId] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const picked = pickId ? providers.find((p) => p.id === pickId) ?? null : null
 
   useEffect(() => {
     void api.listTemplates().then(setTemplates).catch(() => setTemplates([]))
   }, [])
+
+  const addAccountAndStart = async (providerId: string): Promise<void> => {
+    if (!activeProjectId) {
+      useStore.getState().notice('请先初始化项目，再添加账号', 'warn')
+      return
+    }
+    setBusy(true)
+    try {
+      const updated = await api.addAccount(activeProjectId, providerId, '')
+      await useStore.getState().refreshProviders()
+      const created = updated.accounts[updated.accounts.length - 1]
+      if (created) await createSession(providerId, created.id)
+    } catch (e) {
+      useStore.getState().notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // ---- 无项目：引导初始化 ----
   if (projects.length === 0) {
@@ -458,12 +480,73 @@ function HomeEmpty(): React.JSX.Element {
     )
   }
   // ---- 已有项目：选择平台 ----
+  if (picked) {
+    const accountRows = [
+      { id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态，未登录会打开平台登录页' },
+      ...picked.accounts.map((a) => ({
+        id: a.id,
+        label: a.label,
+        hint: a.id === picked.activeAccountId ? '当前账号' : '独立登录态'
+      }))
+    ]
+    return (
+      <div className="flex h-full items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+        <div className="w-full max-w-[440px]">
+          <button
+            className="mb-5 flex items-center gap-1 rounded-[var(--r-sm)] px-1 py-0.5 text-[12px] transition-colors duration-[130ms] hover:text-[var(--text)]"
+            style={{ color: 'var(--text-dim)' }}
+            onClick={() => setPickId(null)}
+          >
+            <IconChevronLeft size={12} /> 所有平台
+          </button>
+          <h1 className="text-[19px] font-semibold tracking-tight">{picked.name}</h1>
+          <p className="mt-1.5 text-[12.5px]" style={{ color: 'var(--text-hint)' }}>
+            选择一个账号开始；已有账号直接沿用登录态，新增账号需登录一次
+          </p>
+
+          <div className="mt-5 flex flex-col gap-2">
+            {accountRows.map((row) => (
+              <button
+                key={row.id}
+                className="card card-interactive flex items-center gap-3 p-3 text-left disabled:opacity-60"
+                disabled={busy}
+                onClick={() => void createSession(picked.id, row.id)}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12.5px] font-medium">{row.label}</span>
+                  <span className="block text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                    {row.hint}
+                  </span>
+                </span>
+                <span style={{ color: 'var(--text-hint)' }}>
+                  <IconChevronRight size={13} />
+                </span>
+              </button>
+            ))}
+            <button
+              className="flex items-center gap-2 rounded-[var(--r-xl)] p-3 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)] disabled:opacity-60"
+              style={{ border: '1px dashed var(--border-strong)', color: 'var(--text-dim)' }}
+              disabled={busy}
+              onClick={() => void addAccountAndStart(picked.id)}
+            >
+              <IconPlus size={13} />
+              <span className="text-[12.5px]">{busy ? '创建中…' : '新增账号并登录'}</span>
+              <span className="ml-auto text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                独立登录态
+              </span>
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
       <div className="flex w-full max-w-[620px] flex-col items-center text-center">
         <h1 className="text-[17px] font-semibold tracking-tight">选择一个平台开始</h1>
         <p className="mt-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>
-          页面加载后用下方「新建任务」发送，AI 才能驱动本地工具
+          选平台后可挑账号：已有账号复用登录态，新账号登录一次即可
         </p>
 
         <div className="mt-6 grid w-full grid-cols-3 gap-2.5">
@@ -471,7 +554,7 @@ function HomeEmpty(): React.JSX.Element {
             <button
               key={p.id}
               className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
-              onClick={() => void createSession(p.id)}
+              onClick={() => setPickId(p.id)}
             >
               <span className="text-[12.5px] font-medium">{p.name}</span>
               <span className="flex items-center gap-1.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
@@ -479,7 +562,7 @@ function HomeEmpty(): React.JSX.Element {
                   className="h-1.5 w-1.5 rounded-full"
                   style={{ background: p.accounts.length > 0 ? 'var(--success)' : 'var(--border-strong)' }}
                 />
-                {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '未登录'}
+                {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '选择或登录账号'}
               </span>
             </button>
           ))}

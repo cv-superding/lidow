@@ -711,8 +711,9 @@ function ensureDeepSeekStyles(): void {
       font-size:13px;font-weight:500;color:var(--lpf-muted);
       transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}
     .lpf-head:hover{background:var(--lpf-hover);color:var(--lpf-hover-text)}
-    .lpf-badge{min-width:18px;height:18px;padding:0 6px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
-      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:12px;font-weight:400}
+    .lpf-badge{box-sizing:border-box;min-width:20px;height:18px;padding:0 5px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:11.5px;font-weight:400;line-height:1;
+      font-variant-numeric:tabular-nums;text-align:center}
     .lpf-chevron{display:inline-flex;width:12px;justify-content:center;font-size:11px;opacity:.55;transform:rotate(0);
       transition:transform .2s var(--lpf-ease)}
     .lpf-chevron.open{transform:rotate(90deg)}
@@ -737,8 +738,9 @@ function ensureDeepSeekStyles(): void {
     .lpf-project-head.open .lpf-folder-closed{display:none}
     .lpf-project-head.open .lpf-folder-open{display:block}
     .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:14px}
-    .lpf-count{flex-shrink:0;min-width:18px;height:18px;padding:0 6px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
-      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:12px;font-weight:400}
+    .lpf-count{flex-shrink:0;box-sizing:border-box;min-width:20px;height:18px;padding:0 5px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:11.5px;font-weight:400;line-height:1;
+      font-variant-numeric:tabular-nums;text-align:center}
     .lpf-chats{padding:1px 0 3px 20px}
     .lpf-chat{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:36px;padding:0 12px;border-radius:6px;
       font-size:14px;color:var(--lpf-text);cursor:pointer;transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}

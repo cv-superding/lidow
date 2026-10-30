@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore, useProject } from '../store'
 import { filterSessionList } from '../sessionFilter'
 import { api } from '../api'
@@ -12,7 +12,9 @@ import {
   IconSettings,
   IconPlugin,
   IconHistory,
-  IconFile
+  IconFile,
+  IconChevronDown,
+  IconFolder
 } from './icons'
 
 
@@ -28,6 +30,107 @@ function relTime(ts: number): string {
   if (d === 1) return '昨天'
   if (d < 7) return `${d}天`
   return new Date(ts).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
+}
+
+/** 纯净模式项目下拉：切换已打开项目 / 打开其他目录（不再跳转到管理页） */
+function ProjectMenu(): React.JSX.Element {
+  const projects = useStore((s) => s.projects)
+  const activeProjectId = useStore((s) => s.activeProjectId)
+  const openProject = useStore((s) => s.openProject)
+  const active = projects.find((x) => x.id === activeProjectId) ?? projects[0] ?? null
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent): void => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const pickOther = (): void => {
+    setOpen(false)
+    void api.pickDirectory().then((dir) => dir && void openProject(dir))
+  }
+
+  return (
+    <div ref={boxRef} className="relative min-w-0 flex-1">
+      <button
+        className="flex h-[34px] w-full min-w-0 items-center gap-2 rounded-[var(--r-md)] px-1.5 text-left transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
+        onClick={() => setOpen((v) => !v)}
+        title="切换项目"
+      >
+        <span
+          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[6px] text-[11px] font-bold"
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+        >
+          {(active?.name ?? 'L').slice(0, 1).toUpperCase()}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-semibold leading-[1.25]">
+            {active?.name ?? '未打开项目'}
+          </span>
+          <span className="block truncate text-[10.5px] leading-[1.2]" style={{ color: 'var(--text-hint)' }}>
+            {active?.root ?? '选择一个工作目录'}
+          </span>
+        </span>
+        <span style={{ color: 'var(--text-hint)' }}>
+          <IconChevronDown size={12} />
+        </span>
+      </button>
+
+      {open && (
+        <div
+          className="anim-pop absolute left-0 top-full z-[70] mt-1 w-[268px] overflow-hidden rounded-[var(--r-lg)] p-1"
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-menu)' }}
+        >
+          <div className="text-label px-2 py-1.5">已打开项目</div>
+          {projects.length === 0 && (
+            <div className="px-2 py-2 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+              还没有项目
+            </div>
+          )}
+          {projects.map((p) => {
+            const isActive = p.id === (active?.id ?? '')
+            return (
+              <button
+                key={p.id}
+                className={`flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left transition-colors duration-[100ms] ${
+                  isActive ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+                }`}
+                onClick={() => {
+                  setOpen(false)
+                  if (isActive) return
+                  void openProject(p.root)
+                }}
+              >
+                <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
+                  <IconFolder size={13} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[12px] font-medium">{p.name}</span>
+                  <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                    {p.root}
+                  </span>
+                </span>
+                {isActive && <span style={{ color: 'var(--accent)' }}>使用中</span>}
+              </button>
+            )
+          })}
+          <div className="divider-soft my-1" />
+          <button
+            className="flex w-full items-center gap-2 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+            style={{ color: 'var(--text-dim)' }}
+            onClick={pickOther}
+          >
+            <IconPlus size={12} /> 打开其他目录…
+          </button>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /**
@@ -125,20 +228,12 @@ export function PureModeShell({
   return (
     <div
       className="anim-fade relative flex shrink-0 flex-col border-r"
-      style={{ width: sidebarWidth, borderColor: 'var(--border)', background: 'var(--sidebar)' }}
+      style={{ width: sidebarWidth, borderColor: 'var(--border)', background: 'var(--sidebar)', zIndex: 40 }}
     >
       <ResizeHandle width={sidebarWidth} onResize={setSidebarWidth} />
       {/* ① 项目头 */}
-      <div className="flex h-11 shrink-0 items-center gap-2 px-3">
-        <span
-          className="flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-[6px] text-[11px] font-bold"
-          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
-        >
-          L
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[12.5px] font-medium">{project?.name ?? '未打开项目'}</div>
-        </div>
+      <div className="flex h-12 shrink-0 items-center gap-1 px-2">
+        <ProjectMenu />
         <button
           title="收起侧栏"
           className="btn btn-ghost btn-icon btn-sm"
@@ -160,12 +255,13 @@ export function PureModeShell({
           </button>
         )}
         <button
-          className="btn btn-primary mb-1.5 h-8 w-full justify-start gap-2 px-2.5 text-[12.5px]"
+          className="btn btn-primary mb-1.5 h-[34px] w-full justify-start gap-2 rounded-[var(--r-md)] px-2.5 text-[12.5px]"
+          style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.16), var(--shadow-sm)' }}
           onClick={() => void newSession()}
         >
           <IconPlus size={15} />
           <span className="flex-1 text-left">新建任务</span>
-          <span className="text-[10.5px] font-normal opacity-60">Ctrl N</span>
+          <span className="text-[10.5px] font-normal opacity-70">Ctrl N</span>
         </button>
         {!web && (
           <>
@@ -199,6 +295,22 @@ export function PureModeShell({
       <div className="flex items-center justify-between px-3 pb-1.5">
         <span className="text-label">任务列表</span>
         <div className="flex items-center gap-0.5">
+          <select
+            className="max-w-[86px] cursor-pointer rounded-[var(--r-sm)] border-0 bg-transparent text-[10.5px] outline-none"
+            style={{ color: 'var(--text-hint)' }}
+            value={providerId}
+            onChange={(e) => setProviderId(e.target.value)}
+            title="按平台隔离会话"
+          >
+            <option value="" disabled>
+              选择平台
+            </option>
+            {providers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
           <button
             className="btn btn-ghost btn-icon btn-sm"
             title="清理空会话（新建后未发送的）"
@@ -214,59 +326,62 @@ export function PureModeShell({
           >
             <IconClose size={12} />
           </button>
-          <button
-            className="btn btn-ghost btn-icon btn-sm"
-            title="搜索会话"
-            onClick={() => document.getElementById('pure-search')?.focus()}
-          >
-            <IconSearch size={12} />
-          </button>
-          <select
-            className="max-w-[80px] cursor-pointer rounded-[var(--r-sm)] border-0 bg-transparent text-[10.5px] outline-none"
-            style={{ color: 'var(--text-hint)' }}
-            value={providerId}
-            onChange={(e) => setProviderId(e.target.value)}
-            title="按平台隔离会话"
-          >
-            <option value="" disabled>
-              选择平台
-            </option>
-            {providers.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
-              </option>
-            ))}
-          </select>
         </div>
       </div>
 
-      <div className="px-1.5 pb-1.5">
-        <input
-          id="pure-search"
-          className="field h-[30px] text-[12px]"
-          style={{ background: 'var(--surface)' }}
-          placeholder="搜索会话…"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-        />
+      <div className="px-2.5 pb-2">
+        <label
+          className="flex h-[30px] items-center gap-1.5 rounded-[var(--r-md)] border px-2 transition-colors focus-within:border-[var(--accent-ring)]"
+          style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+        >
+          <span style={{ color: 'var(--text-hint)' }}>
+            <IconSearch size={13} />
+          </span>
+          <input
+            id="pure-search"
+            className="min-w-0 flex-1 border-0 bg-transparent text-[12px] outline-none"
+            style={{ color: 'var(--text)' }}
+            placeholder="搜索会话"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
       </div>
 
-      <div className="stable-gutter min-h-0 flex-1 overflow-y-auto py-0.5 pl-1.5 pr-1.5">
+      <div className="stable-gutter min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {filtered.length === 0 && (
           <div className="px-2.5 py-4 text-[11px]" style={{ color: 'var(--text-hint)' }}>
             {query.trim() ? '没有匹配的会话' : '当前平台暂无会话'}
           </div>
         )}
-        {filtered.map((s) => {
+        {(['今天', '更早'] as const).map((groupLabel) => {
+          const rows = filtered.filter((x) =>
+            groupLabel === '今天'
+              ? new Date(x.updatedAt).toDateString() === new Date().toDateString()
+              : new Date(x.updatedAt).toDateString() !== new Date().toDateString()
+          )
+          if (rows.length === 0) return null
+          return (
+            <div key={groupLabel}>
+              <div className="flex items-center justify-between px-1 pb-1 pt-2.5">
+                <span className="text-[10.5px] font-semibold" style={{ color: 'var(--text-hint)' }}>
+                  {groupLabel}
+                </span>
+                <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                  {rows.length}
+                </span>
+              </div>
+              {rows.map((s) => {
           const active = activeSession?.id === s.id
           return (
             <div
               key={s.id}
-              className="group flex h-[30px] cursor-pointer items-center gap-2 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[130ms]"
+              className="group flex h-[32px] cursor-pointer items-center gap-2 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[110ms]"
               style={{
-                background: active ? 'var(--bg-active)' : 'transparent',
+                background: active ? 'var(--surface)' : 'transparent',
                 color: active ? 'var(--text)' : 'var(--text-dim)',
-                fontWeight: active ? 500 : 400
+                fontWeight: active ? 500 : 400,
+                boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
               }}
               onMouseEnter={(e) => {
                 if (!active) e.currentTarget.style.background = 'var(--bg-hover)'
@@ -311,11 +426,9 @@ export function PureModeShell({
             </div>
           )
         })}
-        {filtered.length === 0 && (
-          <div className="px-2.5 py-5 text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
-            {project ? '暂无会话，点上方「新建任务」' : '先在文件视图中打开项目'}
-          </div>
-        )}
+            </div>
+          )
+        })}
       </div>
 
       {/* ⑤ 底部用户区 */}

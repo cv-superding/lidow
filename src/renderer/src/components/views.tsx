@@ -32,23 +32,21 @@ export function Page({
 }): React.JSX.Element {
   return (
     <div className="anim-fade-quick flex h-full flex-col" style={{ background: 'var(--bg)' }}>
-      <div className="shrink-0 border-b" style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}>
-        <div className="px-8 py-4">
-          <div className="mx-auto flex w-full max-w-[1120px] flex-wrap items-center gap-3">
+      <div className="stable-gutter flex-1 overflow-y-auto">
+        <div className="w-full px-7 pb-10 pt-[22px]">
+          <div className="mb-4 flex flex-wrap items-start gap-3">
             <div className="min-w-0">
               <div className="text-title truncate">{title}</div>
               {subtitle && (
-                <div className="mt-0.5 truncate text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                <div className="mt-1 truncate text-[12px]" style={{ color: 'var(--text-hint)' }}>
                   {subtitle}
                 </div>
               )}
             </div>
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{actions}</div>
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2 pt-0.5">{actions}</div>
           </div>
+          {children}
         </div>
-      </div>
-      <div className="stable-gutter flex-1 overflow-y-auto px-8 py-5">
-        <div className="mx-auto w-full max-w-[1120px]">{children}</div>
       </div>
     </div>
   )
@@ -68,20 +66,20 @@ export function Empty({
 }): React.JSX.Element {
   return (
     <div
-      className="flex flex-col items-center gap-2.5 rounded-[var(--r-lg)] border border-dashed px-6 py-10 text-center"
+      className="flex flex-col items-center gap-2 rounded-[var(--r-lg)] border border-dashed px-6 py-11 text-center"
       style={{ borderColor: 'var(--border-strong)', background: 'var(--surface)' }}
     >
       {icon && (
         <span
-          className="mb-1 flex h-10 w-10 items-center justify-center rounded-full"
-          style={{ background: 'var(--surface-sunken)', color: 'var(--text-dim)' }}
+          className="mb-1 flex h-9 w-9 items-center justify-center rounded-[10px]"
+          style={{ background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}
         >
           {icon}
         </span>
       )}
-      <div className="text-[13px] font-medium">{title}</div>
+      <div className="text-[13px] font-semibold">{title}</div>
       {hint && (
-        <div className="max-w-[860px] text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+        <div className="max-w-[560px] text-balance text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
           {hint}
         </div>
       )}
@@ -93,11 +91,11 @@ export function Empty({
 /** 统计块（页面头部概览） */
 function Stat({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element {
   return (
-    <div className="flex min-w-[96px] flex-col gap-0.5 rounded-[var(--r-md)] px-3 py-2" style={{ background: 'var(--surface-sunken)' }}>
-      <span className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+    <div className="flex min-w-[120px] flex-col gap-0.5 rounded-[var(--r-md)] border px-3.5 py-2.5" style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}>
+      <span className="text-[11px]" style={{ color: 'var(--text-hint)' }}>
         {label}
       </span>
-      <span className="text-[15px] font-semibold tabular-nums">{value}</span>
+      <span className="text-[18px] font-semibold leading-tight tabular-nums">{value}</span>
     </div>
   )
 }
@@ -440,7 +438,8 @@ export function SessionsView(): React.JSX.Element {
       actions={
         <>
           <select
-            className="field h-8 w-[128px] cursor-pointer"
+            className="field h-8 cursor-pointer"
+            style={{ width: 128, flex: '0 0 128px' }}
             value={newProvider}
             onChange={(e) => setNewProvider(e.target.value)}
             title="新建会话使用的平台"
@@ -464,7 +463,7 @@ export function SessionsView(): React.JSX.Element {
         </>
       }
     >
-      <div className="mb-5 flex flex-wrap items-center gap-2">
+      <div className="mb-5 grid w-full grid-cols-3 gap-2.5">
         <Stat label="全部会话" value={sessions.length} />
         <Stat label="使用中的平台" value={platformCount} />
         <Stat label="已压缩" value={compacted} />
@@ -483,7 +482,8 @@ export function SessionsView(): React.JSX.Element {
           />
         </div>
         <select
-          className="field h-9 w-[140px] cursor-pointer"
+          className="field h-9 cursor-pointer"
+          style={{ width: 140, flex: '0 0 140px' }}
           value={providerFilter}
           onChange={(e) => setProviderFilter(e.target.value)}
         >
@@ -769,7 +769,21 @@ export function TasksView(): React.JSX.Element {
   }, [hasProject, activeProjectId])
   const [newTitle, setNewTitle] = useState('')
 
-  if (!hasProject) return <Page title="任务看板"><Empty title="先打开项目" /></Page>
+  if (!hasProject)
+    return (
+      <Page title="任务看板" subtitle="AI 会通过 todoWrite 把进度同步到这里">
+        <Empty
+          icon={<IconCheck size={18} />}
+          title="先打开一个项目"
+          hint="任务看板按项目保存。打开工作区里的项目后，这里会显示 AI 的待办、执行中与失败任务。"
+          action={
+            <button className="btn btn-primary btn-sm" onClick={() => useStore.getState().setView('projects')}>
+              去工作区
+            </button>
+          }
+        />
+      </Page>
+    )
 
   const doneCount = todos.filter((t) => t.status === 'done').length
 
@@ -793,16 +807,16 @@ export function TasksView(): React.JSX.Element {
         </>
       }
     >
-      <div className="mb-4 flex flex-wrap items-center gap-2">
+      <div className="mb-4 grid w-full grid-cols-2 gap-2.5 md:grid-cols-4">
         <Stat label="待办" value={todos.filter((t) => t.status === 'pending').length} />
         <Stat label="进行中" value={todos.filter((t) => t.status === 'running').length} />
         <Stat label="已完成" value={doneCount} />
         <Stat label="失败" value={todos.filter((t) => t.status === 'failed').length} />
       </div>
 
-      <div className="mb-4 flex gap-2">
+      <div className="mb-4 flex max-w-[560px] gap-2">
         <input
-          className="field"
+          className="field flex-1"
           placeholder="添加待办，回车确认（AI 也会用 todoWrite 同步进度）"
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
@@ -1970,6 +1984,12 @@ export function SettingsView(): React.JSX.Element {
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
+        // 页面已经到底时，最后几个分组进不了观察带：始终高亮最后一个分组
+        const scroller = document.getElementById('settings-appearance')?.closest('.stable-gutter') as HTMLElement | null
+        if (scroller && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 12) {
+          setActiveSection(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]!.id)
+          return
+        }
         const visible = entries
           .filter((e) => e.isIntersecting)
           .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
@@ -1983,14 +2003,27 @@ export function SettingsView(): React.JSX.Element {
     }
     return () => observer.disconnect()
   }, [])
+  // 滚到页面底部时，最后几个分组往往进不了观察区间：直接高亮最后一个分组
+  useEffect(() => {
+    const first = document.getElementById('settings-appearance')
+    const scroller = first?.closest('.stable-gutter') as HTMLElement | null
+    if (!scroller) return
+    const onScroll = (): void => {
+      if (scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 12) {
+        setActiveSection(SETTINGS_SECTIONS[SETTINGS_SECTIONS.length - 1]!.id)
+      }
+    }
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [])
   const version = useStore.getState().version || '0.3.0'
 
   return (
     <Page title="设置" subtitle={`Lidow v${version} · 所有设置保存在本机`}>
-      <div className="mx-auto flex w-full max-w-[980px] items-start gap-6">
+      <div className="flex w-full items-start gap-6">
         <nav
-          className="sticky top-0 w-[150px] shrink-0 rounded-[var(--r-lg)] p-1.5"
-          style={{ background: 'var(--surface-sunken)' }}
+          className="sticky top-0 w-[196px] shrink-0 rounded-[var(--r-lg)] border p-1"
+          style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
         >
           {SETTINGS_SECTIONS.map((sec) => {
             const active = activeSection === sec.id
@@ -1998,10 +2031,10 @@ export function SettingsView(): React.JSX.Element {
               <button
                 key={sec.id}
                 className={`flex w-full items-center rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[12px] transition-colors duration-[110ms] ${
-                  active ? 'bg-[var(--surface)]' : 'hover:bg-[var(--surface)]'
+                  active ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--bg-hover)]'
                 }`}
                 style={{
-                  color: active ? 'var(--text)' : 'var(--text-dim)',
+                  color: active ? 'var(--accent)' : 'var(--text-dim)',
                   fontWeight: active ? 500 : 400
                 }}
                 onClick={() => jump(sec.id)}
@@ -2017,7 +2050,7 @@ export function SettingsView(): React.JSX.Element {
             零 Token 成本 · GPL-3.0
           </div>
         </nav>
-        <div className="flex min-w-0 max-w-[780px] flex-1 flex-col gap-3.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
         {/* 外观 */}
         <SettingGroup id="settings-appearance" title="外观" desc="主题与主色。切换立即生效。">
           <div className="mb-4 flex flex-wrap gap-2.5">

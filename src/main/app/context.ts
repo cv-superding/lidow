@@ -29,7 +29,7 @@ import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
 import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
-import { chromeUserAgent, isGoogleAuthUrl } from '@main/app/googleAuth'
+import { applyChromeClientHints, chromeUserAgent, isGoogleAuthUrl } from '@main/app/googleAuth'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
 import type {
@@ -678,7 +678,7 @@ export class AppContext {
     const win = new BrowserWindow({
       width: 520,
       height: 780,
-      show: true,
+      show: false,
       title: 'Google 登录（完成后会自动同步）',
       autoHideMenuBar: true,
       backgroundColor: '#ffffff',
@@ -744,7 +744,26 @@ export class AppContext {
         })
         .catch(() => undefined)
     })
-    void win.loadURL(url).catch((e) => Logger.warn('auth', `Google 登录窗口打开失败: ${String(e)}`))
+    // 先把 UA 品牌补成真正的 Chrome，再发首个 Google 请求：判定发生在请求到达时。
+    // 必须先有个空白页面，否则 CDP 命令没有 renderer 可执行，会一直挂住。
+    const openAuthPage = async (): Promise<void> => {
+      try {
+        await win.loadURL('about:blank')
+      } catch {
+        /* 空白页加载失败也继续尝试 */
+      }
+      const hinted = await applyChromeClientHints(win.webContents)
+      if (!hinted) Logger.warn('auth', 'UA client hints 覆盖失败，Google 可能仍拒绝登录')
+      if (win.isDestroyed()) return
+      // 先显示再加载：loadURL 可能因重定向 reject，窗口不能因此一直藏着
+      win.show()
+      try {
+        await win.loadURL(url)
+      } catch (e) {
+        Logger.warn('auth', `Google 登录窗口打开失败: ${String(e)}`)
+      }
+    }
+    void openAuthPage()
     Logger.info('auth', `Google 登录改用独立窗口: ${new URL(url).host}`)
   }
 

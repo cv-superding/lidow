@@ -7,6 +7,7 @@ import { PureModeShell } from './PureModeShell'
 import { RightDock } from './RightDock'
 import { HelpPanel } from './HelpPanel'
 import { UpdatePrompt } from './UpdatePrompt'
+import { CommandPalette } from './CommandPalette'
 import { WhalePet } from './WhalePet'
 import { SkillsView } from './SkillsView'
 import {
@@ -36,27 +37,36 @@ import {
   IconTerminal,
   IconSidebarToggle,
   IconPanelRight,
+  IconSearch,
+  IconSettings,
   IconFolderColor,
   IconTrash
 } from './icons'
 import { WindowControls, DragStrip } from './TitleBar'
 
-const RAIL: { id: ViewId; label: string }[] = [
-  { id: 'home', label: '工作台' },
-  { id: 'projects', label: '工作区' },
-  { id: 'sessions', label: '会话' },
-  { id: 'files', label: '文件' },
-  { id: 'tasks', label: '任务' },
-  { id: 'skills', label: '技能' },
-  { id: 'agents', label: '子代理' },
-  { id: 'mcp', label: 'MCP' },
-  { id: 'plugins', label: '插件' },
-  { id: 'quick', label: '快捷指令' },
-  { id: 'memory', label: '记忆' },
-  { id: 'knowledge', label: '知识库' },
-  { id: 'audit', label: '审计' },
-  { id: 'settings', label: '设置' }
+type RailItem = { id: ViewId; label: string }
+const RAIL_GROUPS: RailItem[][] = [
+  [
+    { id: 'home', label: '工作台' },
+    { id: 'projects', label: '工作区' },
+    { id: 'sessions', label: '会话' },
+    { id: 'files', label: '文件' },
+    { id: 'tasks', label: '任务' }
+  ],
+  [
+    { id: 'skills', label: '技能' },
+    { id: 'agents', label: '子代理' },
+    { id: 'mcp', label: 'MCP' },
+    { id: 'plugins', label: '插件' },
+    { id: 'quick', label: '快捷指令' }
+  ],
+  [
+    { id: 'memory', label: '记忆' },
+    { id: 'knowledge', label: '知识库' },
+    { id: 'audit', label: '审计' }
+  ]
 ]
+const RAIL: RailItem[] = [...RAIL_GROUPS.flat(), { id: 'settings', label: '设置' }]
 
 /** 面板头：小字号大写字距标题 + 右侧操作 */
 export function PanelHeader({ title, children }: { title: string; children?: React.ReactNode }): React.JSX.Element {
@@ -74,62 +84,73 @@ export function PanelHeader({ title, children }: { title: string; children?: Rea
 export function LeftRail(): React.JSX.Element {
   const { view, setView, pureMode, setPure } = useStore()
   const railPinned = useStore((s) => s.railPinned)
-  const [hovered, setHovered] = useState(false)
-  // 固定展开（顶栏侧栏开关）优先于悬停；两者都没有时保持图标条
-  const expanded = railPinned || hovered
+  // 只由顶栏的固定开关控制展开；悬停不再改变宽度，避免整栏跳动和文字错位
+  const expanded = railPinned
   return (
     <div
-      className="flex h-full flex-col border-r"
+      className="relative flex h-full flex-col border-r"
       style={{
-        width: expanded ? 176 : 52,
+        width: expanded ? 184 : 56,
         borderColor: 'var(--border)',
         background: 'var(--sidebar)',
         transition: 'width var(--dur-slow) var(--ease-emph)',
-        overflow: 'hidden'
+        overflow: 'hidden',
+        zIndex: 40
       }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
     >
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-2 py-2.5">
-        {RAIL.map((item) => {
-          // 资源管理器用彩色文件夹，和 Qoder 的文件入口一致
-          const Icon = item.id === 'files' ? IconFolderColor : RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
-          const active = view === item.id
-          return (
-            <button
-              key={item.id}
-              className="nav-item shrink-0"
-              data-active={active}
-              style={{
-                // 收起态要同时清掉右侧 padding 和 gap：.nav-item 默认 0 9px + gap 9px，
-                // 只改 paddingLeft 会让 18px 图标在 36px 按钮里偏左，右侧留一截空白。
-                padding: expanded ? '0 9px 0 10px' : 0,
-                gap: expanded ? 9 : 0,
-                justifyContent: expanded ? 'flex-start' : 'center',
-                height: 34
-              }}
-              onClick={() => setView(item.id)}
-              title={item.label}
-            >
-              <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
-                <Icon size={18} />
-              </span>
-              <span
-                className="whitespace-nowrap"
+      <div className="rail-scroll flex min-h-0 flex-1 flex-col overflow-y-auto px-2 py-2">
+        {RAIL_GROUPS.map((group, gi) => (
+          <div key={gi} className="flex flex-col gap-1">
+            {gi > 0 && (
+              <div
+                className="my-1.5 shrink-0"
                 style={{
-                  opacity: expanded ? 1 : 0,
-                  width: expanded ? 'auto' : 0,
-                  transition: `opacity ${expanded ? '180ms' : '90ms'} ease`
+                  height: 1,
+                  background: 'var(--border)',
+                  marginLeft: expanded ? 8 : 12,
+                  marginRight: expanded ? 8 : 12
                 }}
-              >
-                {item.label}
-              </span>
-            </button>
-          )
-        })}
+              />
+            )}
+            {group.map((item) => {
+              // 资源管理器用彩色文件夹，和 Qoder 的文件入口一致
+              const Icon = item.id === 'files' ? IconFolderColor : RAIL_ICONS[item.id as keyof typeof RAIL_ICONS]
+              const active = view === item.id
+              return (
+                <button
+                  key={item.id}
+                  className="nav-item shrink-0"
+                  data-active={active}
+                  style={{
+                    padding: expanded ? '0 9px 0 10px' : 0,
+                    gap: expanded ? 9 : 0,
+                    justifyContent: expanded ? 'flex-start' : 'center',
+                    height: 36,
+                    borderRadius: 'var(--r-md)',
+                    background: active ? 'var(--surface)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-dim)',
+                    boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+                  }}
+                  onClick={() => setView(item.id)}
+                  title={item.label}
+                >
+                  <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+                    <Icon size={18} />
+                  </span>
+                  <span
+                    className="whitespace-nowrap"
+                    style={{ display: expanded ? undefined : 'none' }}
+                  >
+                    {item.label}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+        ))}
       </div>
 
-      <div className="mt-auto shrink-0 px-2 pb-2.5">
+      <div className="mt-auto flex shrink-0 flex-col px-2 pb-2">
         <div className="divider-soft mb-1.5" />
         <button
           className="nav-item shrink-0"
@@ -137,8 +158,11 @@ export function LeftRail(): React.JSX.Element {
             padding: expanded ? '0 9px 0 10px' : 0,
             gap: expanded ? 9 : 0,
             justifyContent: expanded ? 'flex-start' : 'center',
-            height: 34,
-            color: pureMode ? 'var(--accent)' : undefined
+            height: 36,
+            borderRadius: 'var(--r-md)',
+            background: pureMode ? 'var(--surface)' : 'transparent',
+            color: pureMode ? 'var(--accent)' : 'var(--text-dim)',
+            boxShadow: pureMode ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
           }}
           title="纯净模式"
           onClick={() => setPure(!pureMode)}
@@ -148,13 +172,57 @@ export function LeftRail(): React.JSX.Element {
           </span>
           <span
             className="whitespace-nowrap"
-            style={{
-              opacity: expanded ? 1 : 0,
-              width: expanded ? 'auto' : 0,
-              transition: `opacity ${expanded ? '180ms' : '90ms'} ease`
-            }}
+            style={{ display: expanded ? undefined : 'none' }}
           >
             纯净模式
+          </span>
+        </button>
+        <button
+          className="nav-item shrink-0"
+          style={{
+            padding: expanded ? '0 9px 0 10px' : 0,
+            gap: expanded ? 9 : 0,
+            justifyContent: expanded ? 'flex-start' : 'center',
+            height: 36,
+            borderRadius: 'var(--r-md)'
+          }}
+          title="命令面板 (Ctrl K)"
+          onClick={() => window.dispatchEvent(new CustomEvent('lidow:command'))}
+        >
+          <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+            <IconSearch size={18} />
+          </span>
+          <span
+            className="whitespace-nowrap"
+            style={{ display: expanded ? undefined : 'none' }}
+          >
+            命令面板
+          </span>
+        </button>
+        <button
+          className="nav-item shrink-0"
+          data-active={view === 'settings'}
+          style={{
+            padding: expanded ? '0 9px 0 10px' : 0,
+            gap: expanded ? 9 : 0,
+            justifyContent: expanded ? 'flex-start' : 'center',
+            height: 36,
+            borderRadius: 'var(--r-md)',
+            background: view === 'settings' ? 'var(--surface)' : 'transparent',
+            color: view === 'settings' ? 'var(--accent)' : 'var(--text-dim)',
+            boxShadow: view === 'settings' ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+          }}
+          title="设置"
+          onClick={() => setView('settings')}
+        >
+          <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+            <IconSettings size={18} />
+          </span>
+          <span
+            className="whitespace-nowrap"
+            style={{ display: expanded ? undefined : 'none' }}
+          >
+            设置
           </span>
         </button>
       </div>
@@ -170,18 +238,18 @@ function TopBar(): React.JSX.Element {
   const running = streamingText.length > 0
   return (
     <div
-      className="flex h-11 shrink-0 items-center border-b"
+      className="flex h-10 shrink-0 items-center border-b"
       style={{ borderColor: 'var(--border)', background: 'var(--surface)', WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       {/* 品牌 */}
-      <div className="flex h-full items-center gap-2.5 border-r px-3.5" style={{ borderColor: 'var(--border)' }}>
+      <div className="flex h-full items-center gap-2 border-r px-3" style={{ borderColor: 'var(--border)' }}>
         <span
-          className="flex h-[22px] w-[22px] items-center justify-center rounded-[7px] text-[12px] font-bold"
+          className="flex h-5 w-5 items-center justify-center rounded-[6px] text-[11px] font-bold"
           style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
         >
           L
         </span>
-        <span className="text-[13px] font-semibold tracking-tight">Lidow</span>
+        <span className="text-[12.5px] font-semibold tracking-tight">Lidow</span>
       </div>
 
       {/* 项目切换下拉 + 面包屑 */}
@@ -193,7 +261,7 @@ function TopBar(): React.JSX.Element {
         </span>
         {running && (
           <span
-            className="ml-2 flex shrink-0 items-center gap-1.5 rounded-full px-2 py-[3px] text-[11px]"
+            className="ml-2 flex h-5 shrink-0 items-center gap-1.5 rounded-full px-2 text-[10.5px]"
             style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
           >
             <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
@@ -238,7 +306,7 @@ function ProjectSwitcher(): React.JSX.Element {
   return (
     <div ref={boxRef} className="relative">
       <button
-        className="flex h-7 max-w-[220px] items-center gap-1.5 rounded-[var(--r-md)] px-2 text-[12.5px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+        className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
         style={{ color: 'var(--text-dim)' }}
         onClick={() => setOpen((v) => !v)}
         title="切换项目"
@@ -253,7 +321,7 @@ function ProjectSwitcher(): React.JSX.Element {
       {open && (
         <div
           className="anim-pop absolute left-0 top-[calc(100%+6px)] z-50 w-[280px] overflow-hidden rounded-[var(--r-lg)] p-1"
-          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-menu)' }}
         >
           <div className="text-label px-2 py-1.5">已打开项目</div>
           {projects.length === 0 && (
@@ -357,7 +425,7 @@ function TopActions(): React.JSX.Element {
         {exportOpen && (
           <div
             className="anim-pop absolute right-0 top-[calc(100%+6px)] z-50 w-[200px] overflow-hidden rounded-[var(--r-lg)] p-1"
-            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-menu)' }}
           >
             {[
               { id: 'explorer', label: '资源管理器' },
@@ -668,12 +736,14 @@ export function AppShell(): React.JSX.Element {
   // 切换模式或视图不改变它的树位置 → webview 永不卸载 → 登录态与对话进度保留。
   const showManager = pureMode ? pureView !== 'home' : view !== 'home'
   const activeView = pureMode ? pureView : view
+  // 管理页保持全宽：右侧工具面板与桌宠只在工作台出现
+  const onWorkbench = !showManager
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
       {pureMode ? <DragStrip /> : <TopBar />}
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}
 
         {/* 主区容器：WebTabs 与各管理视图共存，靠 z-index 切换 */}
@@ -714,11 +784,11 @@ export function AppShell(): React.JSX.Element {
         </div>
 
         {/* 右侧工具侧栏：文件 / 任务 / 终端 / 审阅 */}
-        <RightDock />
+        {onWorkbench && <RightDock />}
       </div>
 
       {/* 鲸鱼娘桌宠（dsh-pet 素材，MIT） */}
-      <WhalePet />
+      {onWorkbench && <WhalePet />}
 
       {/* 更新提示：发现新版本 / 下载进度 / 自动安装倒计时 */}
       <UpdatePrompt />
@@ -731,6 +801,8 @@ export function AppShell(): React.JSX.Element {
 
       {/* 确认浮层：纯净模式下 ChatPanel 自带内联确认卡，这里不重复渲染 */}
       {confirmRequest && !(pureMode && pureView === 'home') && <ConfirmOverlay />}
+
+      <CommandPalette />
 
       {/* 通知浮层 */}
       <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex flex-col gap-2">

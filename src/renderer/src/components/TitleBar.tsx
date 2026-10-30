@@ -26,7 +26,7 @@ export function WindowControls(): React.JSX.Element {
     void api.windowIsMaximized().then(setMaximized)
   }, [])
   const cls =
-    'group flex h-full w-[46px] items-center justify-center transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
+    'group flex h-full w-10 items-center justify-center transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]'
   const iconColor = { color: 'var(--text-hint)' } as const
   return (
     <div className="flex h-full items-stretch" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
@@ -42,7 +42,7 @@ export function WindowControls(): React.JSX.Element {
         {maximized ? <IconRestore /> : <IconMaximize />}
       </button>
       <button
-        className="flex h-full w-[46px] items-center justify-center transition-colors duration-[130ms] hover:bg-[var(--danger)] hover:text-white"
+        className="flex h-full w-10 items-center justify-center transition-colors duration-[110ms] hover:bg-[var(--danger)] hover:text-white"
         style={iconColor}
         title="关闭"
         onClick={() => api.windowClose()}
@@ -281,8 +281,8 @@ export function PureToolbar(): React.JSX.Element {
 export function DragStrip(): React.JSX.Element {
   return (
     <div
-      className="flex h-9 shrink-0 items-center justify-end border-b"
-      style={{ borderColor: 'var(--border)', background: 'var(--sidebar)', WebkitAppRegion: 'drag' } as React.CSSProperties}
+      className="flex h-10 shrink-0 items-center justify-end border-b"
+      style={{ borderColor: 'var(--border)', background: 'var(--surface-2)', WebkitAppRegion: 'drag' } as React.CSSProperties}
     >
       <WindowControls />
     </div>

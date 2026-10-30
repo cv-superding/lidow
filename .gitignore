@@ -36,3 +36,5 @@ plugins.json
 *.swp
 *.swo
 *~
+
+/release/

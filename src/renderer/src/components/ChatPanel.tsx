@@ -243,7 +243,7 @@ function ChangeCard({ results, running }: { results: ToolResult[]; running: bool
   }
   return (
     <button
-      className="flex items-center gap-2 self-center rounded-[var(--r-lg)] px-3 py-2 text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+      className="flex items-center gap-2 self-start rounded-[var(--r-lg)] px-3 py-2 text-[12px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
       style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
       title="在右侧审阅变更"
       onClick={() => useStore.getState().openReview(files)}
@@ -923,7 +923,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       {/* 输入区 */}
       <div className="relative shrink-0 px-6 pb-4 pt-1">
         <div
-          className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[130ms]"
+          data-composer="true"
+          className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[160ms]"
           style={{
             background: 'var(--surface-raised)',
             border: '1px solid var(--border-strong)',
@@ -982,7 +983,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           <textarea
             className="max-h-44 min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 text-[13.5px] leading-[1.6] outline-none"
             style={{ color: 'var(--text)' }}
-            placeholder="输入任务…  Enter 发送，Shift+Enter 换行"
+            placeholder="交给 Lidow 一个任务…"
             value={input}
             onChange={(e) => {
               setInput(e.target.value)

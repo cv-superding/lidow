@@ -465,10 +465,10 @@ export function SkillsView(): React.JSX.Element {
       subtitle={`项目 ${projectSkills.length} · 用户 ${userSkills.length} · 回收站 ${trash.length}${project ? ` · ${project.name}` : ''}`}
       actions={
         <>
-          <button className="btn btn-sm btn-outline" onClick={startCreate}>
+          <button className="btn btn-sm btn-primary" onClick={startCreate}>
             <IconPlus size={12} /> 新建技能
           </button>
-          <button className="btn btn-sm btn-primary" onClick={openInstall}>
+          <button className="btn btn-sm btn-outline" onClick={openInstall}>
             <IconGlobe size={12} /> 从 GitHub 安装
           </button>
           <button className="btn btn-sm btn-outline" onClick={openImport}>
@@ -608,7 +608,7 @@ export function SkillsView(): React.JSX.Element {
                           {skill.category && <span className="badge">{skill.category}</span>}
                           {!enabled && <span className="badge">已禁用</span>}
                         </div>
-                        <div className="mt-0.5 line-clamp-2 text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                        <div className="mt-0.5 line-clamp-2 max-w-[980px] text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
                           {skill.description || '（无描述）'}
                         </div>
                         <div className="mt-1 truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
