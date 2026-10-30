@@ -191,6 +191,12 @@ let lastSentText = ''
 let sawReplyText = false
 /** 发送前的回复条数：新回复文字可能与上一轮完全相同，只能按条数判断 */
 let baselineReplyCount = 0
+/** 发送前最后一条回复的文本（DOM 重渲染后节点全变时用它排除上一轮） */
+let baselineReplyText = ''
+/** 发送前已有的回复节点：只有发送后新建的节点才算本轮回复 */
+let baselineReplyNodes: Element[] = []
+/** 发送前气泡数量：连续两次相同回答时靠条数增长识别（非 ChatGPT） */
+let baselineBubbleCount = 0
 /**
  * 即将/刚刚由 lidow 发进网页的文本：主世界的网络 hook 用它区分
  * 「用户亲手在网页里发的」与「lidow 自己发的（工具观察/重试/初始化）」，
@@ -204,23 +210,6 @@ function normalizePromptText(text: string): string {
 
 function markOutgoing(text: string): void {
   lastOutgoing = { text: normalizePromptText(text), ts: Date.now() }
-}
-
-/** 取最后一个可见匹配（消息类选择器用户/AI 共用时，AI 回复必然在最后） */
-function findLast(selectors: string[]): Element | null {
-  if (!selectors) return null
-  for (const sel of selectors) {
-    try {
-      const list = document.querySelectorAll(sel)
-      for (let i = list.length - 1; i >= 0; i--) {
-        const el = list[i]
-        if (el && visible(el)) return el
-      }
-    } catch {
-      /* 无效选择器跳过 */
-    }
-  }
-  return null
 }
 
 /** 把渲染后的 markdown DOM 还原成可解析文本（代码块补围栏、去掉思考/按钮） */
@@ -269,11 +258,63 @@ function chatGptReplyFromText(): string {
   const idx = text.lastIndexOf(marker)
   if (idx < 0) return ''
   let tail = text.slice(idx + marker.length)
-  for (const cut of ['你说：', 'ChatGPT 可能会出错', '最新一条回复', '分享', '免费版']) {
+  for (const cut of [
+    '你说：',
+    'ChatGPT 可能会出错',
+    '最新一条回复',
+    '你正在使用',
+    '升级至',
+    '分享',
+    '免费版',
+    '回答已完成'
+  ]) {
     const i = tail.indexOf(cut)
     if (i >= 0) tail = tail.slice(0, i)
   }
   return tail.trim()
+}
+
+/**
+ * 新版 Workspace 的回复正文节点：MarkdownRoot（class 含 markdown，大小写不敏感）。
+ * 退回旧 UI 的 author-role / turn / article 结构。
+ */
+function outermost(list: HTMLElement[]): HTMLElement[] {
+  const set = new Set(list)
+  return list.filter((el) => {
+    for (let p = el.parentElement; p; p = p.parentElement) if (set.has(p)) return false
+    return true
+  })
+}
+
+function chatGptReplyNodes(): HTMLElement[] {
+  if (!isChatGptPage()) return []
+  const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(visible)
+  const outer = outermost(marks)
+  if (outer.length > 0) return outer
+  return [
+    ...document.querySelectorAll<HTMLElement>(
+      '[data-message-author-role="assistant"], article, [data-testid*="conversation-turn"]'
+    )
+  ].filter(visible)
+}
+
+/** 页面上最后一条回复的文本（节点优先，标记文本兜底） */
+function chatGptLastReplyText(): string {
+  const nodes = chatGptReplyNodes()
+  if (nodes.length > 0) return cleanRenderedText(nodes[nodes.length - 1]!).trim()
+  return chatGptReplyFromText()
+}
+
+/**
+ * 发送后新建的回复节点文本。发送后新回合会先出现空占位，
+ * 这里没有新节点/新节点没出字时必须返回空，不能用上一轮回答顶替。
+ */
+function chatGptFreshReplyText(): string {
+  if (!isChatGptPage()) return ''
+  const nodes = chatGptReplyNodes()
+  const fresh = nodes.filter((n) => !baselineReplyNodes.includes(n))
+  if (fresh.length > 0) return cleanRenderedText(fresh[fresh.length - 1]!).trim()
+  return ''
 }
 
 function countChatGptReplies(): number {
@@ -282,29 +323,61 @@ function countChatGptReplies(): number {
   const markers = (text.match(/ChatGPT 说：/g) ?? []).length
   const roles = document.querySelectorAll('[data-message-author-role="assistant"]').length
   const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(visible)
-  const outer = marks.filter(
-    (el) => !marks.some((other) => other !== el && other.contains(el))
-  ).length
+  const outer = outermost(marks).length
   return Math.max(markers, roles, outer)
+}
+
+/**
+ * 最后一个气泡：每个选择器只取自己的最后一个可见匹配，再按文档顺序选最靠后的。
+ * 不能枚举所有匹配再过滤最外层——长会话里 [class*=markdown] 会命中上千个
+ * 嵌套节点，去重是 O(n²)，会把发送/观察线程卡住十几秒（实测首条消息发送超时）。
+ */
+function findLastBubble(): HTMLElement | null {
+  if (!adapter) return null
+  let best: HTMLElement | null = null
+  for (const sel of adapter.bubble) {
+    try {
+      const list = document.querySelectorAll<HTMLElement>(sel)
+      for (let i = list.length - 1; i >= 0; i--) {
+        const el = list[i]
+        if (!el || !visible(el)) continue
+        if (!best || (best.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+          best = el
+        }
+        break
+      }
+    } catch {
+      /* 无效选择器跳过 */
+    }
+  }
+  return best
+}
+
+/**
+ * 当前气泡节点数（含嵌套）：只在「文本和上一轮完全相同」时用于识别新回复。
+ * 用 Set 去重，避免 O(n²) 的 includes；计数偏大不影响增长判断。
+ */
+function countBubbles(): number {
+  if (!adapter) return 0
+  const set = new Set<Element>()
+  for (const sel of adapter.bubble) {
+    try {
+      for (const el of document.querySelectorAll(sel)) if (visible(el)) set.add(el)
+    } catch {
+      /* 无效选择器跳过 */
+    }
+  }
+  return set.size
 }
 
 function lastBubbleText(): string {
   const container = findFirst(adapter?.messages ?? [])
   // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
-  const bubble = findLast(adapter?.bubble ?? [])
+  const bubble = findLastBubble()
   if (isChatGptPage()) {
-    // 分享页整页 innerText 含大量「你说/ChatGPT 说」；先按标记截最后一条回答
-    const fromText = chatGptReplyFromText()
-    if (fromText) return fromText
-    // 新版 Workspace：优先整条 turn，其次最外层 markdown 容器；
-    // 不能用 findLast 直接取 [class*=markdown]（会命中回答里的代码块等嵌套节点）
-    const turn = findLast(['article', '[data-testid*="conversation-turn"]'])
-    if (turn) return cleanRenderedText(turn as HTMLElement)
-    const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(
-      visible
-    )
-    const outer = marks.filter((el) => !marks.some((other) => other !== el && other.contains(el)))
-    if (outer.length > 0) return cleanRenderedText(outer[outer.length - 1]!)
+    // 新版 Workspace：MarkdownRoot 节点优先；旧 UI 退回「ChatGPT 说：」标记
+    const nodeText = chatGptLastReplyText()
+    if (nodeText) return nodeText
   }
   if (!bubble) {
     if (!container) return ''
@@ -375,11 +448,11 @@ function lastThinkText(): string {
   return best.slice(0, 20_000)
 }
 
-function scheduleChunk(): void {
+function scheduleChunk(nextText?: string): void {
   if (chunkTimer) return
   chunkTimer = setTimeout(() => {
     chunkTimer = null
-    const text = lastBubbleText()
+    const text = nextText ?? lastBubbleText()
     if (text && text !== lastText) {
       lastText = text
       send({ type: 'stream-chunk', text })
@@ -394,7 +467,12 @@ function finishStream(): void {
     return
   }
   streaming = false
-  const finalText = lastBubbleText()
+  // ChatGPT 用「发送后新建节点」的文本，严禁回落到上一轮页面文本
+  const finalText = isChatGptPage() ? chatGptFreshReplyText() || lastText : lastBubbleText()
+  if (!finalText.trim()) {
+    // 正文没同步到（节点重渲染/平台延迟）：让网络层或等待器兜底，绝不发空结束触发重试
+    return
+  }
   lastText = finalText
   lastSentText = ''
   sawReplyText = false
@@ -403,8 +481,60 @@ function finishStream(): void {
 
 function watchMessages(): void {
   observer?.disconnect()
+  // 观察器挂载时页面可能已经渲染了历史对话：把它当基线，不能当成「新回复」。
+  // 否则一进入会话就会误发 stream-start/end，发送逻辑还会等这个假流结束（首条超时）。
+  lastText = lastBubbleText()
+  baselineReplyText = lastText
+  baselineReplyNodes = isChatGptPage() ? chatGptReplyNodes() : []
+  baselineReplyCount = isChatGptPage() ? countChatGptReplies() : 0
+  baselineBubbleCount = isChatGptPage() ? 0 : countBubbles()
+  streaming = false
+  sawReplyText = false
+  everFlag = false
+  if (endTimer) {
+    clearTimeout(endTimer)
+    endTimer = null
+  }
+  if (chunkTimer) {
+    clearTimeout(chunkTimer)
+    chunkTimer = null
+  }
   observer = new MutationObserver(() => {
     const flag = isStreaming()
+    const chatgpt = isChatGptPage()
+
+    // ChatGPT 新版 Workspace：发送后立刻出现空 assistant 回合，
+    // 不能用「最后一条 ChatGPT 说：」的整页文本（那是上一轮）。
+    // 只认发送后新建的回复节点；连续两次相同回答靠回复条数增长识别。
+    if (chatgpt) {
+      const text = chatGptFreshReplyText()
+      const grew = countChatGptReplies() > baselineReplyCount
+      if (!text) return
+      // 与发送前完全相同的文字：可能是 React 重建后的旧节点，也可能是又问了一次
+      // 同样的问题（回答也相同）。DOM 无法可靠区分，交给网络层（新版 Workspace
+      // SSE 一定能给出权威文本），宁可少兜底一次，也不能把上一轮旧回答写成本轮。
+      if (text === baselineReplyText) return
+      if (text === lastText && !grew) return
+      if (!streaming) {
+        streaming = true
+        everFlag = true
+        lastPageSnapshot = ''
+        send({ type: 'stream-start' })
+      }
+      sawReplyText = true
+      if (text !== lastText) {
+        lastText = text
+        scheduleChunk(text)
+      }
+      if (endTimer) clearTimeout(endTimer)
+      const scheduled = text
+      endTimer = setTimeout(() => {
+        // 静默期内文本没再变化 → 本轮结束
+        if (lastText === scheduled) finishStream()
+      }, 1500)
+      return
+    }
+
     const text = lastBubbleText()
 
     // 部分平台的 bubble 选择器同时命中用户消息：刚经由 lidow 发出的那段文本
@@ -415,27 +545,17 @@ function watchMessages(): void {
       return
     }
 
-    // ChatGPT 新 UI：回复条数增加才算新回复（两次回答文字相同也能识别）
-    if (isChatGptPage() && text && countChatGptReplies() > baselineReplyCount) {
-      if (!streaming) {
-        streaming = true
-        lastPageSnapshot = ''
-        send({ type: 'stream-start' })
-      }
-      sawReplyText = true
-      if (text !== lastText) {
-        lastText = text
-        scheduleChunk()
-      }
-      if (endTimer) clearTimeout(endTimer)
-      endTimer = setTimeout(() => {
-        if (lastBubbleText() === lastText) finishStream()
-      }, 1500)
-      return
-    }
+    // 只有「还没开始流式、文本和上一轮完全相同」时才需要数气泡（连续两次回答相同）。
+    // 每次流式 token 都做选择器查询会拖慢长会话。
+    const sameAsBaseline = Boolean(text) && text === baselineReplyText
+    const bubbleGrew =
+      !streaming && sameAsBaseline && text === lastText
+        ? countBubbles() > baselineBubbleCount
+        : false
+    const accepted = Boolean(text) && (text !== lastText || (bubbleGrew && sameAsBaseline))
 
     // 只看流式标志不够：思考阶段可能短暂出现停止按钮，文本仍是上一轮回答
-    if (flag && text && text !== lastText) {
+    if (flag && accepted) {
       everFlag = true
       if (!streaming) {
         streaming = true
@@ -447,15 +567,16 @@ function watchMessages(): void {
 
     if (streaming) {
       // 流式中：上报增量；停止标志消失且文本不再变化 → 延迟确认结束
-      if (text && text !== lastText) {
+      if (accepted) {
         lastText = text
         sawReplyText = true
         scheduleChunk()
       }
       if (endTimer) clearTimeout(endTimer)
       if (!flag) {
+        const scheduled = lastText
         endTimer = setTimeout(() => {
-          if (!isStreaming()) finishStream()
+          if (!isStreaming() && lastText === scheduled) finishStream()
         }, 900)
       }
       return
@@ -463,7 +584,7 @@ function watchMessages(): void {
 
     // 未进入流式状态（平台无停止标志或标志闪现太快）：
     // 文本一旦出现就当作回复开始，并以"文本静默 1.5s"作为结束判据。
-    if (text && text !== lastText) {
+    if (accepted) {
       lastText = text
       sawReplyText = true
       if (!everFlag) {
@@ -473,9 +594,10 @@ function watchMessages(): void {
       }
       scheduleChunk()
       if (endTimer) clearTimeout(endTimer)
+      const scheduled = text
       endTimer = setTimeout(() => {
         // 静默期内没有新文本 → 这一轮结束
-        if (lastBubbleText() === lastText) finishStream()
+        if (lastText === scheduled) finishStream()
       }, 1500)
     }
   })
@@ -508,8 +630,14 @@ async function doSend(text: string): Promise<void> {
     // 等待 React 状态稳定后再发送（cuckoo 做法：随机 2-4s；这里取 1.2s 折中）
     await new Promise((r) => setTimeout(r, 1200))
 
-    // 发送前记下最后一个 AI 气泡的文本（旧回复仍在页面上，不能当新回复处理）
-    const baseline = lastBubbleText()
+    // 发送前记下最后一个 AI 气泡的文本/节点/条数（旧回复仍在页面上，不能当新回复处理）。
+    // 必须在点击发送之前取：新版 UI 会在点击后立刻插入空的 assistant 回合，
+    // 点完再计数会把新回合算进基线，导致回复永远不被识别。
+    const baseline = isChatGptPage() ? chatGptLastReplyText() : lastBubbleText()
+    baselineReplyText = baseline
+    baselineReplyNodes = isChatGptPage() ? chatGptReplyNodes() : []
+    baselineReplyCount = isChatGptPage() ? countChatGptReplies() : 0
+    baselineBubbleCount = isChatGptPage() ? 0 : countBubbles()
     // 发送动作只执行一次：
     //   1) 精确点击发送按钮（过滤掉错误的 svg 包装元素——按钮必须可见且未禁用）
     //   2) 失败则 Enter 兜底（需要先 focus 输入框 + isComposing:false）
@@ -541,8 +669,7 @@ async function doSend(text: string): Promise<void> {
     everFlag = false
     lastSentText = text
     sawReplyText = false
-    baselineReplyCount = countChatGptReplies()
-    // 旧回复还在页面上：把它当基线，只有文本真的变化才视为新一轮回复。
+    // 旧回复还在页面上：把它当基线，只有新节点/新气泡出现才视为新一轮回复。
     // 此前重置成空串会让旧气泡被当成新回复，触发伪 stream-start/end。
     lastText = baseline
   } catch (e) {

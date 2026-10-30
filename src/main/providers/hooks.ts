@@ -21,9 +21,12 @@ export interface ProviderHookSpec {
   isStopStream?: (url: string, method: string) => boolean
   /** 从 SSE 帧对象中提取回复文本（返回增量） */
   extract: (
-    frame: unknown
+    frame: unknown,
+    ctx?: ExtractCtx
   ) => {
     text?: string
+    /** true 时 text 是本轮完整文本，直接替换累计值（新协议整段快照） */
+    replace?: boolean
     think?: string
     finished?: boolean
     incomplete?: boolean
@@ -43,6 +46,8 @@ export interface ProviderHookSpec {
 /** DeepSeek 补齐帧：p/v 增量补丁 + response/fragments 结构 */
 interface ExtractResult {
   text?: string
+  /** true 时 text 是本轮完整文本，直接替换累计值 */
+  replace?: boolean
   think?: string
   finished?: boolean
   incomplete?: boolean
@@ -64,6 +69,8 @@ interface ExtractCtx {
   currentIndex: number
   /** 是否已经处理过首个快照（后续快照只同步类型，不重复追加内容） */
   observed: boolean
+  /** ChatGPT 新版 Workspace 的增量/patch 流状态 */
+  chatgpt?: { id: string; text: string }
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
@@ -404,7 +411,10 @@ export function buildHookSource(
         var r = null;
         r = extract(parsed, streamCtx);
         if (r) {
-          if (typeof r.text === 'string' && r.text) text += r.text;
+          if (typeof r.text === 'string' && r.text) {
+            if (r.replace) text = r.text;
+            else text += r.text;
+          }
           if (typeof r.think === 'string' && r.think) think += r.think;
           if (r.finished) finished = true;
           if (r.incomplete) incomplete = true;
@@ -448,9 +458,12 @@ export function buildHookSource(
             var parsed = parseData(rest[i]);
             if (!parsed) continue;
             var rr = null;
-            rr = extract(parsed);
+            rr = extract(parsed, streamCtx);
             if (rr) {
-              if (typeof rr.text === 'string' && rr.text) text += rr.text;
+              if (typeof rr.text === 'string' && rr.text) {
+                if (rr.replace) text = rr.text;
+                else text += rr.text;
+              }
               if (typeof rr.think === 'string' && rr.think) think += rr.think;
               if (rr.finished) finished = true;
               if (rr.incomplete) incomplete = true;
@@ -657,14 +670,29 @@ export const DEEPSEEK_HOOK: ProviderHookSpec = {
   sessionField: 'chat_session_id'
 }
 
-/** ChatGPT：POST /backend-api/conversation，data: 行内为 JSON 增量（message.content.parts） */
+/**
+ * ChatGPT：兼容两套 SSE 协议。
+ * - 旧版 `POST /backend-api/conversation`：每帧是完整消息快照 `{message:{...}}`
+ * - 新版 Workspace `POST /backend-api/f/conversation`：`event: delta` 帧，
+ *   首个消息在 `{v:{message}}`，之后是 JSON-Patch：`/message/content/parts/0` append。
+ *   只认 `frame.message` 会把新协议全部漏掉 → 流结束 text 为空 → 误判 empty 并重试。
+ */
 export const CHATGPT_HOOK: ProviderHookSpec = {
   id: 'chatgpt',
   isCompletion: (url, method) =>
     method.toUpperCase() === 'POST' && /\/backend-api\/(conversation|f\/conversation)/.test(url),
-  extract: (frame) => {
+  extract: (frame, ctx) => {
+    type Msg = {
+      id?: string
+      author?: { role?: string }
+      content?: { parts?: unknown[] }
+      status?: string
+    }
     const f = frame as {
-      message?: { author?: { role?: string }; content?: { parts?: unknown[] }; status?: string }
+      message?: Msg
+      v?: unknown
+      p?: string
+      o?: string
       error?: unknown
       // cuckoo 同款：上下文耗尽横幅在 conversation_detail_metadata 节点里
       type?: string
@@ -678,14 +706,86 @@ export const CHATGPT_HOOK: ProviderHookSpec = {
       if (ctas.includes('continue_in_new_chat')) return { exhausted: true }
     }
     if (f.type === 'message_stream_complete') return { finished: true }
-    const msg = f.message
-    if (msg?.author?.role === 'assistant' && Array.isArray(msg.content?.parts)) {
-      const text = msg.content.parts.filter((x) => typeof x === 'string').join('')
-      return { text }
+
+    const state = (ctx ?? {}) as ExtractCtx
+    const cg = (state.chatgpt ??= { id: '', text: '' })
+
+    /** 消息快照：同一 id 的后续快照只回传增量，避免把整段回答重复追加 */
+    const applyMessage = (msg: Msg): ExtractResult | null => {
+      if (msg.author?.role !== 'assistant') return null
+      const parts = Array.isArray(msg.content?.parts)
+        ? (msg.content.parts.filter((x) => typeof x === 'string') as string[])
+        : null
+      if (!parts) return null
+      const full = parts.join('')
+      if (cg.id !== (msg.id ?? '')) {
+        cg.id = msg.id ?? ''
+        cg.text = full
+        return full ? { text: full, replace: true } : null
+      }
+      if (full === cg.text) return null
+      if (full.indexOf(cg.text) === 0) {
+        const delta = full.slice(cg.text.length)
+        cg.text = full
+        return delta ? { text: delta } : null
+      }
+      cg.text = full
+      return { text: full, replace: true }
     }
-    // 用户消息也会带 finished_successfully：不能拿它当本轮回复结束
-    if (msg?.author?.role === 'assistant' && msg?.status === 'finished_successfully') {
-      return { finished: true }
+
+    // 旧协议：顶层完整消息快照
+    if (f.message && typeof f.message === 'object') {
+      const r = applyMessage(f.message)
+      if (r) return r
+      // 用户消息也会带 finished_successfully：不能拿它当本轮回复结束
+      if (f.message.author?.role === 'assistant' && f.message.status === 'finished_successfully') {
+        return { finished: true }
+      }
+      return null
+    }
+
+    // 新协议：{v:{message}} 消息快照
+    if (f.v && typeof f.v === 'object' && !Array.isArray(f.v)) {
+      const msg = (f.v as { message?: Msg }).message
+      if (msg) {
+        const r = applyMessage(msg)
+        if (r) return r
+        if (msg.author?.role === 'assistant' && msg.status === 'finished_successfully') {
+          return { finished: true }
+        }
+        return null
+      }
+    }
+
+    // 新协议：JSON-Patch（{o:'patch',v:[...]} 或 {p,o,v}）
+    const patches: { p?: string; o?: string; v?: unknown }[] = Array.isArray(f.v)
+      ? (f.v as { p?: string; o?: string; v?: unknown }[])
+      : typeof f.p === 'string'
+        ? [{ p: f.p, o: f.o, v: f.v }]
+        : []
+    let deltaText = ''
+    let replacedText = ''
+    let finished = false
+    for (const patch of patches) {
+      if (!patch || typeof patch !== 'object') continue
+      if (patch.p === '/message/content/parts/0' && typeof patch.v === 'string') {
+        if (patch.o === 'append') {
+          deltaText += patch.v
+          cg.text += patch.v
+        } else if (patch.o === 'replace') {
+          replacedText = patch.v
+          cg.text = patch.v
+        }
+      } else if (patch.p === '/message/status' && patch.v === 'finished_successfully') {
+        finished = true
+      }
+    }
+    if (replacedText) return { text: replacedText, replace: true, ...(finished ? { finished } : {}) }
+    if (deltaText || finished) {
+      return {
+        ...(deltaText ? { text: deltaText } : {}),
+        ...(finished ? { finished } : {})
+      }
     }
     return null
   }

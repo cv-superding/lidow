@@ -302,10 +302,12 @@ export class AgentLoop {
         status: 'done'
       }
       store.appendTurn(sessionId, firstTurn)
-      // 自动命名：首个任务取前 24 字符作为会话标题
+      // 自动命名：首个任务取前 24 字符作为会话标题。
+      // 同时锁标题：新版 ChatGPT 会用注入的系统提示词给对话起名（全变成“编程代理规范”），
+      // 网页标题同步会覆盖掉用户任务名，会话列表完全分不清。
       if (store.get(sessionId)?.title === '新会话') {
         const autoTitle = userText.replace(/\s+/g, ' ').trim().slice(0, 24) || '新会话'
-        store.update(sessionId, (s) => ({ ...s, title: autoTitle }))
+        store.update(sessionId, (s) => ({ ...s, title: autoTitle, titleLocked: true }))
       }
       this.deps.emit({ type: 'session-updated', sessionId })
 
@@ -356,8 +358,24 @@ export class AgentLoop {
     if (this.compacting.has(sessionId)) return
     if (!text.trim()) return
     // 去重：同一条回复会经两条路到达（DOM stream-end 兜底 + 网络层 net-response），
-    // 重复接管会弹两遍提示、执行两遍工具。按「会话 + 文本指纹 + 时间窗」拦掉。
-    const fingerprint = `${sessionId}:${text.length}:${text.slice(-80)}`
+    // 重复接管会弹两遍提示、执行两遍工具。按「会话 + 归一化文本指纹 + 时间窗」拦掉。
+    const normalized = normalizeExternalText(text)
+    if (!normalized) return
+    // 网络层通常先落盘；DOM 结束事件晚到时内容其实已经写进最后一条 assistant 回合
+    const lastAssistant = [...(this.deps.store.get(sessionId)?.turns ?? [])]
+      .reverse()
+      .find((t) => t.role === 'assistant')
+    // 只拦「刚刚落盘」的同一条回复（网络层先到、DOM 晚到）；很久以前问过同样问题
+    // 得到相同回答时，这是新一轮，不能吞掉。
+    if (
+      lastAssistant &&
+      Date.now() - lastAssistant.ts < 60_000 &&
+      normalizeExternalText(lastAssistant.text) === normalized
+    ) {
+      Logger.info('loop', `忽略已落盘的重复网页回复 session=${sessionId}`)
+      return
+    }
+    const fingerprint = `${sessionId}:${normalized.length}:${normalized.slice(0, 80)}:${normalized.slice(-80)}`
     const now = Date.now()
     const prev = this.adoptedRecently.get(fingerprint)
     if (prev && now - prev < 15_000) {

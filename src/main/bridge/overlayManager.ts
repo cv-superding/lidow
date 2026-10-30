@@ -12,6 +12,17 @@ const REPLY_TIMEOUT_MS = 10 * 60_000
  */
 const ERROR_GRACE_MS = 20_000
 
+/** 去空白/标点后比较：网络层纯文本与 DOM markdown 的差异不应被当成两条回复 */
+function sameReply(a: string | undefined, b: string): boolean {
+  if (!a) return false
+  const norm = (s: string): string =>
+    s
+      .replace(/\s+/g, '')
+      .replace(/[*_`#>~|:：\-—，。；、,.;!?！？"'“”‘’（）()【】<>《》]/g, '')
+  const nb = norm(b)
+  return Boolean(nb) && norm(a) === nb
+}
+
 interface Channel {
   webContentsId: number
   streamBuf: string
@@ -272,7 +283,7 @@ export class OverlayManager {
         ch.chunkResolvers.clear()
         if (ch.replyResolvers.size === 0) {
           // 没有等待方：网页侧自己发的消息，或网络 hook 失败后的 DOM 兜底
-          if (payload.text.trim() && payload.text !== ch.lastResolvedText) {
+          if (payload.text.trim() && !sameReply(ch.lastResolvedText, payload.text)) {
             ch.lastResolvedText = payload.text
             const sid = this.sessionOfWebContents(sender.id)
             if (sid) this.onPageReply?.(sid, payload.text)
@@ -385,7 +396,7 @@ export class OverlayManager {
         // 没有等待方 → 可能是用户在网页里自己发的新消息，也可能是多阶段回答的
         // 最终一段（搜索/深度思考完成后会再发一轮）。只按文本去重，不再用
         // 「距上次 resolve 不足 8 秒」直接丢弃 —— 那会把最终答案吞掉。
-        if (!hadWaiter && payload.text.trim() && payload.text !== ch.lastResolvedText) {
+        if (!hadWaiter && payload.text.trim() && !sameReply(ch.lastResolvedText, payload.text)) {
           ch.lastResolvedText = payload.text
           const sessionId = this.sessionOfWebContents(sender.id)
           if (sessionId) this.onPageReply?.(sessionId, payload.text)
@@ -633,16 +644,37 @@ export class OverlayManager {
     ch.lastResolvedText = undefined
     ch.netError = undefined
     ch.streamBuf = ''
+    // 页面正在首屏加载/整页跳转时，overlay 的 preload 上下文会被销毁，
+    // send-result 永远回不来（之前只能干等 20 秒超时再重试）。这里等加载完成，
+    // 并在发送期间监听主框架跳转：一旦跳转立即失败，让 loop 快速重试。
+    for (let i = 0; i < 40 && !target.isDestroyed() && target.isLoading(); i++) {
+      await new Promise((r) => setTimeout(r, 150))
+    }
+    if (target.isDestroyed()) throw new Error('webview 已销毁')
+    if (target.isLoading()) throw new Error('页面仍在加载，请稍后重试')
     const sendP = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(new Error('发送超时（页面可能弹出拦截确认）')),
-        SEND_TIMEOUT_MS
-      )
-      ch.sendResolvers.add((ok, err) => {
-        clearTimeout(timer)
+      let cleanup = (): void => undefined
+      const timer = setTimeout(() => {
+        cleanup()
+        reject(new Error('发送超时（页面可能弹出拦截确认）'))
+      }, SEND_TIMEOUT_MS)
+      const onNav = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>): void => {
+        if (!details.isMainFrame || details.isSameDocument) return
+        cleanup()
+        reject(new Error('页面正在跳转，发送已取消'))
+      }
+      const onSend = (ok: boolean, err?: string): void => {
+        cleanup()
         if (ok) resolve()
         else reject(new Error(err ?? '发送失败'))
-      })
+      }
+      cleanup = (): void => {
+        clearTimeout(timer)
+        target.removeListener('did-start-navigation', onNav)
+        ch.sendResolvers.delete(onSend)
+      }
+      ch.sendResolvers.add(onSend)
+      target.on('did-start-navigation', onNav)
     })
     target.send('lidow:overlay-cmd', { kind: 'send', text } satisfies OverlayCommand)
     return sendP

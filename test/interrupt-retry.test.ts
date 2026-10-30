@@ -101,7 +101,7 @@ describe('网页仍在生成时不得插入重试消息', () => {
 
   it('多阶段回答的最终一段不能被 8 秒去重规则吞掉', () => {
     expect(overlaySrc).toContain('lastResolvedText')
-    expect(overlaySrc).toContain('payload.text !== ch.lastResolvedText')
+    expect(overlaySrc).toContain('!sameReply(ch.lastResolvedText, payload.text)')
     expect(overlaySrc).not.toContain('Date.now() - (ch.lastResolveAt ?? 0) > 8_000')
   })
 
