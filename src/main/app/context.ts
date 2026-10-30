@@ -253,6 +253,7 @@ export class AppContext {
     for (const p of this.projects) {
       if (!isProjectRootAvailable(p.root)) continue
       try {
+        const registry = this.providerRegistryOf(p.id)
         const refs = this.sessionStoreOf(p.id)
           .list()
           .filter((m) => Boolean(m.providerUrl))
@@ -260,6 +261,8 @@ export class AppContext {
             sessionId: m.id,
             providerId: m.providerId,
             accountId: m.accountId,
+            partition: registry.partitionOf(m.providerId, m.accountId),
+            home: registry.get(m.providerId)?.home,
             url: m.providerUrl!,
             title: m.title,
             updatedAt: m.updatedAt
@@ -455,7 +458,8 @@ export class AppContext {
         Logger.info('nav', `未绑定会话的导航（忽略）: ${url.slice(0, 60)}`)
         return
       }
-      const descriptor = this.providerRegistryOf(session.projectId).get(session.providerId)
+      const registry = this.providerRegistryOf(session.projectId)
+      const descriptor = registry.get(session.providerId)
       const home = descriptor?.home ?? ''
       const loginPage = /\/sign_?in|\/login/i.test(url)
       const onHome = Boolean(home) && url.split('#')[0] === home
@@ -489,6 +493,8 @@ export class AppContext {
           sessionId,
           providerId: session.providerId,
           accountId: session.accountId,
+          partition: registry.partitionOf(session.providerId, session.accountId),
+          home: descriptor?.home,
           url: nextUrl,
           title: nextTitle,
           updatedAt: Date.now()
@@ -954,6 +960,41 @@ export class AppContext {
   /** 网页对话确认删除后（本地或网页侧发起），从索引里移除，避免重复尝试 */
   forgetProjectChat(url: string | undefined): void {
     if (url) this.projectChats.removeByUrl(url)
+  }
+
+  /** 旧索引没有 partition：用同账号记录或默认分区兜底 */
+  projectChatPartition(ref: ProjectChatRef): string {
+    return (
+      ref.partition ||
+      this.projectChats.findPartition(ref.providerId, ref.accountId) ||
+      `persist:lidow-${ref.providerId}-default`
+    )
+  }
+
+  /** 旧索引没有 home：用同平台记录兜底 */
+  projectChatHome(ref: ProjectChatRef): string | undefined {
+    return ref.home || this.projectChats.findHome(ref.providerId)
+  }
+
+  /** 网页对话已删除、但项目还保留时：清掉本地会话的网页地址，避免下次重复删除 */
+  clearSessionWebUrl(sessionId: string): void {
+    if (!sessionId) return
+    const session = this.sessionOf(sessionId)
+    if (!session) return
+    const project = this.projects.find((p) => p.id === session.projectId)
+    if (!project || !isProjectRootAvailable(project.root)) return
+    try {
+      this.loop.stop(sessionId, 'all')
+      this.sessionStoreOf(project.id).update(sessionId, (s) => ({ ...s, providerUrl: undefined }))
+      this.emit({ type: 'session-updated', sessionId })
+      const wcId = this.overlay.wcIdOfSession(sessionId)
+      if (wcId !== undefined) {
+        this.overlay.unbindSession(sessionId)
+        this.overlay.sendCmdToWebContents(wcId, { kind: 'new-chat' })
+      }
+    } catch {
+      /* 会话可能已被移除 */
+    }
   }
 
   /** renderer 打开标签时登记该 webview 的平台/账号（无会话初始化时使用） */

@@ -42,7 +42,7 @@ export interface LidowApi {
   removeProject(
     projectId: string,
     deleteWebChats?: boolean
-  ): Promise<{ webDeleted: number; webFailed: number; message: string }>
+  ): Promise<{ removed: boolean; webDeleted: number; webFailed: number; message: string }>
   quit(): void
 
   // Provider / 账号

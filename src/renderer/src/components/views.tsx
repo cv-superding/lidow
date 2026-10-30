@@ -175,11 +175,12 @@ export function ProjectsView(): React.JSX.Element {
     setRemoving(true)
     try {
       const res = await api.removeProject(removeTarget.id, removeWebChats)
-      setRemoveTargetId(null)
       await refreshProjects()
       await useStore.getState().refreshProviders()
       await useStore.getState().refreshSessions()
       useStore.getState().notice(res.message, res.webFailed ? 'warn' : 'info')
+      // 网页对话没删干净时主进程会保留项目，弹窗保持打开以便重试/取消勾选
+      if (res.removed) setRemoveTargetId(null)
     } catch (e) {
       useStore.getState().notice(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     } finally {
@@ -361,7 +362,7 @@ export function ProjectsView(): React.JSX.Element {
                     同时删除网页版 AI 中的 {removeTarget.webChatCount} 个会话
                   </span>
                   <span className="mt-0.5 block text-[10.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
-                    删除后不可恢复；纯净模式中对应的会话记录也会一起移除。需要对应平台页面已打开。
+                    删除后不可恢复；纯净模式中对应的会话记录也会一起移除。需要对应平台页面已打开；删除失败时项目会保留，可重试。
                   </span>
                 </span>
               </label>

@@ -6,6 +6,10 @@ export interface ProjectChatRef {
   sessionId: string
   providerId: string
   accountId?: string
+  /** 该账号的 Electron partition：网页未打开时用它起隐藏页面删除对话 */
+  partition?: string
+  /** 平台首页：隐藏页面优先加载它，侧栏才会带出历史对话 */
+  home?: string
   url: string
   title: string
   updatedAt: number
@@ -71,6 +75,31 @@ export class ProjectChatIndex {
     const next = { ...data }
     delete next[projectId]
     this.store.update(() => next)
+  }
+
+  /** 为旧索引补 partition：同 provider/account 的其它记录里找 */
+  findPartition(providerId: string, accountId?: string, excludeProjectId?: string): string | undefined {
+    const want = accountId || '__default__'
+    for (const [projectId, refs] of Object.entries(this.store.get())) {
+      if (projectId === excludeProjectId) continue
+      for (const ref of refs) {
+        if (ref.providerId !== providerId) continue
+        if ((ref.accountId || '__default__') !== want) continue
+        if (ref.partition) return ref.partition
+      }
+    }
+    return undefined
+  }
+
+  /** 为旧索引补 home：同 provider 的其它记录里找 */
+  findHome(providerId: string, excludeProjectId?: string): string | undefined {
+    for (const [projectId, refs] of Object.entries(this.store.get())) {
+      if (projectId === excludeProjectId) continue
+      for (const ref of refs) {
+        if (ref.providerId === providerId && ref.home) return ref.home
+      }
+    }
+    return undefined
   }
 
   private write(projectId: string, refs: ProjectChatRef[]): void {

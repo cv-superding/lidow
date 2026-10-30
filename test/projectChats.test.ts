@@ -72,4 +72,25 @@ describe('项目网页对话索引', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('记录 partition/home，并能为旧索引跨项目补全', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lidow-chats-'))
+    try {
+      const idx = new ProjectChatIndex(dir)
+      idx.upsert('old-project', {
+        sessionId: 's1',
+        providerId: 'deepseek',
+        accountId: '__default__',
+        partition: 'persist:lidow-deepseek-abc123',
+        home: 'https://chat.deepseek.com/',
+        url: 'https://chat.deepseek.com/a/chat/s/one',
+        title: '一',
+        updatedAt: 1
+      })
+      expect(idx.findPartition('deepseek', '__default__')).toBe('persist:lidow-deepseek-abc123')
+      expect(idx.findHome('deepseek')).toBe('https://chat.deepseek.com/')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

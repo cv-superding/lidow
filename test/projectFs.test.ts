@@ -70,7 +70,10 @@ describe('删除项目目录后的主进程保护', () => {
   it('移除项目可选同时删除网页版会话，并清理本地会话', () => {
     expect(views).toContain('同时删除网页版 AI 中的')
     expect(views).toContain('api.removeProject(removeTarget.id, removeWebChats)')
+    expect(views).toContain('res.removed')
     expect(handlers).toContain('removeWebChat')
+    expect(handlers).toContain('deleteChatsInHiddenPage')
+    expect(handlers).toContain('项目未移除')
     expect(context).toContain('deleteLocalSessions')
     expect(context).toContain('projectChatRefs')
   })

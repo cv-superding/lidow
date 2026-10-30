@@ -7,6 +7,7 @@ import { TodoBoard } from '@main/ecosystem/todos'
 import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
 import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
+import { deleteChatsInHiddenPage } from '@main/bridge/webChatDeleteHidden'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
 import { Logger } from '@main/infra/log'
@@ -79,54 +80,89 @@ export function registerHandlers(
   R('removeProject', async (projectId: string, deleteWebChats?: boolean) => {
     const id = String(projectId)
     const project = ctx.projects.find((p) => p.id === id)
-    if (!project) return { webDeleted: 0, webFailed: 0, message: '项目已移除' }
+    if (!project) return { removed: false, webDeleted: 0, webFailed: 0, message: '项目已移除' }
     if (ctx.activeProjectId() === id && ctx.projectAvailable(id)) {
       throw new Error('请先切换到其他项目，再移除当前项目')
     }
-    let webDeleted = 0
-    let webFailed = 0
-    const failedTitles: string[] = []
-    if (deleteWebChats) {
-      // 目录删除后本地会话已经没了，索引里仍保留网页对话地址
-      for (const ref of ctx.projectChatRefs(id)) {
-        const bound = ctx.overlay.wcIdOfSession(ref.sessionId)
-        const wcId = bound ?? ctx.webContentsIdForProvider(ref.providerId, ref.accountId)
-        const wc = wcId === undefined ? undefined : webContents.fromId(wcId)
-        if (!wc || wc.isDestroyed()) {
-          webFailed++
-          failedTitles.push(ref.title || ref.url)
-          continue
-        }
+    const refs = deleteWebChats ? ctx.projectChatRefs(id) : []
+    const outcomes = new Map<string, { ok: boolean; reason?: string }>()
+    type HiddenGroup = { partition: string; home: string; refs: typeof refs }
+    const hiddenGroups = new Map<string, HiddenGroup>()
+    const queueHidden = (ref: (typeof refs)[number]): void => {
+      const partition = ctx.projectChatPartition(ref)
+      const home =
+        ctx.projectChatHome(ref) || BUILT_IN_PROVIDERS.find((p) => p.id === ref.providerId)?.home || ''
+      const key = `${partition}|${home}`
+      const group = hiddenGroups.get(key) ?? { partition, home, refs: [] }
+      group.refs.push(ref)
+      hiddenGroups.set(key, group)
+    }
+    const succeed = (ref: (typeof refs)[number]): void => {
+      ctx.forgetProjectChat(ref.url)
+      ctx.clearSessionWebUrl(ref.sessionId)
+    }
+
+    for (const ref of refs) {
+      // 已打开的网页优先：不用再起隐藏窗口
+      const bound = ctx.overlay.wcIdOfSession(ref.sessionId)
+      const wcId = bound ?? ctx.webContentsIdForProvider(ref.providerId, ref.accountId)
+      const wc = wcId === undefined ? undefined : webContents.fromId(wcId)
+      if (wc && !wc.isDestroyed()) {
         ctx.markWebChatDeleteInFlight(ref.url)
         const res = await removeWebChat(wc, ref.url, ref.title)
-        if (res.ok) {
-          webDeleted++
-          ctx.forgetProjectChat(ref.url)
-        } else {
-          webFailed++
-          failedTitles.push(ref.title || ref.url)
-        }
-        // 平台侧栏是 UI 自动化：串行删除，给页面一点时间更新
+        outcomes.set(ref.url, { ok: res.ok, reason: res.reason })
+        if (res.ok) succeed(ref)
+        else queueHidden(ref)
         await new Promise((r) => setTimeout(r, 250))
+      } else {
+        // 没有打开的页面：用该账号的 partition 起隐藏窗口，侧栏删除
+        queueHidden(ref)
       }
     }
+
+    for (const group of hiddenGroups.values()) {
+      const results = await deleteChatsInHiddenPage(
+        group.partition,
+        group.home,
+        group.refs.map((r) => ({ url: r.url, title: r.title }))
+      )
+      for (const res of results) {
+        outcomes.set(res.url, { ok: res.ok, reason: res.reason })
+        if (res.ok) {
+          const ref = group.refs.find((r) => r.url === res.url)
+          if (ref) succeed(ref)
+        }
+      }
+    }
+
+    const failed = refs.filter((ref) => !outcomes.get(ref.url)?.ok)
+    const webDeleted = refs.length - failed.length
+    const failedTitles = failed.map((r) => r.title || r.url)
+    const parts: string[] = []
+    if (deleteWebChats && failed.length > 0) {
+      // 网页对话没删干净就不要移除项目：保留索引/本地会话，用户打开平台后可重试
+      for (const ref of failed) {
+        if (!outcomes.has(ref.url)) outcomes.set(ref.url, { ok: false, reason: '未执行删除' })
+      }
+      let msg = `项目未移除：${failed.length} 个网页对话删除失败`
+      if (failedTitles.length > 0) {
+        msg += `（${failedTitles.slice(0, 3).join('、')}${failedTitles.length > 3 ? ' 等' : ''}）`
+      }
+      msg += '。请打开对应 AI 平台页面后重试，或取消勾选「同时删除」后仅移除项目'
+      return { removed: false, webDeleted, webFailed: failed.length, message: msg }
+    }
+
     ctx.removeProject(id, { deleteLocalSessions: Boolean(deleteWebChats) })
     ctx.emit({ type: 'projects-changed', sessionId: '' })
 
-    const parts = [`已移除项目「${project.name}」`]
+    parts.push(`已移除项目「${project.name}」`)
     if (deleteWebChats) {
-      if (webDeleted > 0) parts.push(`已删除 ${webDeleted} 个网页对话`)
-      if (webFailed > 0) {
-        const names = failedTitles.slice(0, 3).join('、')
-        parts.push(
-          `${webFailed} 个网页对话删除失败（${names}${failedTitles.length > 3 ? ' 等' : ''}），请打开对应平台页面后手动删除`
-        )
-      }
-      if (webDeleted === 0 && webFailed === 0) parts.push('没有找到可删除的网页对话')
+      if (webDeleted > 0) parts.push(`；已删除 ${webDeleted} 个网页对话`)
+      if (refs.length === 0) parts.push('；没有找到可删除的网页对话')
     } else {
-      parts.push('网页端对话已保留')
+      parts.push('；网页端对话已保留')
     }
-    return { webDeleted, webFailed, message: parts.join('；') }
+    return { removed: true, webDeleted, webFailed: 0, message: parts.join('') }
   })
   R('quit', () => app.quit())
 
