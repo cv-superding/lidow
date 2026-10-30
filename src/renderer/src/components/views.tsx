@@ -119,6 +119,26 @@ export function ProjectsView(): React.JSX.Element {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const openProject = useStore((s) => s.openProject)
   const [busyId, setBusyId] = useState('')
+  const [removeTargetId, setRemoveTargetId] = useState<string | null>(null)
+  const removeTarget = projects.find((p) => p.id === removeTargetId) ?? null
+  const [removeWebChats, setRemoveWebChats] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const missingCount = projects.filter((p) => p.missing).length
+  const refreshProjects = async (): Promise<void> => {
+    try {
+      const st = await api.getAppState()
+      useStore.setState({ projects: st.projects, activeProjectId: st.activeProjectId })
+    } catch {
+      /* 主进程重启中：保留现有列表 */
+    }
+  }
+  // 进入工作区时重新检测目录：用户可能在应用运行时删掉了项目文件夹
+  useEffect(() => {
+    void api
+      .getAppState()
+      .then((st) => useStore.setState({ projects: st.projects, activeProjectId: st.activeProjectId }))
+      .catch(() => undefined)
+  }, [])
   const pick = async (): Promise<void> => {
     const dir = await api.pickDirectory()
     if (!dir) return
@@ -128,30 +148,64 @@ export function ProjectsView(): React.JSX.Element {
       useStore.getState().notice(`打开项目失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     }
   }
-  const removeProject = (p: ProjectInfo): void => {
-    if (p.id === activeProjectId) return
-    if (!window.confirm(`从列表移除「${p.name}」？只移除列表，不会删除磁盘文件。`)) return
-    void api
-      .removeProject(p.id)
-      .then(async () => {
-        const st = await api.getAppState()
-        useStore.setState({ projects: st.projects, activeProjectId: st.activeProjectId })
-        void useStore.getState().refreshProviders()
-        useStore.getState().notice('已从列表移除项目')
-      })
-      .catch((e) => useStore.getState().notice(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
+  const relocate = async (p: ProjectInfo): Promise<void> => {
+    const dir = await api.pickDirectory()
+    if (!dir) return
+    setBusyId(p.id)
+    try {
+      await api.relocateProject(p.id, dir)
+      useStore.getState().notice(`已重新绑定项目目录：${dir}`)
+    } catch (e) {
+      useStore
+        .getState()
+        .notice(`重新绑定失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setBusyId('')
+    }
+  }
+  const askRemove = (p: ProjectInfo): void => {
+    if (p.id === activeProjectId && !p.missing) return
+    setRemoveWebChats(false)
+    setRemoveTargetId(p.id)
+    // 打开弹窗时重新检测一次目录/网页会话数量
+    void refreshProjects()
+  }
+  const confirmRemove = async (): Promise<void> => {
+    if (!removeTarget) return
+    setRemoving(true)
+    try {
+      const res = await api.removeProject(removeTarget.id, removeWebChats)
+      setRemoveTargetId(null)
+      await refreshProjects()
+      await useStore.getState().refreshProviders()
+      await useStore.getState().refreshSessions()
+      useStore.getState().notice(res.message, res.webFailed ? 'warn' : 'info')
+    } catch (e) {
+      useStore.getState().notice(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setRemoving(false)
+    }
   }
 
   return (
+    <>
     <Page
       title="工作区"
-      subtitle={`${projects.length} 个项目 · 切换后会话与工具都按新项目路由`}
+      subtitle={`${projects.length} 个项目${missingCount ? ` · ${missingCount} 个目录不存在` : ''} · 切换后会话与工具都按新项目路由`}
       actions={
         <button className="btn btn-primary btn-sm" onClick={() => void pick()}>
           <IconPlus size={12} /> 打开目录
         </button>
       }
     >
+      {missingCount > 0 && (
+        <div
+          className="mb-3 rounded-[var(--r-md)] px-3 py-2.5 text-[11.5px]"
+          style={{ background: 'var(--surface-sunken)', color: 'var(--danger)' }}
+        >
+          有 {missingCount} 个项目的目录已被删除或移动。点击「重新选择」绑定新目录，或从列表移除；Lidow 不会自动重建已删除的目录。
+        </div>
+      )}
       {projects.length === 0 ? (
         <Empty
           icon={<IconFolderOpen size={18} />}
@@ -167,11 +221,15 @@ export function ProjectsView(): React.JSX.Element {
         <div className="space-y-2">
           {projects.map((p) => {
             const active = p.id === activeProjectId
+            const missing = Boolean(p.missing)
             return (
               <div key={p.id} className="card flex items-center gap-3 px-4 py-3">
                 <span
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--r-md)]"
-                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                  style={{
+                    background: missing ? 'var(--surface-sunken)' : 'var(--accent-soft)',
+                    color: missing ? 'var(--danger)' : 'var(--accent)'
+                  }}
                 >
                   <IconFolderOpen size={16} />
                 </span>
@@ -179,38 +237,60 @@ export function ProjectsView(): React.JSX.Element {
                   <div className="flex items-center gap-2">
                     <span className="truncate text-[12.5px] font-medium">{p.name}</span>
                     {active && <span className="badge badge-success">当前项目</span>}
+                    {missing && <span className="badge badge-danger">目录不存在</span>}
                   </div>
                   <div className="truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
                     {p.root}
                   </div>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <button className="btn btn-sm btn-outline" onClick={() => void api.revealPath(p.root)}>
-                    打开目录
-                  </button>
-                  <button
-                    className="btn btn-sm btn-primary"
-                    disabled={active || busyId === p.id}
-                    onClick={() => {
-                      if (useStore.getState().streamingText && !window.confirm('当前任务仍在生成，切换项目会中断它。继续？')) return
-                      setBusyId(p.id)
-                      void openProject(p.root)
-                        .catch((e) =>
-                          useStore
-                            .getState()
-                            .notice(`切换项目失败：${e instanceof Error ? e.message : String(e)}`, 'error')
-                        )
-                        .finally(() => setBusyId(''))
-                    }}
-                  >
-                    {active ? '使用中' : busyId === p.id ? '切换中…' : '切换'}
-                  </button>
-                  {!active && (
+                  {missing ? (
+                    <button
+                      className="btn btn-sm btn-primary"
+                      disabled={busyId === p.id}
+                      onClick={() => void relocate(p)}
+                    >
+                      {busyId === p.id ? '选择中…' : '重新选择'}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => {
+                          void api.revealPath(p.root).then((ok) => {
+                            if (ok) return
+                            useStore.getState().notice('项目目录不存在，请重新选择或从列表移除', 'warn')
+                            void refreshProjects()
+                          })
+                        }}
+                      >
+                        打开目录
+                      </button>
+                      <button
+                        className="btn btn-sm btn-primary"
+                        disabled={active || busyId === p.id}
+                        onClick={() => {
+                          if (useStore.getState().streamingText && !window.confirm('当前任务仍在生成，切换项目会中断它。继续？')) return
+                          setBusyId(p.id)
+                          void openProject(p.root)
+                            .catch((e) =>
+                              useStore
+                                .getState()
+                                .notice(`切换项目失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+                            )
+                            .finally(() => setBusyId(''))
+                        }}
+                      >
+                        {active ? '使用中' : busyId === p.id ? '切换中…' : '切换'}
+                      </button>
+                    </>
+                  )}
+                  {(!active || missing) && (
                     <button
                       className="btn btn-sm btn-ghost"
                       style={{ color: 'var(--danger)' }}
-                      title="只从列表移除，不删除磁盘文件"
-                      onClick={() => removeProject(p)}
+                      title="从列表移除；可选同时删除网页版会话"
+                      onClick={() => askRemove(p)}
                     >
                       移除
                     </button>
@@ -222,6 +302,91 @@ export function ProjectsView(): React.JSX.Element {
         </div>
       )}
     </Page>
+    {removeTarget && (
+      <div
+        className="fixed inset-0 z-[75] flex items-center justify-center px-6"
+        style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
+      >
+        <div
+          className="anim-pop w-full max-w-[420px] overflow-hidden rounded-[18px]"
+          style={{
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border-strong)',
+            boxShadow: '0 24px 64px rgba(0,0,0,.28)'
+          }}
+        >
+          <div className="px-5 pb-4 pt-5">
+            <div className="flex items-center gap-2.5">
+              <span
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px]"
+                style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+              >
+                <IconTrash size={15} />
+              </span>
+              <div className="min-w-0">
+                <div className="text-[14px] font-semibold leading-tight">移除项目</div>
+                <div className="mt-0.5 truncate text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                  {removeTarget.name}
+                </div>
+              </div>
+            </div>
+
+            <div
+              className="mt-3 truncate rounded-[10px] px-3 py-2 font-mono text-[10px]"
+              style={{ background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}
+              title={removeTarget.root}
+            >
+              {removeTarget.root}
+            </div>
+
+            <div className="mt-3 text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+              只从列表移除，不会删除项目文件夹或磁盘文件。
+              {removeTarget.missing && ' 该目录当前已不存在。'}
+            </div>
+
+            {(removeTarget.webChatCount ?? 0) > 0 ? (
+              <label
+                className="mt-3 flex cursor-pointer items-start gap-2.5 rounded-[12px] px-3 py-2.5"
+                style={{ background: 'var(--surface-sunken)' }}
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={removeWebChats}
+                  disabled={removing}
+                  onChange={(e) => setRemoveWebChats(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[11.5px] font-medium">
+                    同时删除网页版 AI 中的 {removeTarget.webChatCount} 个会话
+                  </span>
+                  <span className="mt-0.5 block text-[10.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+                    删除后不可恢复；纯净模式中对应的会话记录也会一起移除。需要对应平台页面已打开。
+                  </span>
+                </span>
+              </label>
+            ) : (
+              <div className="mt-3 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                没有关联的网页版会话，只会移除列表记录。
+              </div>
+            )}
+          </div>
+
+          <div
+            className="flex items-center justify-end gap-2 border-t px-5 py-3"
+            style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
+          >
+            <button className="btn btn-sm btn-ghost" disabled={removing} onClick={() => setRemoveTargetId(null)}>
+              取消
+            </button>
+            <button className="btn btn-sm btn-danger" disabled={removing} onClick={() => void confirmRemove()}>
+              {removing ? '处理中…' : '移除'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   )
 }
 
@@ -2008,6 +2173,31 @@ export function SettingsView(): React.JSX.Element {
           title="对话韧性"
           desc="AI 卡住或出错时自动恢复：催继续、重试、压缩上下文、跨会话续接。"
         >
+          <div
+            className="mb-3 flex flex-wrap items-center gap-x-2.5 gap-y-1.5 rounded-[var(--r-md)] px-3 py-2.5"
+            style={{ background: 'var(--surface-sunken)' }}
+          >
+            <span className="text-[12.5px]">网页发送间隔</span>
+            <input
+              className="field w-16 text-center tabular-nums"
+              type="number"
+              min={1}
+              max={60}
+              defaultValue={Math.max(1, Math.round((s.webSendIntervalMs ?? 1000) / 1000))}
+              onBlur={(e) => {
+                const n = Math.max(1, Math.min(60, Math.round(Number(e.target.value) || 1)))
+                e.currentTarget.value = String(n)
+                patch({ webSendIntervalMs: n * 1000 })
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+            />
+            <span className="text-[12px]">秒</span>
+            <span className="text-[11px]" style={{ color: 'var(--text-hint)' }}>
+              连续向同一个 AI 网页发送消息的最小间隔，默认 1 秒，避免平台频率限制
+            </span>
+          </div>
           <ToggleRow
             label="看门狗（自动催继续）"
             desc="SSE 流长时间无数据说明 AI 卡住，自动发提示词让它接着写"

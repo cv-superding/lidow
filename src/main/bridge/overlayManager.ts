@@ -4,6 +4,12 @@ import { Logger } from '@main/infra/log'
 
 const SEND_TIMEOUT_MS = 20_000
 const REPLY_TIMEOUT_MS = 10 * 60_000
+/**
+ * 网络层报「截断/空回复」后不要立刻重试：DeepSeek 可能只是这一段 SSE
+ * 结束，页面仍在生成（甚至马上会接上下一段）。等 DOM 真正停下来再决定，
+ * 否则用户会看到网页还在回答，Lidow 就自动插了一条「回复中断」的消息。
+ */
+const ERROR_GRACE_MS = 20_000
 
 interface Channel {
   webContentsId: number
@@ -14,6 +20,11 @@ interface Channel {
   sendResolvers: Set<(ok: boolean, err?: string) => void>
   /** 网络层上报的错误原因（供 loop 判断是否重试） */
   netError?: string
+  /** 软错误（截断/空回复）的宽限计时：页面可能仍在生成，先等 DOM 收尾 */
+  errorGraceTimer?: NodeJS.Timeout
+  pendingError?: { reason: string; text: string }
+  /** 本次停止是 Lidow 主动发的（看门狗/用户点停止），不是网页侧自己停的 */
+  lidowStopped?: boolean
   /** 思考过程缓冲（来自 SSE reasoning 帧） */
   thinkBuf?: string
   /** 网络层收到的权威完整文本（DOM 兜底前先等它） */
@@ -26,6 +37,8 @@ interface Channel {
   lastAcc?: number
   /** 最近一次「把回复交给等待方」的时间：迟到的 net-response 不能再当成外部消息接管 */
   lastResolveAt?: number
+  /** 最近一次网页流活动（网络层/ DOM）：发送前据此等页面真正静下来 */
+  lastActivityAt?: number
 }
 
 /**
@@ -36,11 +49,17 @@ interface Channel {
 export class OverlayManager {
   private channels = new Map<number, Channel>()
   private bindings = new Map<string, number>()
+  /** 同一网页的发送串行化：避免连续消息把平台频率打满 */
+  private sendChains = new Map<number, Promise<void>>()
+  private lastSendAt = new Map<number, number>()
+  private sendIntervalProvider: () => number = () => 1000
   private onFloatAction?: (sessionId: string, action: string) => void
   /** 思考过程增量回调（供 renderer 折叠块显示） */
   private onThinkChunk?: (sessionId: string, think: string) => void
   /** 网页侧「AI 回复完成」常驻回调：用户直接在网页输入框发消息时也能接管（cuckoo observer 同款） */
   private onPageReply?: (sessionId: string, text: string) => void
+  /** 用户在网页输入框里亲手发送的消息（同步回纯净模式的用户轮次） */
+  private onPageUserMessage?: (sessionId: string, text: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
   /**
@@ -62,6 +81,8 @@ export class OverlayManager {
   onNav?: (sessionId: string, url: string, title?: string) => void
   /** 网页侧用户删除了对话（按 webContentsId 上报 URL） */
   onChatDeleted?: (webContentsId: number, url: string) => void
+  /** 网页侧点击了属于某个 Lidow 项目的对话 */
+  onActivateChat?: (webContentsId: number, url: string) => void
   /** overlay 就绪（无论是否已绑定会话）：用于下发网页会话删除监听列表 */
   onAnyReady?: (webContentsId: number) => void
 
@@ -172,6 +193,11 @@ export class OverlayManager {
     this.onFloatAction = fn
   }
 
+  /** 用户在设置里调整网页发送间隔后立即生效 */
+  setSendIntervalProvider(fn: () => number): void {
+    this.sendIntervalProvider = fn
+  }
+
   private channelFor(sender: WebContents): Channel {
     let ch = this.channels.get(sender.id)
     if (!ch) {
@@ -193,20 +219,35 @@ export class OverlayManager {
     switch (payload.type) {
       case 'stream-start':
         ch.streamBuf = ''
+        ch.lastActivityAt = Date.now()
+        ch.lidowStopped = false
         // 新一轮开始：上一轮的网络层权威文本不能留到这一轮兜底
         ch.netText = undefined
         ch.netError = undefined
+        this.clearErrorGrace(ch)
         break
       case 'stream-chunk': {
         ch.streamBuf = payload.text
+        ch.lastActivityAt = Date.now()
+        // 有内容说明页面还在生成：把软错误的宽限往后顺延
+        this.rearmErrorGrace(ch)
         for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
         break
       }
+      case 'stream-heartbeat': {
+        // 页面确实还在生成（只是暂停出字）：重置发送静默、截断宽限与看门狗，
+        // 避免「思考 90 秒」被当成卡死然后插一条重试消息。
+        ch.lastActivityAt = Date.now()
+        this.rearmErrorGrace(ch)
+        for (const r of ch.chunkResolvers) r(ch.streamBuf, 0)
+        break
+      }
       case 'stream-end': {
-        // DOM 抓的是渲染后的 markdown 气泡：DeepSeek 分段渲染会截断尾部代码块。
-        // 网络层（net-response）才是权威文本；DOM end 延迟 3s 兜底 resolve，
-        // 期间 net-response 到达则覆盖（见 net-response 分支的 domFallbackTimer 清理）。
+        // DOM 已确认这一轮结束：即使网络层报过截断，也以页面最终文本为准，
+        // 不再触发「中途插话」式重试。
+        this.clearErrorGrace(ch)
         ch.streamBuf = payload.text
+        ch.lastActivityAt = Date.now()
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
         if (ch.replyResolvers.size === 0) break
@@ -231,12 +272,15 @@ export class OverlayManager {
         // 主世界 SSE 增量：直接把完整文本交给等待方（比 DOM 轮询更准更快）
         const prevBuf = ch.streamBuf
         ch.streamBuf = payload.text
+        if (payload.text || payload.think) ch.lastActivityAt = Date.now()
         // 文本不是上一段的延续 = 新的一轮流；若当前没有等待方，说明是用户
         // 在网页里自己发的消息，清掉「刚给过等待方」的标记以便正常接管
         if (ch.replyResolvers.size === 0 && prevBuf && !payload.text.startsWith(prevBuf)) {
           ch.lastResolveAt = undefined
         }
         ch.thinkBuf = payload.think ?? ''
+        // 有增量 = 页面仍在生成；把软错误宽限顺延，避免中途插话
+        if (payload.text || payload.think) this.rearmErrorGrace(ch)
         for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
         // 思考过程流式上报（纯净模式折叠块显示）
         if (payload.think) {
@@ -248,7 +292,18 @@ export class OverlayManager {
       case 'net-response': {
         ch.streamBuf = payload.text
         if (payload.status === 'stopped') {
-          // 用户停止：按空/中断处理，交给 loop 的停止逻辑
+          // 网页侧自己停了（用户点了停止/平台中断）：不能当成失败去重试，
+          // 否则用户刚停，Lidow 立刻插一句「回复似乎中断了，请重新回答」。
+          // 只有 Lidow 主动停止（看门狗/停止按钮）才交给 loop 的停止逻辑。
+          const byLidow = ch.lidowStopped === true
+          ch.lidowStopped = false
+          if (!byLidow) {
+            for (const r of ch.replyResolvers) r(new Error('用户在网页侧停止了生成'))
+            ch.replyResolvers.clear()
+            ch.chunkResolvers.clear()
+            break
+          }
+          this.clearErrorGrace(ch)
           for (const r of ch.chunkResolvers) r(payload.text, 0)
           ch.chunkResolvers.clear()
           for (const r of ch.replyResolvers) r('')
@@ -256,13 +311,19 @@ export class OverlayManager {
           break
         }
         if (payload.status === 'error') {
-          // 失败必须唤醒等待方并抛错，否则 loop 只能干等到 REPLY_TIMEOUT_MS，
-          // 或者被 DOM 兜底把半截文本当成"完整回复" —— 两种表现都是「中断了、
-          // 但没有任何重试」。保留已收到的部分文本供上层记录，错误原因带上细节。
           ch.netError = payload.text
-          const reason = payload.reason ? `（${payload.reason}）` : ''
+          const reason = payload.reason ?? 'error'
+          // 截断/空回复先给页面 20 秒收尾：DeepSeek 的 INCOMPLETE 常常只是
+          // 当前 SSE 段落结束，正文可能还在继续。期间 DOM 结束就用 DOM 文本，
+          // 彻底没动静才抛错触发重试 —— 不能再「网页还在写就插一条重试消息」。
+          if (this.isSoftStreamError(reason)) {
+            this.armErrorGrace(ch, reason, payload.text)
+            break
+          }
+          this.clearErrorGrace(ch)
+          const detail = payload.reason ? `（${payload.reason}）` : ''
           const partial = payload.text ? `，已收到 ${payload.text.length} 字` : ''
-          const err = new Error(`AI 回复中断${reason}${partial}`)
+          const err = new Error(`AI 回复中断${detail}${partial}`)
           for (const r of ch.replyResolvers) r(err)
           ch.replyResolvers.clear()
           ch.chunkResolvers.clear()
@@ -273,6 +334,7 @@ export class OverlayManager {
           break
         }
         // finished：以网络层文本为准结束本轮（覆盖 DOM 兜底）
+        this.clearErrorGrace(ch)
         ch.netText = payload.text
         // 服务端权威 token：accumulated 是会话累计，本轮消耗 = 本轮 − 上一轮
         if (typeof payload.tokens === 'number') {
@@ -306,8 +368,13 @@ export class OverlayManager {
         break
       }
       case 'net-error': {
-        // 网络层失败（HTTP 429 / 流异常 / 业务错误码）：同 error 状态，必须唤醒等待方
+        // 网络层失败（HTTP 429 / 流异常 / 业务错误码）
         ch.netError = payload.reason
+        if (this.isSoftStreamError(payload.reason)) {
+          this.armErrorGrace(ch, payload.reason, payload.text)
+          break
+        }
+        this.clearErrorGrace(ch)
         const detail = payload.text ? `：${payload.text.slice(0, 200)}` : ''
         const err = new Error(`AI 请求失败（${payload.reason}）${detail}`)
         for (const r of ch.replyResolvers) r(err)
@@ -354,8 +421,21 @@ export class OverlayManager {
         if (sid) this.onNav?.(sid, payload.url, payload.title)
         break
       }
+      case 'user-message': {
+        // 网页侧直发的用户消息：只记到当前绑定的会话，避免串台。
+        // 同时清掉上一轮的 resolve 时间，让这条消息的 AI 回复能正常接管
+        // （否则与上一条 lidow 回复间隔不足 8 秒时会被去重规则丢掉）。
+        ch.lastResolveAt = undefined
+        const sessionId = this.sessionOfWebContents(sender.id)
+        if (sessionId && payload.text.trim()) this.onPageUserMessage?.(sessionId, payload.text)
+        break
+      }
       case 'chat-deleted': {
         this.onChatDeleted?.(sender.id, payload.url)
+        break
+      }
+      case 'activate-chat': {
+        if (payload.url) this.onActivateChat?.(sender.id, payload.url)
         break
       }
       case 'login-state': {
@@ -411,6 +491,11 @@ export class OverlayManager {
     this.onPageReply = fn
   }
 
+  /** 注册「用户在网页里自己发消息」回调（纯净模式同步用户轮次） */
+  setPageUserMessageHandler(fn: (sessionId: string, text: string) => void): void {
+    this.onPageUserMessage = fn
+  }
+
   bindSession(sessionId: string, webContentsId: number): void {
     // 单绑定不变量：一个 webview 同时只承载一个会话。
     // 换绑时不解除旧会话（此前 renderer 只调 bindSession），sessionOfWebContents
@@ -447,14 +532,52 @@ export class OverlayManager {
     return true
   }
 
-  /** 下发发送指令并等待 overlay 确认已注入页面 */
+  /** 下发发送指令并等待 overlay 确认已注入页面；同一网页按设置的最小间隔串行发送 */
   async sendToPage(sessionId: string, text: string): Promise<void> {
     const ch = await this.waitForChannel(sessionId)
     if (!ch) throw new Error('网页未连接（平台页面未加载完成，请稍后重试）')
+    const wcId = ch.webContentsId
+    const run = async (): Promise<void> => {
+      // 排队期间可能已经切换会话/页面：绝不能把旧消息打进新对话
+      if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
+      const interval = Math.max(0, Math.min(60_000, Number(this.sendIntervalProvider()) || 0))
+      const wait = (this.lastSendAt.get(wcId) ?? 0) + interval - Date.now()
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+      if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
+      // 网络层还在出字/思考时不要发：重试提示会被平台排成“中途插话”
+      await this.waitForPageQuiet(ch)
+      if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
+      this.lastSendAt.set(wcId, Date.now())
+      await this.sendNow(ch, text)
+    }
+    const prev = this.sendChains.get(wcId) ?? Promise.resolve()
+    const next = prev.catch(() => undefined).then(run)
+    this.sendChains.set(wcId, next)
+    try {
+      await next
+    } finally {
+      if (this.sendChains.get(wcId) === next) this.sendChains.delete(wcId)
+    }
+  }
+
+  /** 等网页流真正静下来再发送（最多 20 秒），避免在生成中途插话 */
+  private async waitForPageQuiet(ch: Channel, quietMs = 1500, maxMs = 20_000): Promise<void> {
+    const deadline = Date.now() + maxMs
+    for (;;) {
+      const idleFor = Date.now() - (ch.lastActivityAt ?? 0)
+      if (!ch.lastActivityAt || idleFor >= quietMs) return
+      if (Date.now() >= deadline) throw new Error('页面仍在生成回复，已暂缓发送')
+      await new Promise((r) => setTimeout(r, Math.min(300, quietMs - idleFor)))
+    }
+  }
+
+  private async sendNow(ch: Channel, text: string): Promise<void> {
     const target = this.targetOf(ch)
     if (!target) throw new Error('webview 已销毁')
     this.startTs.delete(ch.webContentsId)
     // 新请求落地前清空上一轮的权威文本/错误：DOM 兜底只会用本轮的数据
+    this.clearErrorGrace(ch)
+    ch.lidowStopped = false
     ch.netText = undefined
     ch.netError = undefined
     ch.streamBuf = ''
@@ -553,6 +676,12 @@ export class OverlayManager {
     }
   }
 
+  /** 等待网页当前轮真正结束（供 loop 在注册等待器之前调用） */
+  async waitPageIdle(sessionId: string): Promise<void> {
+    const ch = await this.waitForChannel(sessionId)
+    if (ch) await this.waitForPageQuiet(ch)
+  }
+
   /** 等待一轮完整回复；失败时 reject（供 loop 的重试引擎接管） */
   async awaitReply(sessionId: string, onChunk: (partial: string, tps: number) => void): Promise<string> {
     // 首次发送时 webview 可能还在 attach：等待通道就绪而不是立即失败
@@ -581,6 +710,12 @@ export class OverlayManager {
   interruptPage(sessionId: string): void {
     const ch = this.channelOfSession(sessionId)
     if (!ch) return
+    // 打标：随后的 stopped 事件是 Lidow 主动停止，不是用户/平台自己停的
+    ch.lidowStopped = true
+    const timer = setTimeout(() => {
+      if (ch.lidowStopped) ch.lidowStopped = false
+    }, 15_000)
+    timer.unref?.()
     this.targetOf(ch)?.send('lidow:overlay-cmd', { kind: 'stop' } satisfies OverlayCommand)
   }
 
@@ -592,12 +727,52 @@ export class OverlayManager {
   abandonReply(sessionId: string): void {
     const ch = this.channelOfSession(sessionId)
     if (!ch) return
+    this.clearErrorGrace(ch)
     if (ch.domFallbackTimer) {
       clearTimeout(ch.domFallbackTimer)
       ch.domFallbackTimer = undefined
     }
     ch.replyResolvers.clear()
     ch.chunkResolvers.clear()
+  }
+
+  /** 截断/空回复/流或网络异常都可能只是网络层误报：先等页面自己收尾，不急着重试 */
+  private isSoftStreamError(reason: string): boolean {
+    return /incomplete|^empty$|^stream$|^network$|^xhr$/i.test(reason)
+  }
+
+  private clearErrorGrace(ch: Channel): void {
+    if (ch.errorGraceTimer) clearTimeout(ch.errorGraceTimer)
+    ch.errorGraceTimer = undefined
+    ch.pendingError = undefined
+  }
+
+  /** 收到新内容时顺延宽限：页面还在写，就继续等 DOM 收尾 */
+  private rearmErrorGrace(ch: Channel): void {
+    const pending = ch.pendingError
+    if (pending) this.armErrorGrace(ch, pending.reason, pending.text)
+  }
+
+  private armErrorGrace(ch: Channel, reason: string, text: string): void {
+    ch.pendingError = { reason, text }
+    if (ch.errorGraceTimer) clearTimeout(ch.errorGraceTimer)
+    ch.errorGraceTimer = setTimeout(() => {
+      ch.errorGraceTimer = undefined
+      const pending = ch.pendingError
+      ch.pendingError = undefined
+      if (!pending || ch.replyResolvers.size === 0) return
+      const got = ch.netText?.length ? ch.netText : ch.streamBuf
+      const partial = got ? `，已收到 ${got.length} 字` : ''
+      const err = new Error(`AI 回复中断（${pending.reason}）${partial}`)
+      for (const r of ch.replyResolvers) r(err)
+      ch.replyResolvers.clear()
+      ch.chunkResolvers.clear()
+      if (ch.domFallbackTimer) {
+        clearTimeout(ch.domFallbackTimer)
+        ch.domFallbackTimer = undefined
+      }
+    }, ERROR_GRACE_MS)
+    ch.errorGraceTimer.unref?.()
   }
 
   /** 在网页内执行 JS（injectJS 工具落点），返回求值结果的字符串化 */

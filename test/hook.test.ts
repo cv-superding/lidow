@@ -14,6 +14,7 @@ interface Captured {
   errors: { text: string; reason: string }[]
   streams: string[]
   thinks: string[]
+  prompts: string[]
 }
 
 const FIXTURE = readFileSync(resolve(__dirname, 'fixtures/deepseek-sse.txt'), 'utf8')
@@ -26,12 +27,18 @@ function chunk(text: string, size: number): string[] {
 }
 
 /** 在假 window 上执行 hook 源码，返回捕获到的事件 */
-function runHook(sseText: string, chunkSize: number): Promise<Captured> {
-  const captured: Captured = { response: [], errors: [], streams: [], thinks: [] }
+function runHook(
+  sseText: string,
+  chunkSize: number,
+  opts: { body?: string; isOutgoing?: (text: string) => boolean } = {}
+): Promise<Captured> {
+  const captured: Captured = { response: [], errors: [], streams: [], thinks: [], prompts: [] }
   const bridge = {
+    isOutgoing: opts.isOutgoing,
     emit(kind: string, detail: { text?: string; finished?: boolean; reason?: string; think?: string }): void {
       if (kind === 'response') captured.response.push({ text: detail.text ?? '', finished: !!detail.finished })
       else if (kind === 'error') captured.errors.push({ text: detail.text ?? '', reason: detail.reason ?? '' })
+      else if (kind === 'prompt') captured.prompts.push(detail.text ?? '')
       else if (kind === 'stream') {
         captured.streams.push(detail.text ?? '')
         captured.thinks.push(detail.think ?? '')
@@ -77,7 +84,9 @@ function runHook(sseText: string, chunkSize: number): Promise<Captured> {
 
   // 触发被 hook 的 fetch；返回 promise 以便等待流读完
   const hooked = sandboxWindow.fetch as (url: string, init: unknown) => Promise<unknown>
-  return hooked('/api/v0/chat/completion', { method: 'POST' }).then(
+  const init: Record<string, unknown> = { method: 'POST' }
+  if (opts.body !== undefined) init.body = opts.body
+  return hooked('/api/v0/chat/completion', init).then(
     () =>
       new Promise<Captured>((done) => {
         // 流是异步读的：轮询等 response/error 落地
@@ -183,6 +192,24 @@ describe('DeepSeek hook 注入源码', () => {
     expect(parsed.calls[0]!.name).toBe('write')
     expect(parsed.calls[0]!.input).toMatchObject({ path: 'hello.txt' })
     expect(String((parsed.calls[0]!.input as { content?: string }).content).trim()).toBe('OK')
+  })
+})
+
+describe('网页侧用户消息上报', () => {
+  it('用户亲手在网页发送的消息会 emit prompt（纯净模式同步用）', async () => {
+    const cap = await runHook(FIXTURE, 64, {
+      body: JSON.stringify({ prompt: '在吗' }),
+      isOutgoing: () => false
+    })
+    expect(cap.prompts).toEqual(['在吗'])
+  })
+
+  it('lidow 自己发送的消息带 outgoing 标记，不上报成用户发言', async () => {
+    const cap = await runHook(FIXTURE, 64, {
+      body: JSON.stringify({ prompt: '请继续' }),
+      isOutgoing: () => true
+    })
+    expect(cap.prompts).toEqual([])
   })
 })
 

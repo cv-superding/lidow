@@ -16,7 +16,7 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-175%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 [![Docker](https://img.shields.io/badge/Docker-Native%20Web%20UI-2496ED?logo=docker&logoColor=white)](docs/docker.md)
@@ -58,6 +58,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心�
 - 全工具集（20 个）：read / write / edit（保换行 + diff 卡片）/ glob / grep / bash / pwsh / webFetch / webSearch / mysql / deleteFile / todoWrite / injectJS / clipboard / screenshot / sysinfo / mcpCall / kbSearch / remember / installSkill（GitHub 技能直装）
 - 三层停止：面板按钮 + 悬浮球右键，分别中断网页生成 / 工具执行 / 自动循环
 - 稳定性：90s SSE 看门狗、自动重试、上下文自动压缩（可手动）、tok/s 实时显示、填入读回校验 + 发送重试
+- 网页发送节流：同一 AI 网页连续发送至少间隔可配置（默认 1 秒），降低平台频率限制风险
 - 会话血缘：多窗口并发严格隔离（修复上游 #24），支持分叉、自动命名、压缩摘要、导出 Markdown；本地与网页端删除双向同步
 
 **生态**
@@ -87,6 +88,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心�
 - **Docker 原生 Web 版**：浏览器直接打开 Lidow 网页界面（不是 VNC/远程桌面）；服务端隐藏 Chromium 宿主驱动 AI 网页，项目、会话、工具流与登录态持久化
 - 管理页：工作区 / 会话 / 文件 / 任务 / 技能 / 子代理 / MCP / 插件 / 快捷指令 / 记忆 / 知识库 / 审计 / 设置（搜索、筛选、统计与空态操作齐备）
 - **技能中心**：项目 / 用户 / 回收站分级管理，启用开关即时生效；支持从 GitHub 仓库安装、从 Claude Code / Codex / Cursor / Qoder 等其他 Agent 目录（含软链接技能）一键导入，新建、编辑、删除与恢复齐全
+- **DeepSeek 网页项目文件夹**：网页侧按 Lidow 项目分组会话，点击网页会话自动切回对应项目；长会话右侧提供默认收起的紧凑时间线，悬停展开、点击跳转
 
 ## 快速开始
 

@@ -37,6 +37,8 @@ export interface LoopDeps {
   confirm: (sessionId: string, reason: string) => Promise<boolean>
   /** 把消息送进网页（overlay 注入发送），resolve 于发送成功 */
   sendToPage: (sessionId: string, text: string) => Promise<void>
+  /** 发送前等网页停止生成（网络层静默）；超时抛错让上层稍后重试 */
+  waitPageIdle?: (sessionId: string) => Promise<void>
   /** 等待网页上的 AI 回复完成，返回完整回复文本 */
   awaitReply: (sessionId: string, onChunk: (partial: string, tps: number) => void) => Promise<string>
   /** 中断网页侧生成 */
@@ -69,9 +71,24 @@ export interface LoopDeps {
   rebindToSession: (sessionId: string, fromSessionId?: string) => Promise<void>
 }
 
-const MAX_TURNS = 40 // 单次任务最大工具循环轮数，防失控
+const MAX_TURNS = 200 // 单次任务最大工具循环轮数，防失控；长任务到上限会先请求收尾摘要
 /** 格式纠偏最大次数（对齐 cuckoo 的 FORMAT_HINT_MAX，防 AI 在两种错误格式间来回切换） */
 const MAX_WILD_HINTS = 10
+/** 长任务自然结束时，如果最终回复只是一句“好了”，补一轮结构化摘要 */
+const SUMMARY_NUDGE_MIN_ROUNDS = 10
+
+const SUMMARY_NUDGE_PROMPT =
+  '请基于本次任务的实际执行结果，给出简洁的收尾摘要，按以下结构输出（没有的项写「无」）：\n\n' +
+  '## 已完成\n- …\n\n## 未解决\n- …\n\n## 说明\n- …（可选）\n\n' +
+  '不要再调用工具。'
+
+const WRAP_UP_PROMPT =
+  '本轮任务已达到自动循环上限。请立即停止调用工具，基于目前已完成的工作给出最终收尾摘要。\n' +
+  '要求用中文、简洁，按以下结构输出（没有的项写「无」）：\n\n' +
+  '## 已完成\n- 真正做完并验证过的事\n\n' +
+  '## 未解决\n- 尚未完成或未验证的事项\n\n' +
+  '## 说明\n- 需要的后续操作、风险或假设（可选）\n\n' +
+  '不要编造未完成的结果；不确定的地方明确标注。'
 
 /** 格式纠偏提示：AI 输出了不支持的调用格式时发回给它 */
 const FORMAT_FIX_PROMPT =
@@ -326,13 +343,28 @@ export class AgentLoop {
           await this.toolLoop(sessionId, state, fixPrompt)
           return
         }
-        // 纯文本闲聊：它已经渲染在网页里了，不重复记录，只提示一句
-        this.deps.emit({
-          type: 'notice',
-          sessionId,
-          level: 'info',
-          message: '你在网页里直接提问时，AI 不知道工作目录与工具。用下方输入框发送才能操作本地文件。'
+        // 纯文本回复：用户是在网页输入框里直接提问的。Lidow 也要把这条回复
+        // 同步进会话转录，否则纯净模式只看到用户消息、看不到 AI 的回答。
+        const clean = (parsed.cleanText || text).trim()
+        if (!clean) return
+        const turns = this.deps.store.get(sessionId)?.turns ?? []
+        const lastAssistant = [...turns].reverse().find((t) => t.role === 'assistant')
+        if (
+          lastAssistant &&
+          lastAssistant.text.trim() === clean &&
+          Date.now() - lastAssistant.ts < 30_000
+        ) {
+          return
+        }
+        this.deps.store.appendTurn(sessionId, {
+          id: `turn_${nanoid(8)}`,
+          role: 'assistant',
+          text: clean,
+          ts: Date.now(),
+          status: 'done',
+          think: think || undefined
         })
+        this.deps.emit({ type: 'session-updated', sessionId })
         return
       }
       Logger.info('loop', `接管网页侧回复 session=${sessionId} 工具块=${parsed.calls.length}`)
@@ -407,10 +439,13 @@ export class AgentLoop {
     Logger.warn('loop', `循环结束 session=${sessionId}: ${msg}`)
     this.deps.emit({ type: 'notice', sessionId, level: 'info', message: `任务结束：${msg}` })
     try {
+      // 中断也要让用户看到「做到哪了」：用户主动停止不补摘要，其余失败附本地进度
+      const stopped = /中止|停止/.test(msg)
+      const summary = stopped ? '' : this.buildLocalProgressSummary(sessionId, msg)
       this.deps.store.appendTurn(sessionId, {
         id: `turn_${nanoid(8)}`,
         role: 'system',
-        text: `[Lidow] ${msg}`,
+        text: summary ? `[Lidow] ${msg}\n\n${summary}` : `[Lidow] ${msg}`,
         ts: Date.now(),
         status: 'stopped'
       })
@@ -442,6 +477,9 @@ export class AgentLoop {
       }
       return r.text
     }
+    // 循环因何结束：自然答完 / 轮数上限 / 格式纠偏上限 / 安全拦截
+    let end: 'natural' | 'limit' | 'format-limit' | 'intercepted' = 'limit'
+    let summaryNudged = false
     for (let round = 0; round < MAX_TURNS; round++) {
       if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
 
@@ -504,7 +542,10 @@ export class AgentLoop {
       store.appendTurn(activeSid, turn)
       this.deps.emit({ type: 'session-updated', sessionId: activeSid })
 
-      if (intercepted) break
+      if (intercepted) {
+        end = 'intercepted'
+        break
+      }
 
       // 2. 工具调用
       if (parsed.calls.length === 0) {
@@ -521,6 +562,7 @@ export class AgentLoop {
               type: 'notice', sessionId: activeSid, level: 'warn',
               message: 'AI 多次使用了不支持的调用格式，已停止自动纠正，请换个说法重新提问'
             })
+            end = 'format-limit'
             break
           }
           Logger.info('loop', `回复含野生工具格式，发纠偏提示（${wildHintCount}/${MAX_WILD_HINTS}）`)
@@ -578,7 +620,20 @@ export class AgentLoop {
             userTask
           continue
         }
+        // 长任务自然结束但只回了一句“好了”：补一轮结构化摘要，
+        // 否则用户看到的最后一句话没有任何结果信息。
+        if (
+          !summaryNudged &&
+          round + 1 >= SUMMARY_NUDGE_MIN_ROUNDS &&
+          this.looksLikeBareStatus(parsed.cleanText || reply)
+        ) {
+          summaryNudged = true
+          Logger.info('loop', `长任务结束缺少摘要，补一轮收尾摘要 session=${activeSid.slice(-6)}`)
+          prompt = SUMMARY_NUDGE_PROMPT
+          continue
+        }
         // 纯答复，任务完成：窗口失焦时系统通知（用户切走了也能知道干完了）
+        end = 'natural'
         this.deps.notifyDone?.(activeSid, parsed.cleanText.slice(0, 120))
         break
       }
@@ -638,6 +693,123 @@ export class AgentLoop {
       // （自动压缩在任务收尾触发：循环进行中调用只会被 running 守卫推迟，
       //  而任务结束后没人再查 —— 之前放在这里等于永不触发）
     }
+
+    // 轮数上限/格式上限不能静默退出：先让 AI 收尾，失败再落一份本地摘要。
+    // （此前直接跑完 for 循环就返回，用户看到 AI 说完“最后跑一次检查”后永远没下文）
+    if (end === 'limit') {
+      await this.wrapUpWithSummary(activeSid, state)
+    } else if (end === 'format-limit') {
+      this.appendLocalSummary(activeSid, `AI 多次使用不支持的调用格式（纠偏 ${MAX_WILD_HINTS} 次）`)
+    }
+  }
+
+  /** 长任务到轮数上限：请求 AI 输出结构化收尾摘要；失败时回退本地摘要 */
+  private async wrapUpWithSummary(sessionId: string, state: RunningLoop): Promise<void> {
+    if (state.stopped.has('auto-loop')) return
+    const reason = `单次任务达到 ${MAX_TURNS} 轮自动循环上限`
+    this.deps.emit({
+      type: 'notice',
+      sessionId,
+      level: 'warn',
+      message: `${reason}，正在生成收尾摘要…`
+    })
+    let text = ''
+    try {
+      // 收尾只允许一次重试，避免摘要请求本身又把用户拖住
+      const r = await this.collectReply(sessionId, WRAP_UP_PROMPT, {
+        retries: 1,
+        noContinue: true,
+        retryPrompt: WRAP_UP_PROMPT
+      })
+      text = r.text.trim()
+    } catch (e) {
+      Logger.warn('loop', `收尾摘要失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+    if (!text) {
+      this.appendLocalSummary(sessionId, reason)
+      return
+    }
+    try {
+      const think = this.deps.takeThinking(sessionId)
+      this.deps.store.appendTurn(sessionId, {
+        id: `turn_${nanoid(8)}`,
+        role: 'assistant',
+        text,
+        ts: Date.now(),
+        status: 'done',
+        think: think || undefined
+      })
+      this.deps.emit({ type: 'session-updated', sessionId })
+      this.deps.notifyDone?.(sessionId, text.slice(0, 120))
+    } catch (e) {
+      Logger.warn('loop', `收尾摘要落盘失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  /** 最终回复是否只是“好了/完成”这类没有信息量的短句 */
+  private looksLikeBareStatus(text: string): boolean {
+    const t = text.replace(/\s+/g, ' ').trim()
+    if (!t || t.length >= 160) return false
+    if (/已完成|未解决|说明|总结/.test(t)) return false
+    // 结尾是问句 = 在向用户确认下一步，不应强行补摘要
+    if (/[?？]$/.test(t)) return false
+    return true
+  }
+
+  /** AI 不可用时的兜底：按本地执行记录生成结构化摘要（绝不静默停止） */
+  private appendLocalSummary(sessionId: string, reason: string): void {
+    const text = this.buildLocalProgressSummary(sessionId, reason)
+    if (!text) return
+    try {
+      this.deps.store.appendTurn(sessionId, {
+        id: `turn_${nanoid(8)}`,
+        role: 'system',
+        text,
+        ts: Date.now(),
+        status: 'done'
+      })
+      this.deps.emit({ type: 'session-updated', sessionId })
+      this.deps.notifyDone?.(sessionId, text.slice(0, 120))
+    } catch (e) {
+      Logger.warn('loop', `本地摘要落盘失败：${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
+  private buildLocalProgressSummary(sessionId: string, reason: string): string {
+    let session: Session
+    try {
+      const s = this.deps.store.get(sessionId)
+      if (!s) return ''
+      session = s
+    } catch {
+      return ''
+    }
+    const calls: ToolResult[] = []
+    let assistantReplies = 0
+    // 只统计最近一条用户消息之后的执行记录，避免把上一任务的工具混进摘要
+    const lastUser = session.turns.map((t) => t.role).lastIndexOf('user')
+    const taskTurns = lastUser >= 0 ? session.turns.slice(lastUser) : session.turns
+    for (const t of taskTurns) {
+      if (t.role === 'assistant' && t.text.trim()) assistantReplies++
+      for (const r of t.toolResults ?? []) calls.push(r)
+    }
+    if (calls.length === 0 && assistantReplies === 0) return ''
+    const failed = calls.filter((r) => !r.ok).length
+    const recent = calls.slice(-8)
+    return [
+      '## 已完成',
+      `- 已执行 ${calls.length} 个工具调用${failed ? `（失败 ${failed} 个）` : ''}`,
+      ...recent.map(
+        (r) =>
+          `- ${r.ok ? '✓' : '✗'} ${r.name}${r.summary ? ` · ${r.summary.replace(/\s+/g, ' ').slice(0, 80)}` : ''}`
+      ),
+      '',
+      '## 未解决',
+      `- 任务因「${reason}」中断，剩余步骤未执行；回复「继续」可接着做`,
+      '',
+      '## 说明',
+      '- 这是 Lidow 依据本地执行记录生成的摘要，未经 AI 复核'
+    ].join('\n')
   }
 
   /**
@@ -648,7 +820,11 @@ export class AgentLoop {
    *    最多 maxRetries 次；收到任何新内容即重置计时。
    *  - 失败重试：send/await 抛错（含限流）时按退避重发，429 用更长的等待。
    */
-  private async collectReply(sessionId: string, prompt: string): Promise<{ text: string; sessionId: string }> {
+  private async collectReply(
+    sessionId: string,
+    prompt: string,
+    opts: { retries?: number; noContinue?: boolean; retryPrompt?: string } = {}
+  ): Promise<{ text: string; sessionId: string }> {
     const { watchdog: wdCfg, retry: retryCfg } = this.deps.settings()
     // 停止标志按「调用时的 running 键」检查：续接会把键迁到新会话，
     // 迁移由调用方（toolLoop）负责，这里用固定的 state 引用判断用户是否喊停
@@ -670,10 +846,17 @@ export class AgentLoop {
         const msg = err instanceof Error ? err.message : String(err)
         // 用户主动停止：不要重试
         if (runState?.stopped.has('generate')) throw err
+        // 用户在网页侧自己点了停止：这是明确意图，重试等于替用户再发一条消息
+        if (msg.includes('用户在网页侧停止了生成')) throw err
 
         // 上下文耗尽：不是普通失败，重试也没用 —— 压缩后带摘要开新会话继续。
         // 压缩流程自身也可能收到耗尽信号：此时再续接会无限递归，直接上抛。
-        if (isContextExhausted(msg) && !this.compacting.has(sid) && this.deps.settings().autoContinue.enabled) {
+        if (
+          !opts.noContinue &&
+          isContextExhausted(msg) &&
+          !this.compacting.has(sid) &&
+          this.deps.settings().autoContinue.enabled
+        ) {
           if (continueCount++ >= 1) throw err // 只续接一次，避免死循环
           const prev = sid
           const next = await this.continueInNewSession(prev)
@@ -695,7 +878,13 @@ export class AgentLoop {
         if (!retryCfg.enabled) throw err
 
         const is429 = /429|rate.?limit|too many requests|请求过于频繁|限流/i.test(msg)
-        const max = is429 ? retryCfg.maxRetries429 : retryCfg.maxRetries
+        const configured = is429 ? retryCfg.maxRetries429 : retryCfg.maxRetries
+        const max =
+          opts.retries === undefined
+            ? configured
+            : configured < 0
+              ? opts.retries
+              : Math.min(configured, opts.retries)
         const used = is429 ? ++prompt429 : ++attempt
         if (max >= 0 && used > max) {
           Logger.warn('loop', `重试达上限 ${max} 次，放弃：${msg}`)
@@ -714,7 +903,10 @@ export class AgentLoop {
         // 发送类失败（页面没就绪/填不进输入框）意味着消息从未落地：重发任务原文，
         // 而不是把「刚才的回复似乎中断了…」发成一个新对话的第一句
         const isSendFailure = /输入框填入失败|发送超时|网页未连接|发送失败|webview 已关闭/.test(msg)
-        cur = isSendFailure && cur === originalPrompt ? originalPrompt : retryCfg.prompt
+        cur =
+          isSendFailure && cur === originalPrompt
+            ? originalPrompt
+            : (opts.retryPrompt ?? retryCfg.prompt)
       }
     }
   }
@@ -782,6 +974,10 @@ export class AgentLoop {
         armWatchdog()
       }, wd.idleMs)
     }
+
+    // 先等上一轮真正停下来，再注册等待器：否则上一轮的 stream-end 会把
+    // 本次等待误判为“已回复”，重试提示也可能被插进正在生成的回复里。
+    await this.deps.waitPageIdle?.(sessionId)
 
     const chunkPromise = this.deps.awaitReply(sessionId, (partial, tps) => {
       latestPartial = partial

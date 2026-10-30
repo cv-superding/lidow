@@ -11,6 +11,7 @@ import { createEcosystemTools } from '@main/tools/ecosystem'
 import type { ToolContext, ToolDef } from '@main/tools/types'
 import { ProviderRegistry } from '@main/providers/registry'
 import { SessionStore } from '@main/session/store'
+import { ProjectChatIndex, type ProjectChatRef } from '@main/session/projectChats'
 import { OverlayManager } from '@main/bridge/overlayManager'
 import { AgentLoop, type LoopSessionStore } from '@main/bridge/loop'
 import { listAgents } from '@main/ecosystem/skills'
@@ -26,9 +27,18 @@ import { CredentialVault } from '@main/infra/vault'
 import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
 import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
+import { isProjectRootAvailable } from '@main/app/projectFs'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
-import type { AppSettings, FileNode, ProjectInfo, Session } from '@shared/types'
+import type {
+  AppSettings,
+  FileNode,
+  ProjectFolderData,
+  ProjectFolderProject,
+  ProjectInfo,
+  Session,
+  SessionMeta
+} from '@shared/types'
 import { HOOKS, buildHookSource } from '@main/providers/hooks'
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -40,6 +50,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   dangerConfirm: true,
   deleteProtection: true,
   batchDeleteThreshold: 200,
+  webSendIntervalMs: 1000,
   permissionMode: 'autonomous',
   ssrfProtection: true,
   commandTimeoutMs: 30_000,
@@ -59,7 +70,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     maxRetries: 10,
     delay429Ms: 120_000,
     maxRetries429: 40,
-    prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
+    prompt:
+      '刚才的回复被平台中断了。请从中断处继续输出剩余内容，不要从头重写；' +
+      '如果内容已经完整，请直接给出最终收尾摘要。'
   },
   autoContinue: {
     enabled: false,
@@ -73,6 +86,9 @@ const DEFAULT_SETTINGS: AppSettings = {
   securityMod: { enabled: true, ctfInject: false, refusalRewrite: 'off', maxRewrites: 2 },
   sync: {}
 }
+
+/** 旧版默认重试文案：升级时替换掉它，避免网页里继续插“重新完整回答” */
+const OLD_RETRY_PROMPT = '刚才的回复似乎中断了，请重新完整回答上一个问题。'
 
 /** 循环所需的会话存储门面：按会话所属项目动态路由（修复上游 #24 串扰的根） */
 /** 平台首页/新对话的通用标题：不能拿来覆盖会话名 */
@@ -180,6 +196,7 @@ export class AppContext {
   /** Google 登录提示节流（iframe/主页面可能连续导航） */
   private lastGoogleLoginNoticeAt = 0
   private sessionStores = new Map<string, SessionStore>()
+  private projectChats!: ProjectChatIndex
   private providerRegistries = new Map<string, ProviderRegistry>()
   private dshKv!: JsonStore<Record<string, Record<string, unknown>>>
   /** 服务端权威 token 消耗（按平台累计，持久化 token-stats.json） */
@@ -191,6 +208,14 @@ export class AppContext {
   init(): void {
     const userData = app.getPath('userData')
     this.settings = new JsonStore<AppSettings>(join(userData, 'settings.json'), DEFAULT_SETTINGS)
+    // 只迁移旧默认值；用户自定义过的重试文案保持原样
+    if (this.settings.get().retry?.prompt === OLD_RETRY_PROMPT) {
+      this.settings.update((s) => ({
+        ...s,
+        retry: { ...s.retry, prompt: DEFAULT_SETTINGS.retry.prompt }
+      }))
+    }
+    this.overlay.setSendIntervalProvider(() => this.settings.get().webSendIntervalMs ?? 1000)
     this.projectStore = new JsonStore<{ projects: ProjectInfo[]; activeProjectId: string | null }>(join(userData, 'projects.json'), {
       projects: [],
       activeProjectId: null
@@ -200,7 +225,49 @@ export class AppContext {
     // 启动时对全部已知项目补跑脚手架（幂等）：旧项目也能获得 .lidow/skills 等目录。
     // 只处理仍然存在的目录 —— 已删除的测试目录不能因为这条逻辑被重新创建出来。
     for (const p of this.projects) {
-      if (p.root && p.root !== 'undefined' && existsSync(p.root)) this.initProjectScaffold(p.root)
+      if (isProjectRootAvailable(p.root)) this.initProjectScaffold(p.root)
+    }
+    // 目录被删除/移动的项目保留记录（工作区可重新选择目录或移除），
+    // 但活动项目不能指向它：否则启动后会用空目录建会话、初始化检测也会错位。
+    for (const p of this.projects) {
+      if (!isProjectRootAvailable(p.root)) {
+        Logger.warn('project', `项目目录不存在，保留记录待处理: ${p.root}`)
+      }
+    }
+    const activeId = this.projectStore.get().activeProjectId
+    const active = this.projects.find((p) => p.id === activeId)
+    if (active && !isProjectRootAvailable(active.root)) {
+      const fallback = [...this.projects]
+        .filter((p) => isProjectRootAvailable(p.root))
+        .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+      this.projectStore.set({ projects: this.projects, activeProjectId: fallback?.id ?? null })
+      Logger.warn(
+        'project',
+        `活动项目目录不存在，已切换到${fallback ? `: ${fallback.root}` : '无项目（等待重新初始化）'}`
+      )
+    }
+
+    this.projectChats = new ProjectChatIndex(userData)
+    // 目录还在的项目：把本地会话里已有的网页对话地址补进索引，
+    // 这样之后即使目录被删除，也还能在「移除项目」时清理网页端会话。
+    for (const p of this.projects) {
+      if (!isProjectRootAvailable(p.root)) continue
+      try {
+        const refs = this.sessionStoreOf(p.id)
+          .list()
+          .filter((m) => Boolean(m.providerUrl))
+          .map((m) => ({
+            sessionId: m.id,
+            providerId: m.providerId,
+            accountId: m.accountId,
+            url: m.providerUrl!,
+            title: m.title,
+            updatedAt: m.updatedAt
+          }))
+        this.projectChats.mergeProject(p.id, refs)
+      } catch {
+        /* 项目目录不可读：跳过 */
+      }
     }
 
     this.memory = new MemoryStore(userData)
@@ -285,6 +352,7 @@ export class AppContext {
       toolCtxBase: (sessionId) => this.toolCtx(sessionId),
       confirm: (sessionId, reason) => this.requestConfirm(sessionId, reason),
       sendToPage: (sessionId, text) => this.overlay.sendToPage(sessionId, text),
+      waitPageIdle: (sessionId) => this.overlay.waitPageIdle(sessionId),
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
       interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
       abandonReply: (sessionId) => this.overlay.abandonReply(sessionId),
@@ -346,6 +414,8 @@ export class AppContext {
     this.overlay.setPageReplyHandler((sessionId, text) => {
       void this.loop.adoptExternalReply(sessionId, text)
     })
+    // 网页里亲手发的用户消息也要出现在纯净模式（双向同步的另一半）
+    this.overlay.setPageUserMessageHandler((sessionId, text) => this.recordWebUserMessage(sessionId, text))
     // 服务端权威 token 统计（SSE accumulated_token_usage 差值），按平台累计持久化
     this.overlay.setTokenUsageHandler((sessionId, tokens) => {
       const session = this.sessionOf(sessionId)
@@ -413,6 +483,17 @@ export class AppContext {
         providerUrl: nextUrl,
         title: nextTitle
       }))
+      // 持久索引：目录以后被删除也能找回这条网页对话
+      if (nextUrl) {
+        this.projectChats.upsert(session.projectId, {
+          sessionId,
+          providerId: session.providerId,
+          accountId: session.accountId,
+          url: nextUrl,
+          title: nextTitle,
+          updatedAt: Date.now()
+        })
+      }
       if (shouldRecordUrl) {
         Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
       }
@@ -424,6 +505,7 @@ export class AppContext {
       if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
     }
     this.overlay.onChatDeleted = (webContentsId, url) => this.handleWebChatDeleted(webContentsId, url)
+    this.overlay.onActivateChat = (webContentsId, url) => void this.activateWebChat(webContentsId, url)
     this.overlay.onAnyReady = (webContentsId) => this.syncChatWatchToWebview(webContentsId)
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()
@@ -490,7 +572,10 @@ export class AppContext {
     // 插件运行时：启动即加载所有已启用插件。必须在末尾——
     // 此前放在构造中段，providerRegistries 还是空的（懒创建），
     // 无 platform 的网页脚本拿不到任何注入目标；dshKv 也尚未赋值。
-    for (const p of this.projects) this.providerRegistryOf(p.id)
+    for (const p of this.projects) {
+      // 目录已删除的项目不要创建 registry：写入 providers.json 会顺手把目录建回来
+      if (isProjectRootAvailable(p.root)) this.providerRegistryOf(p.id)
+    }
     void this.loadAllPlugins()
     Logger.info('context', 'AppContext 初始化完成')
   }
@@ -825,6 +910,52 @@ export class AppContext {
     return this.projectStore.get().activeProjectId
   }
 
+  /** 项目目录是否仍可用（存在且是文件夹） */
+  projectAvailable(projectId: string): boolean {
+    const project = this.projects.find((p) => p.id === projectId)
+    return Boolean(project && isProjectRootAvailable(project.root))
+  }
+
+  /** 给渲染层的项目快照：带上运行时 missing 标记，不写回 projects.json */
+  projectsSnapshot(): ProjectInfo[] {
+    return this.projects.map((p) => ({
+      ...p,
+      missing: !isProjectRootAvailable(p.root),
+      webChatCount: this.projectChatRefs(p.id).length
+    }))
+  }
+
+  /** 项目关联的网页对话：本地会话 + 持久索引（目录删除后仍能找到网页端） */
+  projectChatRefs(projectId: string): ProjectChatRef[] {
+    const byUrl = new Map<string, ProjectChatRef>()
+    for (const ref of this.projectChats.list(projectId)) byUrl.set(ref.url, ref)
+    const project = this.projects.find((p) => p.id === projectId)
+    if (project && isProjectRootAvailable(project.root)) {
+      try {
+        const store = this.sessionStoreOf(projectId)
+        for (const m of store.list()) {
+          if (!m.providerUrl) continue
+          byUrl.set(m.providerUrl, {
+            sessionId: m.id,
+            providerId: m.providerId,
+            accountId: m.accountId,
+            url: m.providerUrl,
+            title: m.title,
+            updatedAt: m.updatedAt
+          })
+        }
+      } catch {
+        /* 目录不可读：只用索引 */
+      }
+    }
+    return [...byUrl.values()].sort((a, b) => b.updatedAt - a.updatedAt)
+  }
+
+  /** 网页对话确认删除后（本地或网页侧发起），从索引里移除，避免重复尝试 */
+  forgetProjectChat(url: string | undefined): void {
+    if (url) this.projectChats.removeByUrl(url)
+  }
+
   /** renderer 打开标签时登记该 webview 的平台/账号（无会话初始化时使用） */
   registerWebviewProvider(webContentsId: number, providerId: string, accountId?: string): void {
     if (!providerId) return
@@ -847,8 +978,128 @@ export class AppContext {
     return undefined
   }
 
+  /**
+   * 网页侧「项目文件夹」数据：当前网页 origin 下，各 Lidow 项目已经绑定过的对话。
+   * 只包含本地存在 providerUrl 的会话；未绑定/未发送过的空会话不入文件夹。
+   */
+  projectFoldersForWebContents(webContentsId: number): ProjectFolderData | null {
+    const wc = webContents.fromId(webContentsId)
+    let host = ''
+    try {
+      host = new URL(wc?.getURL() ?? '').host
+    } catch {
+      /* about:blank */
+    }
+    // 目前只在 DeepSeek 网页侧提供项目文件夹/时间线增强
+    if (!/(^|\.)deepseek\.com$/i.test(host)) return null
+    const info = this.wcProviders.get(webContentsId)
+    const projects: ProjectFolderProject[] = []
+    for (const project of this.projects) {
+      let store: SessionStore
+      try {
+        store = this.sessionStoreOf(project.id)
+      } catch {
+        continue
+      }
+      const chats = store
+        .list()
+        .filter((m) => {
+          if (!m.providerUrl) return false
+          if (info?.providerId && m.providerId !== info.providerId) return false
+          if (info?.accountId && accountKey(m.accountId) !== accountKey(info.accountId)) return false
+          try {
+            return new URL(m.providerUrl).host === host
+          } catch {
+            return false
+          }
+        })
+        .map((m) => ({ sessionId: m.id, title: m.title || '未命名会话', url: m.providerUrl! }))
+      if (chats.length > 0) projects.push({ id: project.id, name: project.name, root: project.root, chats })
+    }
+    return { projects, activeProjectId: this.activeProjectId() }
+  }
+
+  syncProjectFoldersToWebview(webContentsId: number): void {
+    const folders = this.projectFoldersForWebContents(webContentsId)
+    if (!folders) return
+    this.overlay.sendCmdToWebContents(webContentsId, { kind: 'project-folders', folders })
+  }
+
+  /**
+   * 网页侧点击了一个已知项目对话：切换 Lidow 活动项目/会话并绑定当前 webview。
+   * 页面点击已在 overlay 中 preventDefault，这里负责导航到目标对话。
+   */
+  async activateWebChat(webContentsId: number, rawUrl: string): Promise<void> {
+    const wc = webContents.fromId(webContentsId)
+    if (!wc || wc.isDestroyed()) return
+    const key = chatUrlKey(rawUrl)
+    if (!key) return
+    const info = this.wcProviders.get(webContentsId)
+    let found: { project: ProjectInfo; meta: SessionMeta } | null = null
+    for (const project of this.projects) {
+      let store: SessionStore
+      try {
+        store = this.sessionStoreOf(project.id)
+      } catch {
+        continue
+      }
+      for (const meta of store.list()) {
+        if (chatUrlKey(meta.providerUrl) !== key) continue
+        if (info?.providerId && meta.providerId !== info.providerId) continue
+        if (info?.accountId && accountKey(meta.accountId) !== accountKey(info.accountId)) continue
+        found = { project, meta }
+        break
+      }
+      if (found) break
+    }
+    if (!found) {
+      this.emit({
+        type: 'notice',
+        sessionId: '',
+        level: 'warn',
+        message: '这个网页对话不属于任何 Lidow 项目'
+      })
+      return
+    }
+    const { project, meta } = found
+    const session = this.sessionStoreOf(project.id).get(meta.id)
+    if (!session) return
+    const prev = this.overlay.sessionOfWebContents(webContentsId)
+    if (prev && prev !== session.id) {
+      if (this.loop.isRunning(prev)) this.loop.stop(prev, 'all')
+      this.overlay.unbindSession(prev)
+    }
+    project.lastOpenedAt = Date.now()
+    this.projectStore.set({ projects: this.projects, activeProjectId: project.id })
+    this.projectDirs.set(project.id, project.root)
+    this.overlay.bindSession(session.id, webContentsId)
+    this.lastSessionId = session.id
+    this.registerWebviewProvider(webContentsId, session.providerId, session.accountId)
+    this.configureOverlay(session.id)
+    this.emit({
+      type: 'web-session-activated',
+      sessionId: session.id,
+      projectId: project.id,
+      providerId: session.providerId,
+      accountId: session.accountId
+    })
+    this.emit({
+      type: 'notice',
+      sessionId: session.id,
+      level: 'info',
+      message: `已切回项目「${project.name}」：${session.title}`
+    })
+    if (chatUrlKey(wc.getURL()) !== key) {
+      await wc.loadURL(session.providerUrl || rawUrl).catch(() => undefined)
+    }
+    this.syncProjectFoldersToWebview(webContentsId)
+    Logger.info('project', `网页对话切回项目 ${project.name}: ${session.title}`)
+  }
+
   /** 下发给网页的“本地会话地址”清单：用户在网页侧删除对话时据此反向同步 */
   syncChatWatchToWebview(webContentsId: number, projectId?: string): void {
+    // 项目文件夹与删除监听一起刷新，保证标题/归属变化后网页侧栏同步
+    this.syncProjectFoldersToWebview(webContentsId)
     const project = projectId ? this.projects.find((p) => p.id === projectId) : this.activeProject()
     if (!project) return
     const info = this.wcProviders.get(webContentsId)
@@ -891,6 +1142,8 @@ export class AppContext {
   private handleWebChatDeleted(webContentsId: number, rawUrl: string): void {
     const key = chatUrlKey(rawUrl)
     if (!key) return
+    // 网页端已经删掉了：索引里的记录同步移除（即使本地没有匹配会话）
+    this.projectChats.removeByUrl(rawUrl)
     if (this.isWebChatDeleteInFlight(key)) {
       Logger.info('session', `忽略本地删除操作触发的网页回调: ${key.slice(0, 70)}`)
       return
@@ -980,6 +1233,12 @@ export class AppContext {
   /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
   projectInitialized(projectId: string): boolean {
     if (!projectId) return false
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!project || !isProjectRootAvailable(project.root)) {
+      // 目录没了 = 不能再用缓存里的“已初始化”结论，否则永远不会重新弹引导
+      this.initializedProjects.delete(projectId)
+      return false
+    }
     if (this.initializedProjects.has(projectId)) return true
     try {
       const store = this.sessionStoreOf(projectId)
@@ -1224,18 +1483,74 @@ export class AppContext {
     return p
   }
 
-  /** 从项目列表移除（不删除磁盘文件）；当前项目需先切换走 */
-  removeProject(projectId: string): void {
+  /**
+   * 项目目录被删除/移动后，重新绑定到用户新选的目录：
+   * 保留项目 id（会话归属不变），清掉旧路径的存储缓存，重新建脚手架。
+   */
+  relocateProject(projectId: string, root: string): ProjectInfo {
+    if (!isProjectRootAvailable(root)) throw new Error(`目录不存在或不是文件夹：${root}`)
+    const project = this.projects.find((p) => p.id === projectId)
+    if (!project) throw new Error('项目不存在或已被移除')
+    const other = this.projects.find((p) => p.id !== projectId && p.root === root)
+    if (other) throw new Error(`该目录已被项目「${other.name}」使用`)
+    project.root = root
+    project.name = basename(root)
+    project.lastOpenedAt = Date.now()
+    this.projectDirs.set(projectId, root)
+    this.sessionStores.delete(projectId)
+    this.providerRegistries.delete(projectId)
+    this.initializedProjects.delete(projectId)
+    this.projectStore.set({ projects: this.projects, activeProjectId: projectId })
+    this.initProjectScaffold(root)
+    // 旧目录里的会话已经不可用：停掉循环并解绑，避免继续往旧路径写
+    this.stopAll('all')
+    for (const sid of this.overlay.boundSessionIds()) this.overlay.unbindSession(sid)
+    this.lastSessionId = ''
+    Logger.info('project', `项目重新绑定目录: ${root}（project=${projectId}）`)
+    return project
+  }
+
+  /**
+   * 从项目列表移除（不删除磁盘文件）。
+   * `deleteLocalSessions`：同时清空本地会话（网页端会话由调用方先删除）。
+   * 当前项目需先切换走；目录已不存在时允许直接移除并回退活动项目。
+   */
+  removeProject(projectId: string, opts: { deleteLocalSessions?: boolean } = {}): void {
     const p = this.projects.find((x) => x.id === projectId)
     if (!p) return
     const active = this.projectStore.get().activeProjectId
-    if (active === projectId) throw new Error('请先切换到其他项目，再移除当前项目')
+    if (active === projectId && isProjectRootAvailable(p.root)) {
+      throw new Error('请先切换到其他项目，再移除当前项目')
+    }
+    if (opts.deleteLocalSessions && isProjectRootAvailable(p.root)) {
+      try {
+        const store = this.sessionStoreOf(projectId)
+        for (const meta of store.list()) {
+          this.loop.stop(meta.id, 'all')
+          this.overlay.unbindSession(meta.id)
+          store.delete(meta.id)
+          if (this.lastSessionId === meta.id) this.lastSessionId = ''
+          this.emit({ type: 'session-deleted', sessionId: meta.id, title: meta.title })
+        }
+      } catch (e) {
+        Logger.warn('project', `移除项目时清理本地会话失败：${e instanceof Error ? e.message : String(e)}`)
+      }
+    }
     this.projects = this.projects.filter((x) => x.id !== projectId)
-    this.projectStore.set({ projects: this.projects, activeProjectId: active })
+    let nextActive = active
+    if (active === projectId) {
+      const fallback = [...this.projects]
+        .filter((x) => isProjectRootAvailable(x.root))
+        .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0]
+      nextActive = fallback?.id ?? null
+    }
+    this.projectStore.set({ projects: this.projects, activeProjectId: nextActive })
     this.projectDirs.delete(projectId)
     this.sessionStores.delete(projectId)
     this.providerRegistries.delete(projectId)
-    Logger.info('project', `已从列表移除项目: ${p.root}（磁盘文件未删除）`)
+    this.initializedProjects.delete(projectId)
+    this.projectChats.removeProject(projectId)
+    Logger.info('project', `已从列表移除项目: ${p.root}（项目文件夹未删除）`)
   }
 
   /**
@@ -1291,14 +1606,19 @@ export class AppContext {
     }
     let dir = this.projectDirs.get(projectId)
     if (!dir) {
-      // 优先用项目真实根目录（会话/待办等存在项目的 .lidow/ 下，随项目走）；
-      // 只有项目根未知时才退回 userData（历史行为，会导致会话"消失"）。
+      // 已知项目只认它自己的根目录；目录不存在时绝不 mkdir 重建
+      // （SessionStore 的构造会建 .lidow/sessions，不能让它把用户删掉的目录复活）。
       const project = this.projects.find((p) => p.id === projectId)
-      dir = project?.root ?? join(app.getPath('userData'), 'projects', projectId)
-      try {
-        mkdirSync(dir, { recursive: true })
-      } catch {
-        /* 项目目录不可写时忽略 */
+      if (project?.root) {
+        dir = project.root
+      } else {
+        // 只有项目根未知时才退回 userData（历史行为，会导致会话"消失"）。
+        dir = join(app.getPath('userData'), 'projects', projectId)
+        try {
+          mkdirSync(dir, { recursive: true })
+        } catch {
+          /* 项目目录不可写时忽略 */
+        }
       }
       this.projectDirs.set(projectId, dir)
     }
@@ -1306,6 +1626,13 @@ export class AppContext {
   }
 
   sessionStoreOf(projectId: string): SessionStore {
+    // 目录被删除/移动后不能再构造 SessionStore：它的构造函数会 mkdir，
+    // 会把用户删掉的整个项目骨架重新建出来，初始化检测也因此误判为"还存在"。
+    const project = this.projects.find((p) => p.id === projectId)
+    if (project && !isProjectRootAvailable(project.root)) {
+      this.sessionStores.delete(projectId)
+      throw new Error(`项目目录不存在：${project.root}`)
+    }
     let s = this.sessionStores.get(projectId)
     if (!s) {
       // 会话存项目内 .lidow/sessions/（随项目走、可版本化），不污染项目根目录
@@ -1318,6 +1645,11 @@ export class AppContext {
   }
 
   providerRegistryOf(projectId: string): ProviderRegistry {
+    const project = this.projects.find((p) => p.id === projectId)
+    if (project && !isProjectRootAvailable(project.root)) {
+      this.providerRegistries.delete(projectId)
+      throw new Error(`项目目录不存在：${project.root}`)
+    }
     let r = this.providerRegistries.get(projectId)
     if (!r) {
       r = new ProviderRegistry(this.projectDirOf(projectId))
@@ -1328,26 +1660,69 @@ export class AppContext {
 
   private sessionProjectOf(sessionId: string): string {
     for (const p of this.projects) {
-      if (this.sessionStoreOf(p.id).get(sessionId)) return p.id
+      if (!isProjectRootAvailable(p.root)) continue
+      try {
+        if (this.sessionStoreOf(p.id).get(sessionId)) return p.id
+      } catch {
+        /* 目录不可读：跳过该项目的会话 */
+      }
     }
-    return this.projectStore.get().activeProjectId ?? this.projects[0]?.id ?? ''
+    const active = this.projectStore.get().activeProjectId
+    if (active && this.projects.some((p) => p.id === active && isProjectRootAvailable(p.root))) return active
+    return this.projects.find((p) => isProjectRootAvailable(p.root))?.id ?? ''
   }
 
   /** 会话所属项目（索引查询，不读整份会话文件） */
   private projectOfSession(sessionId: string): ProjectInfo | null {
     if (!sessionId) return null
     for (const p of this.projects) {
-      if (this.sessionStoreOf(p.id).meta(sessionId)) return p
+      if (!isProjectRootAvailable(p.root)) continue
+      try {
+        if (this.sessionStoreOf(p.id).meta(sessionId)) return p
+      } catch {
+        /* 目录不可读：跳过 */
+      }
     }
     return null
   }
 
   sessionOf(sessionId: string): ReturnType<SessionStore['get']> {
     for (const p of this.projects) {
-      const s = this.sessionStoreOf(p.id).get(sessionId)
-      if (s) return s
+      if (!isProjectRootAvailable(p.root)) continue
+      try {
+        const s = this.sessionStoreOf(p.id).get(sessionId)
+        if (s) return s
+      } catch {
+        /* 目录不可读：跳过 */
+      }
     }
     return null
+  }
+
+  /**
+   * 网页侧用户亲手发送的消息：补一条 user 轮次，纯净模式立即显示。
+   * loop 自己发的工具观察/重试/催促在 preload 里打了 outgoing 标记，不会走到这里。
+   */
+  private recordWebUserMessage(sessionId: string, rawText: string): void {
+    const text = rawText.trim()
+    if (!text) return
+    const projectId = this.sessionProjectOf(sessionId)
+    if (!projectId) return
+    const store = this.sessionStoreOf(projectId)
+    const session = store.get(sessionId)
+    if (!session) return
+    // 同一条消息可能因平台重试/重新生成再次进入请求体：同文同窗口只记一次
+    const lastUser = [...session.turns].reverse().find((t) => t.role === 'user')
+    if (lastUser && Date.now() - lastUser.ts < 30_000 && lastUser.text.trim() === text) return
+    store.appendTurn(sessionId, {
+      id: `turn_${nanoid(8)}`,
+      role: 'user',
+      text,
+      ts: Date.now(),
+      status: 'done'
+    })
+    Logger.info('session', `同步网页侧用户消息 session=${sessionId} len=${text.length}`)
+    this.emit({ type: 'session-updated', sessionId })
   }
 
   // ---------- 循环支撑 ----------

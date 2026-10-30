@@ -46,6 +46,68 @@ describe('overlayManager 中断信号', () => {
   })
 })
 
+describe('长任务不能静默停止', () => {
+  const src = readFileSync(join(process.cwd(), 'src/main/bridge/loop.ts'), 'utf8')
+
+  it('轮数上限足够长，到达上限时请求结构化收尾摘要', () => {
+    // 回归：MAX_TURNS=40 时 for 循环跑完直接返回，用户看到 AI 停在半截、无任何通知
+    expect(src).toContain('const MAX_TURNS = 200')
+    expect(src).toContain('wrapUpWithSummary')
+    expect(src).toContain('WRAP_UP_PROMPT')
+    expect(src).toContain("end === 'limit'")
+  })
+
+  it('AI 收尾失败时回退本地摘要（已完成 / 未解决 / 说明）', () => {
+    expect(src).toContain('appendLocalSummary')
+    expect(src).toContain('buildLocalProgressSummary')
+    expect(src).toContain('## 已完成')
+    expect(src).toContain('## 未解决')
+  })
+
+  it('异常中断也附带本地进度摘要，用户能看到做到哪了', () => {
+    expect(src).toContain('buildLocalProgressSummary(sessionId, msg)')
+  })
+})
+
+describe('网页仍在生成时不得插入重试消息', () => {
+  const overlaySrc = readFileSync(join(process.cwd(), 'src/main/bridge/overlayManager.ts'), 'utf8')
+  const preloadSrc = readFileSync(join(process.cwd(), 'src/preload/overlay.ts'), 'utf8')
+  const loopSrc = readFileSync(join(process.cwd(), 'src/main/bridge/loop.ts'), 'utf8')
+
+  it('截断/空回复先等页面收尾（宽限计时），不立即唤醒重试', () => {
+    expect(overlaySrc).toContain('ERROR_GRACE_MS')
+    expect(overlaySrc).toContain('armErrorGrace')
+    expect(overlaySrc).toContain('rearmErrorGrace')
+    expect(overlaySrc).toContain('isSoftStreamError')
+    // DOM 结束后以页面文本为准
+    expect(overlaySrc).toContain('clearErrorGrace(ch)')
+  })
+
+  it('发送前等页面停止生成，避免“中途插话”', () => {
+    expect(preloadSrc).toContain('页面仍在生成回复，已暂缓发送')
+  })
+
+  it('长思考期间发心跳，看门狗不会把“正在生成”误判成卡死', () => {
+    expect(preloadSrc).toContain("type: 'stream-heartbeat'")
+    expect(overlaySrc).toContain("case 'stream-heartbeat'")
+    expect(overlaySrc).toContain('this.rearmErrorGrace(ch)')
+  })
+
+  it('用户在网页侧主动停止生成时，不得自动重试插话', () => {
+    expect(overlaySrc).toContain('用户在网页侧停止了生成')
+    expect(overlaySrc).toContain('lidowStopped')
+    expect(loopSrc).toContain("msg.includes('用户在网页侧停止了生成')")
+  })
+
+  it('网页侧用户消息与纯文本回复都同步进会话转录', () => {
+    expect(preloadSrc).toContain("type: 'user-message'")
+    expect(preloadSrc).toContain('markOutgoing(text)')
+    expect(preloadSrc).toContain('isOutgoing')
+    expect(loopSrc).toContain('网页输入框里直接提问')
+    expect(loopSrc).toContain('lastAssistant.text.trim() === clean')
+  })
+})
+
 describe('loop 的看门狗必须能判死本轮', () => {
   const src = readFileSync(join(process.cwd(), 'src/main/bridge/loop.ts'), 'utf8')
 
@@ -76,8 +138,10 @@ describe('loop 的看门狗必须能判死本轮', () => {
     expect(src).toContain('let originalPrompt = prompt')
     const start = src.indexOf('const isSendFailure')
     expect(start).toBeGreaterThan(-1)
-    const body = src.slice(start, start + 300)
-    expect(body).toContain('cur === originalPrompt ? originalPrompt : retryCfg.prompt')
+    const body = src.slice(start, start + 320)
+    expect(body).toContain('cur === originalPrompt')
+    expect(body).toContain('originalPrompt')
+    expect(body).toContain('retryPrompt ?? retryCfg.prompt')
     // 上下文耗尽续接后，交接提示要更新为新的「任务原文」
     expect(src).toContain('originalPrompt = cur')
   })

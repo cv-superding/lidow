@@ -620,12 +620,26 @@ export function AppShell(): React.JSX.Element {
     void useStore.getState().boot()
   }, [])
 
-  // 终端快捷键：Ctrl ` 开合右侧终端面板
+  // 右侧侧栏快捷键：对齐 Qoder 面板（文件 / 审阅 / 终端；Ctrl ` 仍保留终端）
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.ctrlKey && e.key === '`') {
         e.preventDefault()
         useStore.getState().toggleAux('terminal')
+        return
+      }
+      const mod = e.ctrlKey || e.metaKey
+      if (!mod) return
+      const key = e.key.toLowerCase()
+      if (e.altKey && key === 'e') {
+        e.preventDefault()
+        useStore.getState().openAux('files')
+      } else if (e.shiftKey && key === 'g') {
+        e.preventDefault()
+        useStore.getState().openAux('review')
+      } else if (e.shiftKey && key === 'j') {
+        e.preventDefault()
+        useStore.getState().openAux('terminal')
       }
     }
     window.addEventListener('keydown', onKey)

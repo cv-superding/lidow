@@ -4,11 +4,12 @@
 
 /**
  * 判断错误是否为「上下文已用完」。
- * 平台信号各不相同：DeepSeek 走 SSE 的 INCOMPLETE，hook 回传 'incomplete'；
- * 其余靠文案兜底。这类失败重试没有意义，必须换会话继续。
+ * 必须只认真正的上下文信号：DeepSeek 的 SSE `INCOMPLETE` 是服务端截断
+ * （网络抖动/输出中断），重试后能继续，不能当成上下文耗尽去压缩换会话 ——
+ * 否则开着自动续接时，任何一次长回复被截断都会误触发新会话。
  */
 export function isContextExhausted(msg: string): boolean {
-  return /incomplete|上下文.{0,6}(用完|超限|上限)|context.{0,12}(limit|window|exhaust)|对话过长|token.{0,6}(上限|超限)|maximum context/i.test(
+  return /context_exhausted|上下文.{0,6}(用完|超限|上限)|context.{0,12}(limit|window|exhaust)|对话过长|输入过长|token.{0,6}(上限|超限)|maximum context/i.test(
     msg
   )
 }

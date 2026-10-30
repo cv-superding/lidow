@@ -8,6 +8,7 @@ import { BUILT_IN_PROVIDERS } from '@main/providers/registry'
 import { runTerminal } from '@main/tools/terminal'
 import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
+import { isProjectRootAvailable } from '@main/app/projectFs'
 import { Logger } from '@main/infra/log'
 import { isAbsoluteProjectPath } from '@shared/path'
 import type {
@@ -41,7 +42,7 @@ export function registerHandlers(
   applyNativeTheme(ctx.settings.get().theme)
   // ---------- 应用 ----------
   R('getAppState', () => ({
-    projects: ctx.projects,
+    projects: ctx.projectsSnapshot(),
     activeProjectId: ctx.activeProjectId(),
     settings: ctx.settings.get(),
     version: app.getVersion()
@@ -65,8 +66,68 @@ export function registerHandlers(
     ctx.emit({ type: 'projects-changed', sessionId: '' })
     return opened
   })
+  R('relocateProject', (projectId: string, root: string) => {
+    const r = String(root ?? '')
+    if (!isAbsoluteProjectPath(r, process.platform === 'win32' ? 'win32' : 'posix')) {
+      throw new Error('无效的项目路径: ' + r)
+    }
+    const project = ctx.relocateProject(String(projectId), r)
+    ctx.emit({ type: 'projects-changed', sessionId: '' })
+    return project
+  })
   R('closeProject', (projectId: string) => ctx.closeProject(String(projectId)))
-  R('removeProject', (projectId: string) => ctx.removeProject(String(projectId)))
+  R('removeProject', async (projectId: string, deleteWebChats?: boolean) => {
+    const id = String(projectId)
+    const project = ctx.projects.find((p) => p.id === id)
+    if (!project) return { webDeleted: 0, webFailed: 0, message: '项目已移除' }
+    if (ctx.activeProjectId() === id && ctx.projectAvailable(id)) {
+      throw new Error('请先切换到其他项目，再移除当前项目')
+    }
+    let webDeleted = 0
+    let webFailed = 0
+    const failedTitles: string[] = []
+    if (deleteWebChats) {
+      // 目录删除后本地会话已经没了，索引里仍保留网页对话地址
+      for (const ref of ctx.projectChatRefs(id)) {
+        const bound = ctx.overlay.wcIdOfSession(ref.sessionId)
+        const wcId = bound ?? ctx.webContentsIdForProvider(ref.providerId, ref.accountId)
+        const wc = wcId === undefined ? undefined : webContents.fromId(wcId)
+        if (!wc || wc.isDestroyed()) {
+          webFailed++
+          failedTitles.push(ref.title || ref.url)
+          continue
+        }
+        ctx.markWebChatDeleteInFlight(ref.url)
+        const res = await removeWebChat(wc, ref.url, ref.title)
+        if (res.ok) {
+          webDeleted++
+          ctx.forgetProjectChat(ref.url)
+        } else {
+          webFailed++
+          failedTitles.push(ref.title || ref.url)
+        }
+        // 平台侧栏是 UI 自动化：串行删除，给页面一点时间更新
+        await new Promise((r) => setTimeout(r, 250))
+      }
+    }
+    ctx.removeProject(id, { deleteLocalSessions: Boolean(deleteWebChats) })
+    ctx.emit({ type: 'projects-changed', sessionId: '' })
+
+    const parts = [`已移除项目「${project.name}」`]
+    if (deleteWebChats) {
+      if (webDeleted > 0) parts.push(`已删除 ${webDeleted} 个网页对话`)
+      if (webFailed > 0) {
+        const names = failedTitles.slice(0, 3).join('、')
+        parts.push(
+          `${webFailed} 个网页对话删除失败（${names}${failedTitles.length > 3 ? ' 等' : ''}），请打开对应平台页面后手动删除`
+        )
+      }
+      if (webDeleted === 0 && webFailed === 0) parts.push('没有找到可删除的网页对话')
+    } else {
+      parts.push('网页端对话已保留')
+    }
+    return { webDeleted, webFailed, message: parts.join('；') }
+  })
   R('quit', () => app.quit())
 
   // ---------- 窗口控制（自绘标题栏） ----------
@@ -85,10 +146,13 @@ export function registerHandlers(
   R('listProviders', (projectId: string) => {
     // 没有项目时返回内置平台表：用户需要能先进 AI 页面，引导才会出现在网页里。
     // 这些描述是只读副本，不带持久化账号（账号属于具体项目）。
-    if (!projectId || projectId === 'undefined') {
+    // 项目目录被删除后也走这条：不能为缺失目录构造 Registry（写 providers.json
+    // 会把用户删掉的目录重新建出来）。
+    const pid = String(projectId ?? '')
+    if (!pid || pid === 'undefined' || !ctx.projectAvailable(pid)) {
       return BUILT_IN_PROVIDERS.filter((p) => p.enabled).map((p) => ({ ...p, accounts: [] }))
     }
-    return ctx.providerRegistryOf(String(projectId)).list()
+    return ctx.providerRegistryOf(pid).list()
   })
   R('addProvider', (...args: unknown[]) => {
     const [projectId, desc] = args as [string, { id: string; name: string; home: string; adapter?: Partial<ProviderDescriptor['adapter']> }]
@@ -164,12 +228,16 @@ export function registerHandlers(
   })
 
   // ---------- 会话 ----------
-  R('listSessions', (projectId: string, providerId?: string) =>
-    ctx.sessionStoreOf(String(projectId)).list(providerId ? String(providerId) : undefined)
-  )
+  R('listSessions', (projectId: string, providerId?: string) => {
+    const id = String(projectId)
+    // 项目目录被删除后不能再构造 SessionStore（会重建目录），列表按空处理
+    if (!ctx.projectAvailable(id)) return []
+    return ctx.sessionStoreOf(id).list(providerId ? String(providerId) : undefined)
+  })
   R('getSession', (sessionId: string) => ctx.sessionOf(String(sessionId)))
   R('createSession', (...args: unknown[]) => {
     const [projectId, providerId, parentSessionId, accountId] = args as [string, string, string?, string?]
+    if (!ctx.projectAvailable(String(projectId))) throw new Error('项目目录不存在，请到「工作区」重新选择目录')
     const store = ctx.sessionStoreOf(String(projectId))
     // 新建前回收同平台的历史空会话（0 轮次）：点一次平台建一次会话，
     // 用户没发消息就切走的话，列表会被「新会话」堆满（实测堆过 11 个）
@@ -194,7 +262,9 @@ export function registerHandlers(
   })
   /** 清理空会话（0 轮次）：新建后从未发送的会话会无限堆积 */
   R('cleanupEmptySessions', (projectId: string, keepSessionId?: string) => {
-    const store = ctx.sessionStoreOf(String(projectId))
+    const pid = String(projectId)
+    if (!ctx.projectAvailable(pid)) return 0
+    const store = ctx.sessionStoreOf(pid)
     let removed = 0
     for (const m of store.list()) {
       if (m.id === keepSessionId) continue
@@ -247,6 +317,9 @@ export function registerHandlers(
     }
 
     ctx.overlay.unbindSession(sid)
+    // 网页对话确认已删：索引同步移除；删除失败/只删本地时保留索引，
+    // 以后移除项目仍可再尝试清理网页端。
+    if (webDeleted === true) ctx.forgetProjectChat(session?.providerUrl)
     if (project) {
       const store = ctx.sessionStoreOf(project)
       store.delete(sid)
@@ -268,8 +341,11 @@ export function registerHandlers(
     return { webDeleted, message }
   })
   R('renameSession', (sessionId: string, title: string) => {
-    const project = findProjectOfSession(ctx, String(sessionId))
-    if (project) ctx.sessionStoreOf(project).rename(String(sessionId), String(title))
+    const sid = String(sessionId)
+    const project = findProjectOfSession(ctx, sid)
+    if (project) ctx.sessionStoreOf(project).rename(sid, String(title))
+    const wcId = ctx.overlay.wcIdOfSession(sid)
+    if (wcId !== undefined) ctx.syncProjectFoldersToWebview(wcId)
   })
   R('startProjectSession', (sessionId: string) => ctx.startProjectSession(String(sessionId)))
   R('compactSession', (sessionId: string) => {
@@ -374,6 +450,7 @@ export function registerHandlers(
   R('openExportDir', () => {
     const project = ctx.activeProject()
     if (!project) throw new Error('请先打开项目')
+    if (!isProjectRootAvailable(project.root)) throw new Error('项目目录不存在，请到「工作区」重新选择目录')
     const dir = join(project.root, '.lidow', 'exports')
     mkdirSync(dir, { recursive: true })
     void shell.openPath(dir)
@@ -437,7 +514,11 @@ export function registerHandlers(
     // 大文件全量塞进渲染进程会卡死：预览截断到 300k
     return raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw
   })
-  R('openPathInSystem', (path: string) => void shell.openPath(String(path)))
+  R('openPathInSystem', (path: string) => {
+    const p = String(path ?? '')
+    if (!p || !existsSync(p)) throw new Error('目录不存在，请到「工作区」重新选择目录')
+    void shell.openPath(p)
+  })
 
   // ---------- 生态 ----------
   const skillImports = () => import('@main/ecosystem/skills')
@@ -722,7 +803,11 @@ function parseCookieInput(raw: string): CookieInput[] {
 
 function findProjectOfSession(ctx: AppContext, sessionId: string): string | null {
   for (const p of ctx.projects) {
-    if (ctx.sessionStoreOf(p.id).get(sessionId)) return p.id
+    try {
+      if (ctx.sessionStoreOf(p.id).get(sessionId)) return p.id
+    } catch {
+      /* 项目目录不存在：跳过 */
+    }
   }
   return null
 }

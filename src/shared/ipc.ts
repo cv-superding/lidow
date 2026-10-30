@@ -35,9 +35,14 @@ export interface LidowApi {
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   pickDirectory(): Promise<string | null>
   openProject(root: string): Promise<ProjectInfo>
+  /** 项目目录被删除/移动后，重新绑定到用户新选的目录（保留项目 id 与会话归属） */
+  relocateProject(projectId: string, root: string): Promise<ProjectInfo>
   closeProject(projectId: string): Promise<void>
-  /** 从项目列表移除（不删除磁盘文件）；当前项目需先切换走 */
-  removeProject(projectId: string): Promise<void>
+  /** 从项目列表移除（不删除磁盘文件）；可选同时删除网页端会话；当前项目需先切换走 */
+  removeProject(
+    projectId: string,
+    deleteWebChats?: boolean
+  ): Promise<{ webDeleted: number; webFailed: number; message: string }>
   quit(): void
 
   // Provider / 账号
@@ -233,6 +238,14 @@ export type LidowEvent =
   | { type: 'session-title'; sessionId: string; title: string }
   /** 仅发给服务端隐藏宿主渲染器：为 Web 客户端打开/绑定 provider 页面 */
   | { type: 'host-open-session'; sessionId: string }
+  /** 网页侧点击了属于其他项目的对话：渲染层同步项目/会话 */
+  | {
+      type: 'web-session-activated'
+      sessionId: string
+      projectId: string
+      providerId: string
+      accountId?: string
+    }
   /** 网页端对话被删除：渲染层移除对应会话（纯净模式列表同步） */
   | { type: 'session-deleted'; sessionId: string; title: string }
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */

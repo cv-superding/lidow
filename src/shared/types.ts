@@ -84,6 +84,10 @@ export interface ProjectInfo {
   root: string
   createdAt: number
   lastOpenedAt: number
+  /** 运行时检测：项目根目录已不存在（不写入 projects.json，启动时重新计算） */
+  missing?: boolean
+  /** 运行时统计：该项目已关联的网页版对话数量（用于移除项目的清理提示） */
+  webChatCount?: number
 }
 
 // ---------- Provider ----------
@@ -315,6 +319,8 @@ export interface AppSettings {
   deleteProtection: boolean
   /** 单个任务删除达到该数量时，执行前统一审批 */
   batchDeleteThreshold: number
+  /** Lidow 连续向同一个 AI 网页发送消息的最小间隔（毫秒） */
+  webSendIntervalMs: number
   /**
    * 权限模式（对齐 ZCode 的四档）：
    *  - plan      ：编辑前先出计划，用户确认后才动
@@ -407,6 +413,25 @@ export interface FileNode {
   children?: FileNode[]
 }
 
+/** 网页侧项目文件夹：项目 → 已建过网页对话的会话 */
+export interface ProjectFolderChat {
+  sessionId: string
+  title: string
+  url: string
+}
+
+export interface ProjectFolderProject {
+  id: string
+  name: string
+  root: string
+  chats: ProjectFolderChat[]
+}
+
+export interface ProjectFolderData {
+  projects: ProjectFolderProject[]
+  activeProjectId: string | null
+}
+
 export interface OverlayCommand {
   kind:
     | 'send'
@@ -425,9 +450,12 @@ export interface OverlayCommand {
     | 'upload-file'
     | 'click-keywords'
     | 'watch-chats'
+    | 'project-folders'
   text?: string
   /** watch-chats：当前项目下需要监听“网页侧是否被删除”的对话 URL */
   urls?: string[]
+  /** project-folders：网页侧项目文件夹数据（DeepSeek 侧栏） */
+  folders?: ProjectFolderData
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
   /** configure：网络层 hook 源码（注入主世界，拦截 SSE 获取回复，不依赖 DOM） */
@@ -454,6 +482,8 @@ export type OverlayEvent =
   | { type: 'stream-start' }
   | { type: 'stream-chunk'; text: string }
   | { type: 'stream-end'; text: string }
+  /** DOM 仍在生成但没有新文本（思考/停顿）：重置看门狗与截断宽限，避免误判卡死 */
+  | { type: 'stream-heartbeat' }
   | { type: 'send-result'; ok: boolean; error?: string }
   | { type: 'float-menu-action'; action: string; url?: string }
   /** 网页开关状态（深度思考 / 智能搜索）——chip 高亮用 */
@@ -464,5 +494,9 @@ export type OverlayEvent =
   | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; reason?: string; tokens?: number }
   /** 网络层 hook：请求失败 */
   | { type: 'net-error'; text: string; reason: string }
+  /** 用户在网页输入框里亲手发送的消息（纯净模式同步用） */
+  | { type: 'user-message'; text: string }
   /** 网页侧用户删除了对话：主进程据此同步移除本地会话 */
   | { type: 'chat-deleted'; url: string }
+  /** 用户点击网页侧项目对话：主进程切换到对应 Lidow 项目/会话 */
+  | { type: 'activate-chat'; url: string }

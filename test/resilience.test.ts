@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { isContextExhausted, backoffDelay } from '@main/bridge/resilience'
 
 describe('上下文耗尽判定', () => {
-  it('识别 DeepSeek 的 incomplete 信号', () => {
-    expect(isContextExhausted('incomplete')).toBe(true)
-    expect(isContextExhausted('stream ended: INCOMPLETE')).toBe(true)
+  it('服务端截断（incomplete）不是上下文耗尽，应走普通重试', () => {
+    expect(isContextExhausted('AI 请求失败（incomplete）')).toBe(false)
+    expect(isContextExhausted('stream ended: INCOMPLETE')).toBe(false)
   })
 
-  it('识别中英文上下文超限文案', () => {
+  it('识别显式的上下文耗尽信号', () => {
+    expect(isContextExhausted('AI 请求失败（context_exhausted）')).toBe(true)
     expect(isContextExhausted('上下文已用完，请开启新对话')).toBe(true)
     expect(isContextExhausted('对话过长，超出模型限制')).toBe(true)
     expect(isContextExhausted('This model has a maximum context length')).toBe(true)

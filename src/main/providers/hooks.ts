@@ -182,25 +182,31 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
    * 把系统提示词拼进请求体的用户输入字段。
    * 目的：用户直接在网页输入框里发消息时，AI 也能拿到工具协议与工作目录，
    * 而不是回一句「我没有文件系统访问权限」。
+   *
+   * 顺带把「用户在网页里亲手发的消息」上报给 Lidow（纯净模式要同步这条
+   * 用户消息）。经 lidow 自己发送的消息由 preload 打了 outgoing 标记，
+   * 这里消费掉，避免把工具观察/重试提示也记成用户发言。
    */
   function injectPrompt(body) {
-    // 读 window 上的当前值：会话切换后会刷新提示词，闭包变量会过期
-    var sys = window['__lidowSysPrompt__'] || SYS_PROMPT;
-    if (!sys || !PROMPT_FIELD || typeof body !== 'string') return body;
+    if (typeof body !== 'string') return body;
+    var obj = null;
+    try { obj = JSON.parse(body); } catch (e) { return body; }
+    if (!obj || typeof obj !== 'object' || !PROMPT_FIELD) return body;
+    var cur = obj[PROMPT_FIELD];
+    if (typeof cur !== 'string' || !cur) return body;
+    var fromLidow = false;
     try {
-      var obj = JSON.parse(body);
-      if (!obj || typeof obj !== 'object') return body;
-      var cur = obj[PROMPT_FIELD];
-      if (typeof cur !== 'string' || !cur) return body;
-      if (cur.indexOf(INJECT_TAG) === 0) return body;
-      // 经 lidow 自己发送的消息已经带了系统提示词（loop 里拼的），别再叠一层。
-      // 用「开头就是该系统提示词」判断：sys 本身可能很长，取前 40 字符会撞车。
-      if (cur.indexOf(sys) === 0) return body;
-      obj[PROMPT_FIELD] = sys + '\n\n---\n\n# 用户任务\n\n' + cur;
-      return JSON.stringify(obj);
-    } catch (e) {
-      return body;
-    }
+      fromLidow = !!(window.__lidowNet && window.__lidowNet.isOutgoing && window.__lidowNet.isOutgoing(cur));
+    } catch (e) {}
+    if (!fromLidow) emit('prompt', { text: cur });
+    var sys = window['__lidowSysPrompt__'] || SYS_PROMPT;
+    if (!sys) return body;
+    if (cur.indexOf(INJECT_TAG) === 0) return body;
+    // 经 lidow 自己发送的消息已经带了系统提示词（loop 里拼的），别再叠一层。
+    // 用「开头就是该系统提示词」判断：sys 本身可能很长，取前 40 字符会撞车。
+    if (cur.indexOf(sys) === 0) return body;
+    obj[PROMPT_FIELD] = sys + '\n\n---\n\n# 用户任务\n\n' + cur;
+    return JSON.stringify(obj);
   }
 
   // 经 contextBridge 暴露的桥上报（CustomEvent 无法跨 contextIsolation 世界）

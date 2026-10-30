@@ -75,6 +75,16 @@ export function IconCheck({ size, className }: P): React.JSX.Element {
   )
 }
 
+/** 侧边任务 / 列表 */
+export function IconList({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M5.5 3.5h8M5.5 8h8M5.5 12.5h8" />
+      <path d="M2.6 3.5h.01M2.6 8h.01M2.6 12.5h.01" strokeWidth="2.2" />
+    </svg>
+  )
+}
+
 /** 文件变更 / diff 统计 */
 export function IconDiff({ size, className }: P): React.JSX.Element {
   return (

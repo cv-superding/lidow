@@ -25,7 +25,7 @@ import type {
 } from '@shared/types'
 
 /** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
-export type AuxPanel = 'files' | 'tasks' | 'terminal' | 'review'
+export type AuxPanel = 'launcher' | 'files' | 'tasks' | 'terminal' | 'review'
 
 /**
  * Web 版（Docker 原生网页界面）：浏览器里没有 Electron webview，
@@ -229,6 +229,7 @@ export const useStore = create<LidowState>((set, get) => ({
     dangerConfirm: true,
     deleteProtection: true,
     batchDeleteThreshold: 200,
+    webSendIntervalMs: 1000,
     permissionMode: 'autonomous',
     ssrfProtection: true,
     commandTimeoutMs: 30000,
@@ -245,7 +246,9 @@ export const useStore = create<LidowState>((set, get) => ({
       maxRetries: 10,
       delay429Ms: 120000,
       maxRetries429: 40,
-      prompt: '刚才的回复似乎中断了，请重新完整回答上一个问题。'
+      prompt:
+        '刚才的回复被平台中断了。请从中断处继续输出剩余内容，不要从头重写；' +
+        '如果内容已经完整，请直接给出最终收尾摘要。'
     },
     autoContinue: { enabled: false, handoffPrompt: '' },
     globalHotkeys: {},
@@ -559,6 +562,10 @@ export const useStore = create<LidowState>((set, get) => ({
       get().notice('请先初始化项目（选择工作目录），再开始对话', 'warn')
       return
     }
+    if (project.missing) {
+      get().notice('项目目录不存在，请到「工作区」重新选择目录', 'warn')
+      return
+    }
     // 优先用调用方给出的账号；否则沿用当前平台标签的账号（多账号下新建任务
     // 不应悄悄跳回默认账号的页面）。
     const activeTab = get().tabs.find((t) => t.id === get().activeTabId)
@@ -574,7 +581,13 @@ export const useStore = create<LidowState>((set, get) => ({
         account = provider?.activeAccountId ?? DEFAULT_ACCOUNT_ID
       }
     }
-    const s = await api.createSession(project.id, providerId, undefined, account)
+    let s: Session
+    try {
+      s = await api.createSession(project.id, providerId, undefined, account)
+    } catch (e) {
+      get().notice(`创建会话失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      return
+    }
     // 关键：新建后必须把新会话设为 activeSession，
     // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
     set({
@@ -1049,6 +1062,44 @@ export const useStore = create<LidowState>((set, get) => ({
           }
         })
         void get().refreshSessions()
+        break
+      }
+      case 'web-session-activated': {
+        // 用户在网页侧栏点了另一个项目的对话：主进程已完成项目切换与 webview 重绑
+        void (async () => {
+          const sess = await api.getSession(e.sessionId).catch(() => null)
+          if (!sess) return
+          const app = await api.getAppState()
+          const sessions = await api.listSessions(e.projectId)
+          set((st) => ({
+            projects: app.projects,
+            activeProjectId: app.activeProjectId,
+            activeSession: sess,
+            sessions,
+            view: 'home',
+            pureView: 'home',
+            plan: null,
+            streamingText: '',
+            streamingTps: 0,
+            thinkingText: '',
+            pendingReplySessionId: '',
+            confirmRequest: null,
+            reviewFiles: [],
+            reviewActivePath: '',
+            tabs: st.tabs.map((t) =>
+              t.id === st.activeTabId
+                ? {
+                    ...t,
+                    providerId: e.providerId,
+                    sessionId: e.sessionId,
+                    accountId: e.accountId ?? t.accountId
+                  }
+                : t
+            )
+          }))
+          await get().refreshProviders()
+          await get().refreshAll()
+        })()
         break
       }
       case 'session-switched': {

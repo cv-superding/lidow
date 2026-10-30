@@ -15,6 +15,47 @@ export interface ExecResult {
 
 const OUTPUT_HARD_CAP = 512 * 1024 // 512KB 硬上限，防止命令输出撑爆内存
 
+/** 查找可用的 Git Bash：优先常见安装位置，跳过 System32/WindowsApps 里的 WSL 启动器 */
+function findBash(): string | null {
+  if (process.platform !== 'win32') return 'bash'
+  const roots = [
+    process.env.ProgramFiles,
+    process.env['ProgramFiles(x86)'],
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs') : undefined
+  ].filter((v): v is string => Boolean(v))
+  for (const root of roots) {
+    for (const rel of [
+      ['Git', 'bin', 'bash.exe'],
+      ['Git', 'usr', 'bin', 'bash.exe']
+    ]) {
+      const p = join(root, ...rel)
+      if (existsSync(p)) return p
+    }
+  }
+  for (const dir of (process.env.PATH ?? '').split(';').filter(Boolean)) {
+    if (/\\Windows\\(System32|SysWOW64)$/i.test(dir) || /WindowsApps$/i.test(dir)) continue
+    const p = join(dir, 'bash.exe')
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
+/** 只有找到真正的 bash 才用 Unix 语义；否则退回 PowerShell（避免 WSL 启动器或 cmd 误跑） */
+function shellFor(
+  shellKind: 'bash' | 'pwsh' | 'auto',
+  isWin: boolean
+): { file: string; args: (cmd: string) => string[] } {
+  const powershell = (): { file: string; args: (cmd: string) => string[] } => ({
+    file: isWin ? 'powershell.exe' : 'pwsh',
+    args: (cmd) => ['-NoProfile', '-NonInteractive', '-Command', cmd]
+  })
+  if (shellKind === 'pwsh') return powershell()
+  if (!isWin) return { file: 'bash', args: (cmd) => ['-c', cmd] }
+  const bash = findBash()
+  if (bash) return { file: bash, args: (cmd) => ['-c', cmd] }
+  return powershell()
+}
+
 /** 执行 shell 命令：安全门 + 双超时 + 输出限制。bash 走 Git Bash/cmd 兜底，pwsh 走 PowerShell */
 export async function execCommand(
   cmd: string,
@@ -54,19 +95,9 @@ export async function execCommand(
 
   const shellKind = opts.shell ?? 'auto'
   const isWin = process.platform === 'win32'
-  let file: string
-  let args: string[]
-  if (shellKind === 'pwsh' || (isWin && shellKind === 'auto')) {
-    file = isWin ? 'powershell.exe' : 'pwsh'
-    args = ['-NoProfile', '-NonInteractive', '-Command', cmd]
-  } else {
-    file = isWin ? 'bash.exe' : 'bash'
-    args = ['-c', cmd]
-    if (isWin && !isOnPath(file)) {
-      file = 'cmd.exe'
-      args = ['/d', '/s', '/c', cmd]
-    }
-  }
+  const picked = shellFor(shellKind, isWin)
+  const file = picked.file
+  const args = picked.args(cmd)
 
   const started = Date.now()
   return new Promise<ExecResult>((resolveP) => {
@@ -134,17 +165,9 @@ export async function execCommand(
   })
 }
 
-function isOnPath(file: string): boolean {
-  const pathEnv = process.env.PATH ?? ''
-  return pathEnv
-    .split(/[;:]/)
-    .filter(Boolean)
-    .some((dir) => existsSync(join(dir, `${file}`)) || existsSync(join(dir, `${file}.exe`)))
-}
-
 export const bashTool: ToolDef = {
   name: 'bash',
-  description: '在项目目录执行 shell 命令（Windows 下自动选择 bash/powershell）。危险命令需用户确认。',
+  description: '在项目目录执行 shell 命令（Windows 优先 Git Bash，未安装时退回 PowerShell）。危险命令需用户确认。',
   parameters: { command: { type: 'string', description: '完整命令', required: true }, cwd: { type: 'string', description: '相对项目根的工作目录' } },
   dangerLevel: 'confirm',
   async run(input, ctx) {

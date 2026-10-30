@@ -452,6 +452,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
   const projectId = useStore((s) => s.activeProjectId)
   const project = useProject(useStore())
+  const auxPanel = useStore((s) => s.auxPanel)
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [initOpen, setInitOpen] = useState(false)
   const [initPicking, setInitPicking] = useState(false)
@@ -705,7 +706,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中'}
           </span>
         )}
-        <PureToolbar web={WEB_MODE} />
+        {!auxPanel && <PureToolbar />}
       </div>
 
       {/* 消息区 */}

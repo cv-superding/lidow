@@ -5,7 +5,7 @@
  * 与 main 的通信：ipcRenderer 直连（沙箱 shim），页面脚本无法访问。
  */
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DomAdapter, OverlayCommand, OverlayEvent } from '@shared/types'
+import type { DomAdapter, OverlayCommand, OverlayEvent, ProjectFolderData } from '@shared/types'
 
 let adapter: DomAdapter | null = null
 
@@ -162,6 +162,20 @@ let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
 /** 最近一次经 lidow 发出去的文本：部分平台把用户消息也匹配进 bubble，不能当回复 */
 let lastSentText = ''
+/**
+ * 即将/刚刚由 lidow 发进网页的文本：主世界的网络 hook 用它区分
+ * 「用户亲手在网页里发的」与「lidow 自己发的（工具观察/重试/初始化）」，
+ * 只有前者需要同步回纯净模式。
+ */
+let lastOutgoing: { text: string; ts: number } = { text: '', ts: 0 }
+
+function normalizePromptText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim()
+}
+
+function markOutgoing(text: string): void {
+  lastOutgoing = { text: normalizePromptText(text), ts: Date.now() }
+}
 
 /** 取最后一个可见匹配（消息类选择器用户/AI 共用时，AI 回复必然在最后） */
 function findLast(selectors: string[]): Element | null {
@@ -300,6 +314,14 @@ function watchMessages(): void {
 async function doSend(text: string): Promise<void> {
   try {
     if (!adapter) throw new Error('未配置 DOM 适配器')
+    // 页面还在生成时不要抢发：新消息会被平台排成「中途插话」，
+    // 用户看到的就是回复还没停、Lidow 却自动冒出一条重试提示。
+    // 等 DOM 停止标志/流式状态消失再发；超时则让上层稍后重试。
+    const idleDeadline = Date.now() + 20_000
+    while ((isStreaming() || streaming) && Date.now() < idleDeadline) {
+      await new Promise((r) => setTimeout(r, 400))
+    }
+    if (isStreaming() || streaming) throw new Error('页面仍在生成回复，已暂缓发送')
     // 填入 + 读回校验，失败换候选输入框重试（页面存在多个输入框时首查可能命中隐藏元素）
     let filled = false
     let input: Element | null = null
@@ -330,6 +352,8 @@ async function doSend(text: string): Promise<void> {
       })
       if (!sendBtn) await new Promise((r) => setTimeout(r, 250))
     }
+    // 点击可能在同一个事件循环里发出请求：标记必须在 click 之前
+    markOutgoing(text)
     if (sendBtn) {
       click(sendBtn)
       sent = true
@@ -538,6 +562,274 @@ function armChatDeleteWatch(): void {
   window.setTimeout(check, 800)
 }
 
+// ---------- DeepSeek 网页侧：项目文件夹 + 长会话时间线 ----------
+
+let projectFolders: ProjectFolderData | null = null
+let projectFoldersSig = ''
+let projectFoldersCollapsed = false
+const projectFoldersExpanded = new Set<string>()
+const projectFoldersShowAll = new Set<string>()
+let projectFoldersSeeded = false
+let projectFoldersActiveSeen = ''
+let projectFolderTimer: number | undefined
+
+function isDeepSeekPage(): boolean {
+  return /(^|\.)deepseek\.com$/i.test(location.hostname)
+}
+
+function ensureDeepSeekStyles(): void {
+  if (document.getElementById('lidow-deepseek-style')) return
+  const style = document.createElement('style')
+  style.id = 'lidow-deepseek-style'
+  style.textContent = `
+    #lidow-project-folders{margin:6px 10px 10px;border:1px solid rgba(127,127,127,.22);
+      border-radius:10px;background:rgba(127,127,127,.06);overflow:hidden;font-size:12px;color:inherit}
+    #lidow-project-folders button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
+    .lpf-head{display:flex;align-items:center;gap:7px;width:100%;padding:8px 10px;font-size:11px;
+      font-weight:600;letter-spacing:.02em;color:rgba(127,127,127,.92)}
+    .lpf-badge{margin-left:auto;min-width:18px;padding:0 5px;border-radius:99px;background:rgba(127,127,127,.16);
+      text-align:center;font-size:10px;line-height:17px;font-weight:500;color:rgba(127,127,127,.95)}
+    .lpf-chevron{display:inline-flex;width:12px;justify-content:center;transition:transform .16s;opacity:.7}
+    .lpf-chevron.open{transform:rotate(90deg)}
+    .lpf-project-head{display:flex;align-items:center;gap:7px;width:100%;padding:6px 10px;border-radius:7px}
+    .lpf-project-head:hover{background:rgba(127,127,127,.1)}
+    .lpf-project-head.active{background:rgba(77,107,254,.13);color:#6b8cff}
+    .lpf-chev{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.55;font-size:10px}
+    .lpf-chev.open{transform:rotate(90deg)}
+    .lpf-folder{display:inline-flex;opacity:.8;flex-shrink:0}
+    .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:12px}
+    .lpf-count{font-size:10px;opacity:.5;flex-shrink:0}
+    .lpf-chats{padding:0 10px 6px 28px}
+    .lpf-chat{display:block;width:100%;padding:5px 7px;border-radius:6px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;opacity:.72}
+    .lpf-chat:hover{background:rgba(127,127,127,.1);opacity:1}
+    .lpf-chat.active{background:rgba(77,107,254,.14);color:#6b8cff;opacity:1}
+    .lpf-more{display:block;width:100%;padding:5px 7px;font-size:10.5px;opacity:.5;text-align:left}
+    .lpf-more:hover{opacity:.9}
+    .lpf-empty{padding:2px 10px 9px;font-size:10.5px;opacity:.5;line-height:1.6}
+    #lidow-timeline{position:fixed;right:2px;top:92px;bottom:96px;width:7px;z-index:2147483000;
+      border-radius:99px;background:transparent;transition:width .16s,background .16s;cursor:pointer}
+    #lidow-timeline:hover{width:34px;background:rgba(127,127,127,.13)}
+    #lidow-timeline .lt-node{position:absolute;right:1px;height:2px;width:5px;border-radius:2px;
+      background:rgba(127,127,127,.5);transition:width .12s,background .12s}
+    #lidow-timeline:hover .lt-node{width:24px;background:rgba(127,127,127,.55)}
+    #lidow-timeline .lt-node.active{background:#5b8cff;width:7px;height:3px}
+    #lidow-timeline:hover .lt-node.active{width:28px}
+    #lidow-timeline .lt-node:hover{background:#8fa8ff;width:28px}
+    html.lidow-timeline-on div[style*='--scroll-nav-page-padding']{display:none!important}
+  `
+  document.head.appendChild(style)
+}
+
+function findProjectFolderMount(): HTMLElement | null {
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(visible)
+  if (links.length === 0) return null
+  const scroll = links[0]!.closest('.ds-scroll-area')
+  if (!scroll) return null
+  const candidate = [...scroll.children].find((child) => child.querySelector('a[href*="/a/chat/s/"]'))
+  return (candidate as HTMLElement | undefined) ?? null
+}
+
+function projectFolderChats(): { chat: { url: string }; project: string }[] {
+  return (projectFolders?.projects ?? []).flatMap((p) => p.chats.map((chat) => ({ chat, project: p.id })))
+}
+
+function updateProjectFolderActive(): void {
+  if (!projectFolders) return
+  const key = chatUrlKey(location.href)
+  for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-chat')) {
+    el.classList.toggle('active', chatUrlKey(el.dataset.url ?? '') === key)
+  }
+}
+
+function renderProjectFolders(): void {
+  if (!isDeepSeekPage()) return
+  ensureDeepSeekStyles()
+  const existing = document.getElementById('lidow-project-folders')
+  if (!projectFolders || projectFolders.projects.length === 0) {
+    existing?.remove()
+    projectFoldersSig = ''
+    return
+  }
+  if (!projectFoldersSeeded) {
+    projectFoldersSeeded = true
+    projectFoldersActiveSeen = projectFolders.activeProjectId ?? ''
+    if (projectFoldersActiveSeen) projectFoldersExpanded.add(projectFoldersActiveSeen)
+  } else if (projectFolders.activeProjectId && projectFoldersActiveSeen !== projectFolders.activeProjectId) {
+    projectFoldersActiveSeen = projectFolders.activeProjectId
+    projectFoldersExpanded.add(projectFoldersActiveSeen)
+  }
+  const sig = JSON.stringify({ data: projectFolders, collapsed: projectFoldersCollapsed, expanded: [...projectFoldersExpanded] })
+  if (existing && existing.isConnected && sig === projectFoldersSig) {
+    updateProjectFolderActive()
+    return
+  }
+  const mount = findProjectFolderMount()
+  if (!mount) return
+  const total = projectFolders.projects.reduce((n, p) => n + p.chats.length, 0)
+  const folderSvg =
+    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.8h4.1l1.2 1.5H14v5.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.8Z"/></svg>'
+  const body = projectFolders.projects
+    .map((project) => {
+      const open = projectFoldersExpanded.has(project.id)
+      const showAll = projectFoldersShowAll.has(project.id)
+      const visibleChats = showAll ? project.chats : project.chats.slice(0, 8)
+      const chats =
+        visibleChats
+          .map(
+            (chat) =>
+              `<button class="lpf-chat" data-lpf="chat" data-url="${escapeHtml(chat.url)}" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</button>`
+          )
+          .join('') +
+        (project.chats.length > 8
+          ? `<button class="lpf-more" data-lpf="more" data-id="${escapeHtml(project.id)}">${
+              showAll ? '收起' : `显示全部 ${project.chats.length} 条`
+            }</button>`
+          : '')
+      return (
+        `<div class="lpf-project">` +
+        `<button class="lpf-project-head${projectFolders?.activeProjectId === project.id ? ' active' : ''}" data-lpf="project" data-id="${escapeHtml(project.id)}">` +
+        `<span class="lpf-chev${open ? ' open' : ''}">›</span>` +
+        `<span class="lpf-folder">${folderSvg}</span>` +
+        `<span class="lpf-name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>` +
+        `<span class="lpf-count">${project.chats.length}</span>` +
+        `</button>` +
+        (open ? `<div class="lpf-chats">${chats}</div>` : '') +
+        `</div>`
+      )
+    })
+    .join('')
+  const html =
+    `<button class="lpf-head" data-lpf="toggle">` +
+    `<span>项目文件夹</span><span class="lpf-badge">${total}</span>` +
+    `<span class="lpf-chevron${projectFoldersCollapsed ? '' : ' open'}">›</span>` +
+    `</button>` +
+    (projectFoldersCollapsed ? '' : `<div>${body}</div>`)
+  let panel = existing as HTMLElement | null
+  if (!panel) {
+    panel = document.createElement('div')
+    panel.id = 'lidow-project-folders'
+    panel.addEventListener('click', (ev) => {
+      const target = (ev.target as HTMLElement).closest<HTMLElement>('[data-lpf]')
+      if (!target) return
+      const action = target.dataset.lpf
+      if (action === 'toggle') {
+        projectFoldersCollapsed = !projectFoldersCollapsed
+        projectFoldersSig = ''
+        renderProjectFolders()
+      } else if (action === 'project') {
+        const id = target.dataset.id ?? ''
+        if (projectFoldersExpanded.has(id)) projectFoldersExpanded.delete(id)
+        else projectFoldersExpanded.add(id)
+        projectFoldersSig = ''
+        renderProjectFolders()
+      } else if (action === 'more') {
+        const id = target.dataset.id ?? ''
+        if (projectFoldersShowAll.has(id)) projectFoldersShowAll.delete(id)
+        else projectFoldersShowAll.add(id)
+        projectFoldersSig = ''
+        renderProjectFolders()
+      } else if (action === 'chat') {
+        const url = target.dataset.url
+        if (url) send({ type: 'activate-chat', url })
+      }
+    })
+  }
+  panel.innerHTML = html
+  if (panel.parentElement !== mount.parentElement || panel.nextElementSibling !== mount) {
+    mount.insertAdjacentElement('beforebegin', panel)
+  }
+  projectFoldersSig = sig
+  updateProjectFolderActive()
+}
+
+function setupProjectFolderClicks(): void {
+  document.addEventListener(
+    'click',
+    (ev) => {
+      if (!isDeepSeekPage() || !projectFolders) return
+      if (ev.button !== 0) return
+      const target = ev.target as HTMLElement | null
+      if (!target || target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')) return
+      const link = target.closest<HTMLAnchorElement>('a[href*="/a/chat/s/"]')
+      if (!link) return
+      const key = chatUrlKey(link.href)
+      if (!key) return
+      const known = new Set(projectFolderChats().map((x) => chatUrlKey(x.chat.url)))
+      if (!known.has(key)) return
+      const action = target.closest('button,[role="button"],[aria-haspopup]')
+      if (action && action !== link) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      send({ type: 'activate-chat', url: link.href })
+    },
+    true
+  )
+}
+
+function startProjectFolderWatch(): void {
+  if (projectFolderTimer !== undefined) return
+  projectFolderTimer = window.setInterval(() => {
+    if (!isDeepSeekPage()) return
+    renderProjectFolders()
+    renderTimeline()
+  }, 2500)
+}
+
+// ---------- 长会话时间线 ----------
+
+function timelineMessages(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
+}
+
+function renderTimeline(): void {
+  if (!isDeepSeekPage()) return
+  ensureDeepSeekStyles()
+  const messages = timelineMessages()
+  const existing = document.getElementById('lidow-timeline')
+  if (messages.length < 8) {
+    existing?.remove()
+    document.documentElement.classList.remove('lidow-timeline-on')
+    return
+  }
+  document.documentElement.classList.add('lidow-timeline-on')
+  const rail =
+    existing ??
+    (() => {
+      const el = document.createElement('div')
+      el.id = 'lidow-timeline'
+      el.addEventListener('click', (ev) => {
+        const node = (ev.target as HTMLElement).closest<HTMLElement>('[data-lt-index]')
+        if (!node) return
+        const index = Number(node.dataset.ltIndex)
+        timelineMessages()[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+      document.body.appendChild(el)
+      return el
+    })()
+  const nodes = messages.map((el) => ({
+    label: (el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80) || '消息'
+  }))
+  const target = window.innerHeight * 0.25
+  let activeIndex = -1
+  let best = Infinity
+  messages.forEach((el, index) => {
+    const rect = el.getBoundingClientRect()
+    if (rect.bottom <= 0 || rect.top >= window.innerHeight) return
+    const distance = Math.abs(rect.top - target)
+    if (distance < best) {
+      best = distance
+      activeIndex = index
+    }
+  })
+  rail.innerHTML = nodes
+    .map((node, index) => {
+      const pct = nodes.length === 1 ? 50 : (index / (nodes.length - 1)) * 100
+      return `<div class="lt-node${index === activeIndex ? ' active' : ''}" data-lt-index="${index}" title="${escapeHtml(node.label)}" style="top:calc(${pct}% - 1px)"></div>`
+    })
+    .join('')
+}
+
 function watchChatDeletion(): void {
   document.addEventListener(
     'click',
@@ -689,6 +981,12 @@ function dismissEnvWarnings(): void {
 
 setInterval(dismissEnvWarnings, 1500)
 
+// 平台还在生成、但暂时没有新文本（长思考/停顿）时发心跳：
+// 主进程据此重置看门狗与截断宽限，不能把“AI 正在想”误判成卡死并插话。
+setInterval(() => {
+  if (isStreaming() || streaming) send({ type: 'stream-heartbeat' })
+}, 2000)
+
 // ---------- 网络层 hook（主世界注入）----------
 // 关键：必须在页面主世界执行，才能 hook 到页面自己的 fetch/XHR。
 // preload 处于隔离世界，因此用 webFrame.executeJavaScript 注入。
@@ -704,6 +1002,15 @@ function installNetBridge(): void {
   netBridgeReady = true
   try {
     contextBridge.exposeInMainWorld('__lidowNet', {
+      /** 主世界 hook 用它判断这条请求是不是 lidow 自己发的（消费一次标记） */
+      isOutgoing: (text: string): boolean => {
+        const t = normalizePromptText(String(text ?? ''))
+        if (lastOutgoing.text && t === lastOutgoing.text && Date.now() - lastOutgoing.ts < 60_000) {
+          lastOutgoing = { text: '', ts: 0 }
+          return true
+        }
+        return false
+      },
       emit: (kind: string, detail: Record<string, unknown>) => {
         try {
           if (kind === 'stream') {
@@ -725,6 +1032,9 @@ function installNetBridge(): void {
             })
           } else if (kind === 'error') {
             send({ type: 'net-error', text: String(detail.text ?? ''), reason: String(detail.reason ?? 'unknown') })
+          } else if (kind === 'prompt') {
+            // 用户在网页输入框里亲手发送的消息：同步回纯净模式会话
+            send({ type: 'user-message', text: String(detail.text ?? '') })
           }
         } catch {
           /* 通道关闭 */
@@ -1323,6 +1633,11 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
     case 'watch-chats':
       setWatchedChats(cmd.urls)
       break
+    case 'project-folders':
+      projectFolders = cmd.folders ?? null
+      projectFoldersSig = ''
+      renderProjectFolders()
+      break
     case 'send':
       void doSend(cmd.text ?? '')
       break
@@ -1377,6 +1692,8 @@ document.addEventListener('visibilitychange', () => {
   if (!document.hidden) renderFirstRun()
 })
 watchChatDeletion()
+setupProjectFolderClicks()
+startProjectFolderWatch()
 
 // 注意：不在这里主动渲染。无项目时由主进程「按 webview」下发 set-project，
 // 避免有项目时先闪一下引导再被 configure 收起。
