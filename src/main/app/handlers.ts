@@ -1,4 +1,5 @@
-import { app, BrowserWindow, shell, nativeTheme, session as electronSession, webContents } from 'electron'
+import { app, BrowserWindow, dialog, shell, nativeTheme, session as electronSession, webContents } from 'electron'
+import type { OpenDialogOptions } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
@@ -772,6 +773,99 @@ export function registerHandlers(
   /** 透传网页内交互命令（深度思考/智能搜索/上传文件） */
   R('overlayToggle', (sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file') => {
     return ctx.overlay.sendCmd(String(sessionId), { kind })
+  })
+  /**
+   * 桌面纯模式：本机选文件后直接写入网页的 file input。
+   * 不能只点 input[type=file]：纯模式下网页被遮住，平台原生文件框会弹在后面；
+   * 用 CDP DOM.setFileInputFiles 注入才会真正进入平台的附件流程（图片/文档通用）。
+   */
+  R('uploadWebFile', async (sessionId: string) => {
+    const sid = String(sessionId)
+    const wcId = ctx.overlay.wcIdOfSession(sid)
+    if (wcId === undefined) throw new Error('网页未连接：请先打开该会话的 AI 页面')
+    const wc = webContents.fromId(wcId)
+    if (!wc || wc.isDestroyed()) throw new Error('网页已关闭，请重新打开')
+    const options: OpenDialogOptions = {
+      title: '选择要附加到对话的文件',
+      properties: ['openFile', 'multiSelections'],
+      filters: [
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
+        {
+          name: '文档',
+          extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'csv', 'json']
+        },
+        { name: '所有文件', extensions: ['*'] }
+      ]
+    }
+    const parent = parentWindowFor(wcId)
+    const res = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true }
+    const exts = res.filePaths.map((p) => p.split('.').pop()?.toLowerCase() ?? '')
+    const imageExts = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
+    const wantImage = exts.length > 0 && exts.every((e) => imageExts.has(e))
+    const inputCount = (await wc
+      .executeJavaScript(`(() => {
+        const xs = [...document.querySelectorAll('input[type=file]')].filter((el) => !el.disabled)
+        if (!xs.length) return 0
+        document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))
+        const exts = ${JSON.stringify(exts)}
+        const wantImage = ${wantImage ? 'true' : 'false'}
+        const accepts = (el) => {
+          if (!el.accept) return true
+          const a = String(el.accept).toLowerCase()
+          if (a.includes('*') || a.includes('file')) return true
+          if (wantImage && a.includes('image')) return true
+          return exts.some((e) => e && a.includes(e))
+        }
+        const pick = xs.find(accepts) || xs[0]
+        pick.setAttribute('data-lidow-upload-input', '1')
+        return xs.length
+      })()`)
+      .catch(() => 0)) as number
+    if (!inputCount) {
+      return { ok: false, message: '网页输入区没有文件上传入口，请先在 AI 页面点一次附件按钮' }
+    }
+    let attached = wc.debugger.isAttached()
+    try {
+      if (!attached) {
+        wc.debugger.attach('1.3')
+        attached = true
+      }
+      const doc = (await wc.debugger.sendCommand('DOM.getDocument', { depth: 1 })) as {
+        root?: { nodeId?: number }
+      }
+      const rootId = doc?.root?.nodeId
+      if (!rootId) throw new Error('无法读取网页 DOM')
+      const found = (await wc.debugger.sendCommand('DOM.querySelector', {
+        nodeId: rootId,
+        selector: 'input[data-lidow-upload-input]'
+      })) as { nodeId?: number }
+      if (!found?.nodeId) throw new Error('未找到文件输入框')
+      await wc.debugger.sendCommand('DOM.setFileInputFiles', { files: res.filePaths, nodeId: found.nodeId })
+    } catch (e) {
+      Logger.warn('session', `附加文件失败: ${e instanceof Error ? e.message : String(e)}`)
+      throw new Error(`附加文件失败：${e instanceof Error ? e.message : String(e)}`, { cause: e })
+    } finally {
+      try {
+        void wc.executeJavaScript(
+          `document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))`
+        )
+      } catch {
+        /* 页面已关闭 */
+      }
+      try {
+        if (attached && wc.debugger.isAttached()) wc.debugger.detach()
+      } catch {
+        /* 已断开 */
+      }
+    }
+    // 平台上传/生成附件预览是异步的，留一点时间
+    await new Promise((r) => setTimeout(r, 1800))
+    return {
+      ok: true,
+      count: res.filePaths.length,
+      message: `已附加 ${res.filePaths.length} 个文件到网页输入框，发送消息即可一起上传`
+    }
   })
   /** 按文案点击平台自带按钮（底部 chip 转发，各平台功能不同） */
   R('overlayAction', (sessionId: string, keywords: string[]) => {

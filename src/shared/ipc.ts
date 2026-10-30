@@ -194,6 +194,8 @@ export interface LidowApi {
   setPureMode(on: boolean): Promise<void>
   /** 触发网页内交互（深度思考 / 智能搜索 / 上传文件） */
   overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
+  /** 选择本机文件并附加到当前网页会话的输入区（桌面纯模式） */
+  uploadWebFile(sessionId: string): Promise<{ ok: boolean; canceled?: boolean; count?: number; message?: string }>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
   checkUpdate(manual?: boolean): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>

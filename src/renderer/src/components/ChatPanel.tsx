@@ -1045,8 +1045,28 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             })}
             <button
               className="btn btn-ghost btn-icon btn-sm"
-              title="上传文件（平台支持各类文档与图片）"
-              onClick={() => activeSession && void api.overlayToggle(activeSession.id, 'upload-file')}
+              title="上传文件/图片（附加到网页输入区）"
+              onClick={() => {
+                if (!activeSession) return
+                if (WEB_MODE) {
+                  void api.overlayToggle(activeSession.id, 'upload-file')
+                  return
+                }
+                void api
+                  .uploadWebFile(activeSession.id)
+                  .then((r) => {
+                    if (r.canceled) return
+                    useStore.getState().notice(
+                      r.message ?? (r.ok ? `已附加 ${r.count ?? 0} 个文件` : '文件附加失败'),
+                      r.ok ? 'info' : 'warn'
+                    )
+                  })
+                  .catch((e) =>
+                    useStore
+                      .getState()
+                      .notice(`上传失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+                  )
+              }}
             >
               <IconAttach size={13} />
             </button>

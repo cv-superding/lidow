@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useStore, useProject } from '../store'
+import { filterSessionList } from '../sessionFilter'
 import { api } from '../api'
 import { ResizeHandle } from './ResizeHandle'
 import {
@@ -57,14 +58,27 @@ export function PureModeShell({
   const sidebarWidth = useStore((s) => s.sidebarWidth)
   const setSidebarWidth = useStore((s) => s.setSidebarWidth)
   const requestSessionDelete = useStore((s) => s.requestSessionDelete)
+  const activeTab = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId))
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
-  const [providerId, setProviderId] = useState('')
+  const [providerId, setProviderId] = useState(() => {
+    const s = useStore.getState()
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    return tab?.providerId ?? s.activeSession?.providerId ?? ''
+  })
   const [, setTick] = useState(0)
 
+  // 纯净模式按当前网页平台/账号隔离会话：切到 DeepSeek 只看 DeepSeek，
+  // 切到 Claude 只看 Claude；多账号也不互相混。
+  const currentProvider = activeTab?.providerId ?? activeSession?.providerId ?? ''
+  const currentAccount = activeTab?.accountId ?? activeSession?.accountId ?? ''
+  useEffect(() => {
+    if (currentProvider) setProviderId(currentProvider)
+  }, [currentProvider])
+
   const filtered = useMemo(
-    () => sessions.filter((s) => s.title.toLowerCase().includes(query.toLowerCase())),
-    [sessions, query]
+    () => filterSessionList(sessions, { query, providerId, currentProvider, currentAccount }),
+    [sessions, query, providerId, currentProvider, currentAccount]
   )
 
   // 每分钟刷新相对时间
@@ -211,9 +225,11 @@ export function PureModeShell({
             style={{ color: 'var(--text-hint)' }}
             value={providerId}
             onChange={(e) => setProviderId(e.target.value)}
-            title="新建会话使用的平台"
+            title="按平台隔离会话"
           >
-            <option value="">默认平台</option>
+            <option value="" disabled>
+              选择平台
+            </option>
             {providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -235,6 +251,11 @@ export function PureModeShell({
       </div>
 
       <div className="stable-gutter min-h-0 flex-1 overflow-y-auto py-0.5 pl-1.5 pr-1.5">
+        {filtered.length === 0 && (
+          <div className="px-2.5 py-4 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+            {query.trim() ? '没有匹配的会话' : '当前平台暂无会话'}
+          </div>
+        )}
         {filtered.map((s) => {
           const active = activeSession?.id === s.id
           return (

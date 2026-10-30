@@ -16,7 +16,7 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-182%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-188%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 [![Docker](https://img.shields.io/badge/Docker-Native%20Web%20UI-2496ED?logo=docker&logoColor=white)](docs/docker.md)
