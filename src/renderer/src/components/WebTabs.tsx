@@ -391,7 +391,6 @@ function HomeEmpty(): React.JSX.Element {
   const activeProjectId = useStore((s) => s.activeProjectId)
   const openProject = useStore((s) => s.openProject)
   const createSession = useStore((s) => s.createSession)
-  const setView = useStore((s) => s.setView)
   const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>(
     []
   )
@@ -620,7 +619,7 @@ function HomeEmpty(): React.JSX.Element {
           <button
             className="flex flex-col items-start gap-1 rounded-[var(--r-xl)] p-3 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
             style={{ border: '1px dashed var(--border-strong)' }}
-            onClick={() => setView('settings')}
+            onClick={() => useStore.getState().requestSettings('platforms')}
           >
             <span
               className="flex items-center gap-1 text-[12.5px]"

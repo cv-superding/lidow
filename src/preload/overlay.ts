@@ -8,6 +8,15 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type { DomAdapter, OverlayCommand, OverlayEvent, ProjectFolderData } from '@shared/types'
 
 let adapter: DomAdapter | null = null
+/**
+ * 主进程可能在本 preload 真正就绪前就下发 configure/set-project（页面加载中），
+ * 命令会静默丢失 —— 用户看到的就是「进了 ChatGPT 十几秒都没有初始化入口/悬浮球」。
+ * 就绪后主动上报 ready，并在收到 configure 前每 2 秒重试一次（最多 60 次），
+ * 让主进程在会话完成绑定后能把配置补发进来。
+ */
+let overlayConfigured = false
+let readyAttempts = 0
+let readyTimer: ReturnType<typeof setInterval> | null = null
 
 // ---------- 环境硬化（preload 先于页面脚本执行） ----------
 // 补全嵌入式 webview 缺失的浏览器特征，缓解平台"使用环境异常"误判
@@ -510,10 +519,11 @@ function watchMessages(): void {
       const text = chatGptFreshReplyText()
       const grew = countChatGptReplies() > baselineReplyCount
       if (!text) return
-      // 与发送前完全相同的文字：可能是 React 重建后的旧节点，也可能是又问了一次
-      // 同样的问题（回答也相同）。DOM 无法可靠区分，交给网络层（新版 Workspace
-      // SSE 一定能给出权威文本），宁可少兜底一次，也不能把上一轮旧回答写成本轮。
-      if (text === baselineReplyText) return
+      // 与发送前相同的文字：新开对话时页面会整页跳转，网络 hook 可能晚于请求
+      // 注入而漏掉这一轮，DOM 必须能兜住「又问了一次同样问题、回答也相同」。
+      // 只认回复条数增长（真的多了一个 assistant 回合）；React 重建旧节点时
+      // 条数不会变，重放上一轮回答会被这里挡掉。
+      if (text === baselineReplyText && !grew) return
       if (text === lastText && !grew) return
       if (!streaming) {
         streaming = true
@@ -692,6 +702,7 @@ function doStop(): void {
 // ---------- 悬浮球（三层停止） ----------
 
 const MENU_ACTIONS: { id: string; label: string }[] = [
+  { id: 'show-init', label: '初始化项目 / 切换目录' },
   { id: 'stop-generate', label: '停止生成' },
   { id: 'stop-tool', label: '停止工具' },
   { id: 'stop-loop', label: '停止自动循环' },
@@ -729,6 +740,19 @@ function setupFloatingBall(): void {
     b.addEventListener('click', (e) => {
       e.stopPropagation()
       menu.style.display = 'none'
+      // 常驻入口：初始化弹窗被关掉/新对话没有触发时，用户始终能从这里重新打开
+      if (a.id === 'show-init') {
+        firstRunDismissed = false
+        firstRunCollapsed = false
+        // 手动入口必须能覆盖「项目已初始化」的缓存，否则点了什么都不弹。
+        // markNativeNewChat 提供 2 分钟窗口，即使主进程随后重发 initialized=true
+        // 也不会把刚打开的引导压回去。
+        projectInitialized = false
+        clearFirstRunPersisted()
+        markNativeNewChat()
+        renderFirstRun()
+        return
+      }
       send({ type: 'float-menu-action', action: a.id })
     })
     menu.appendChild(b)
@@ -1563,6 +1587,7 @@ function evaluateLoginNow(): void {
 setInterval(() => {
   const url = String(location.href)
   const pageTitle = (document.title ?? '').trim()
+  const previousUrl = lastNavUrl
   const urlChanged = url !== lastNavUrl
   const titleChanged = pageTitle !== lastPageTitle
   if (urlChanged || titleChanged) {
@@ -1572,14 +1597,27 @@ setInterval(() => {
     send({ type: 'nav', url, title: pageTitle })
   }
   if (urlChanged) {
-    // 这里绝不重置 dismissed。
+    // 这里绝不因普通 URL 变化重置 dismissed。
     // 反例（实测反复踩中）：初始化发完第一条消息后页面会从 / 跳到 /a/chat/s/<id>，
     // 这是同一次会话的正常跳转。任何基于「URL 变了」的重置都会导致
-    // 用户刚点完确认又弹一遍。需要再弹时由显式路径触发（见 resetFirstRun）。
+    // 用户刚点完确认又弹一遍。只有「旧对话 → 新对话页」才解绑并重新给初始化入口
+    //（ChatGPT 新 UI 的按钮叫“新聊天”，只靠文案会漏）。
     evaluateLoginNow()
-    renderFirstRun()
+    if (isConversationUrl(previousUrl) && isNewChatUrl(url)) {
+      firstRunDismissed = false
+      firstRunCollapsed = false
+      projectInitialized = false
+      markNativeNewChat()
+      clearFirstRunPersisted()
+      window.setTimeout(renderFirstRun, 700)
+    } else {
+      renderFirstRun()
+    }
   }
   renderGoogleLoginNotice()
+  // 平台首屏渲染/路由切换可能把挂到 body 的悬浮球冲掉（配置只下发一次），
+  // 每秒补一次，保证「初始化项目 / 切换目录」入口始终可用。
+  if (adapter && !document.getElementById('lidow-ball')) setupFloatingBall()
   if (!adapter) {
     exposeState({
       loggedIn,
@@ -1772,6 +1810,34 @@ function clearNativeNewChat(): void {
     sessionStorage.removeItem(NATIVE_NEW_CHAT_KEY)
   } catch {
     /* ignore */
+  }
+}
+
+/** 平台的新对话页：根路径、/new、/chat、/app；具体对话路径不算 */
+function isNewChatUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    if (u.origin !== location.origin) return false
+    const p = u.pathname.replace(/\/+$/, '')
+    return p === '' || p === '/new' || p === '/chat' || p === '/app' || p.endsWith('/new')
+  } catch {
+    return false
+  }
+}
+
+/** 具体的网页对话路径（用于识别「从旧对话切回新对话页」） */
+function isConversationUrl(raw: string): boolean {
+  try {
+    const u = new URL(raw)
+    if (u.origin !== location.origin) return false
+    const p = u.pathname
+    return (
+      /\/c\/[a-z0-9-]{8,}/i.test(p) ||
+      /\/(?:a\/)?chat\/s\/[a-z0-9-]+/i.test(p) ||
+      /\/chat\/[a-z0-9-]{8,}/i.test(p)
+    )
+  } catch {
+    return false
   }
 }
 
@@ -2238,7 +2304,16 @@ function reportToggleStates(): void {
  * 用捕获阶段的全局点击代理来补：命中新对话按钮文案就重置。
  */
 function watchNativeNewChat(): void {
-  const NEW_CHAT_KWS = ['开启新对话', '新建对话', '新对话', '开始新对话', 'New chat']
+  const NEW_CHAT_KWS = [
+    '开启新对话',
+    '新建对话',
+    '新对话',
+    '新聊天',
+    '新建聊天',
+    '新会话',
+    '开始新对话',
+    'New chat'
+  ]
   document.addEventListener(
     'click',
     (ev) => {
@@ -2351,12 +2426,20 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
     case 'configure':
       if (cmd.adapter) {
         adapter = cmd.adapter
+        overlayConfigured = true
+        if (readyTimer) {
+          clearInterval(readyTimer)
+          readyTimer = null
+        }
         watchMessages()
         setupFloatingBall()
         watchNativeNewChat()
         lastPageSnapshot = ''
         pageSnapshotTries = 0
         schedulePageSnapshot()
+        // 不等 1 秒轮询：适配器刚下发就按当前页面评估登录/初始化，尽早给出入口
+        evaluateLoginNow()
+        renderFirstRun()
       }
       break
     case 'tool-mask':
@@ -2383,6 +2466,7 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       // 注意：这里不能重置 firstRunDismissed —— set-project 会在每次 configure
       // （切会话/重载页面）时下发，重置会让用户关掉的模态反复弹出来。
       // 只有「刚完成初始化」才需要重新评估，那由主进程在选完目录后单独通知。
+      evaluateLoginNow()
       renderFirstRun()
       break
     case 'watch-chats':
@@ -2456,4 +2540,14 @@ startProjectFolderWatch()
 // 注意：不在这里主动渲染。无项目时由主进程「按 webview」下发 set-project，
 // 避免有项目时先闪一下引导再被 configure 收起。
 
-send({ type: 'ready' })
+function announceReady(): void {
+  if (overlayConfigured) return
+  send({ type: 'ready' })
+  readyAttempts += 1
+  if (readyAttempts >= 60 && readyTimer) {
+    clearInterval(readyTimer)
+    readyTimer = null
+  }
+}
+announceReady()
+readyTimer = setInterval(announceReady, 2000)

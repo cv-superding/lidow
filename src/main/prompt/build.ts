@@ -29,8 +29,11 @@ export function buildSystemPrompt(input: PromptInput): string {
 
   const skills = skillsDigest(projectRoot)
 
+  const osName =
+    process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'Linux'
   const sections = [
     toolProtocolPrompt(tools.describeForPrompt()),
+    `## 执行环境\n- 操作系统: ${osName}\n- 命令工具: bash 工具在 Windows 上优先使用 Git Bash（POSIX 语法）；机器没有 Git Bash 时会退回 PowerShell。若命令报 ParserError / CommandNotFoundException（ls -la、head 等不可用），改用 pwsh 工具和 PowerShell 语法（Get-ChildItem、Get-Content），不要反复用 bash 语法重试。\n- 命令输出按 UTF-8 读取，中文乱码时优先换 pwsh 工具重试。`,
     `## 当前项目\n- 名称: ${projectName}\n- 根目录: ${projectRoot}\n- 目录概览:\n${treeSummary || '（空目录）'}`,
     rules ? `## 项目/用户规则\n${rules}` : '',
     skills

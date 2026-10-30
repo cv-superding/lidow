@@ -47,7 +47,19 @@ function shellFor(
 ): { file: string; args: (cmd: string) => string[] } {
   const powershell = (): { file: string; args: (cmd: string) => string[] } => ({
     file: isWin ? 'powershell.exe' : 'pwsh',
-    args: (cmd) => ['-NoProfile', '-NonInteractive', '-Command', cmd]
+    // 中文 Windows 的 PowerShell 默认按 GBK/OEM 输出，Node 按 UTF-8 解码会整段乱码
+    // （用户反馈：命令错误信息全是 ◆◆◆）。Windows 上先把控制台输出编码固定为 UTF-8；
+    // 错误记录/中文提示/原生命令输出都按 UTF-8 回传。
+    args: (cmd) =>
+      isWin
+        ? [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; ' +
+              cmd
+          ]
+        : ['-NoProfile', '-NonInteractive', '-Command', cmd]
   })
   if (shellKind === 'pwsh') return powershell()
   if (!isWin) return { file: 'bash', args: (cmd) => ['-c', cmd] }

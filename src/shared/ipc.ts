@@ -68,7 +68,13 @@ export interface LidowApi {
   // Provider / 账号
   listProviders(projectId: string): Promise<ProviderDescriptor[]>
   addProvider(
-    desc: Omit<ProviderDescriptor, 'builtIn' | 'enabled' | 'accounts'>
+    projectId: string,
+    desc: {
+      id: string
+      name: string
+      home: string
+      adapter?: Partial<ProviderDescriptor['adapter']>
+    }
   ): Promise<ProviderDescriptor>
   removeProvider(projectId: string, providerId: string): Promise<void>
   addAccount(projectId: string, providerId: string, label: string): Promise<ProviderDescriptor>

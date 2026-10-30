@@ -2184,6 +2184,201 @@ const SYNC_CHANNELS = [
   { id: 'dingtalk', label: '钉钉', placeholder: '钉钉群机器人 webhook URL' }
 ] as const
 
+function AddPlatformDialog({
+  projectId,
+  onClose,
+  onAdded
+}: {
+  projectId: string
+  onClose: () => void
+  onAdded: () => void
+}): React.JSX.Element {
+  const [name, setName] = useState('')
+  const [home, setHome] = useState('')
+  const [advanced, setAdvanced] = useState(false)
+  const [inputSel, setInputSel] = useState('')
+  const [sendSel, setSendSel] = useState('')
+  const [bubbleSel, setBubbleSel] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const parse = (value: string): string[] =>
+    value
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean)
+
+  const submit = async (): Promise<void> => {
+    const n = name.trim()
+    const h = home.trim()
+    if (!n) {
+      setError('请填写平台名称')
+      return
+    }
+    let url: URL
+    try {
+      url = new URL(h)
+    } catch {
+      setError('请填写完整的网页地址，例如 https://example.com/chat')
+      return
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      setError('网页地址必须以 http:// 或 https:// 开头')
+      return
+    }
+    setBusy(true)
+    setError('')
+    try {
+      const adapter: { input?: string[]; send?: string[]; bubble?: string[] } = {}
+      const input = parse(inputSel)
+      const send = parse(sendSel)
+      const bubble = parse(bubbleSel)
+      if (input.length > 0) adapter.input = input
+      if (send.length > 0) adapter.send = send
+      if (bubble.length > 0) adapter.bubble = bubble
+      const id = `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+      await api.addProvider(projectId, { id, name: n, home: h, adapter })
+      useStore.getState().notice('平台已添加，回到工作台点击平台卡片登录')
+      onAdded()
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[76] flex items-center justify-center px-6"
+      style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose()
+      }}
+    >
+      <div
+        className="w-full max-w-[460px] overflow-hidden rounded-[var(--r-lg)]"
+        style={{
+          background: 'var(--surface-raised)',
+          border: '1px solid var(--border)',
+          boxShadow: 'var(--shadow-lg)'
+        }}
+      >
+        <div className="flex items-start gap-2.5 px-5 pt-4">
+          <span
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px]"
+            style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+          >
+            <IconGlobe size={16} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="text-[13.5px] font-semibold">添加平台</div>
+            <div className="mt-0.5 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+              任意网页版 AI 都可以接入；账号使用独立分区，登录互不影响。
+            </div>
+          </div>
+          <button
+            className="btn btn-ghost btn-icon btn-sm"
+            title="关闭"
+            onClick={onClose}
+            disabled={busy}
+          >
+            ×
+          </button>
+        </div>
+        <div className="space-y-3 px-5 pb-4 pt-4">
+          <label className="block">
+            <span className="text-label mb-1 block">平台名称</span>
+            <input
+              className="field"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例如：Kimi / 我的 AI"
+              autoFocus
+            />
+          </label>
+          <label className="block">
+            <span className="text-label mb-1 block">网页地址</span>
+            <input
+              className="field"
+              value={home}
+              onChange={(e) => setHome(e.target.value)}
+              placeholder="https://example.com/chat"
+              spellCheck={false}
+            />
+          </label>
+          <button
+            type="button"
+            className="text-[11px]"
+            style={{ color: 'var(--accent)' }}
+            onClick={() => setAdvanced((v) => !v)}
+          >
+            {advanced ? '收起高级设置' : '高级：自定义 CSS 选择器（可选）'}
+          </button>
+          {advanced && (
+            <div
+              className="space-y-2 rounded-[var(--r-md)] p-2.5"
+              style={{ background: 'var(--surface-sunken)' }}
+            >
+              <label className="block">
+                <span className="text-label mb-1 block">输入框选择器</span>
+                <input
+                  className="field"
+                  value={inputSel}
+                  onChange={(e) => setInputSel(e.target.value)}
+                  placeholder="textarea, [contenteditable=true]"
+                  spellCheck={false}
+                />
+              </label>
+              <label className="block">
+                <span className="text-label mb-1 block">发送按钮选择器</span>
+                <input
+                  className="field"
+                  value={sendSel}
+                  onChange={(e) => setSendSel(e.target.value)}
+                  placeholder='button[type=submit], button[aria-label*="发送"]'
+                  spellCheck={false}
+                />
+              </label>
+              <label className="block">
+                <span className="text-label mb-1 block">回复气泡选择器</span>
+                <input
+                  className="field"
+                  value={bubbleSel}
+                  onChange={(e) => setBubbleSel(e.target.value)}
+                  placeholder='[class*="markdown"], [class*="message"]'
+                  spellCheck={false}
+                />
+              </label>
+              <div className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                多个选择器用英文逗号分隔；留空使用通用规则。
+              </div>
+            </div>
+          )}
+          {error && (
+            <div
+              className="rounded-[var(--r-sm)] px-2.5 py-2 text-[11.5px]"
+              style={{ background: 'var(--danger-soft)', color: 'var(--danger)' }}
+            >
+              {error}
+            </div>
+          )}
+        </div>
+        <div
+          className="flex justify-end gap-2 border-t px-5 py-3"
+          style={{ borderColor: 'var(--border-soft)' }}
+        >
+          <button className="btn btn-sm btn-outline" onClick={onClose} disabled={busy}>
+            取消
+          </button>
+          <button className="btn btn-sm btn-primary" onClick={() => void submit()} disabled={busy}>
+            {busy ? '添加中…' : '添加平台'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function SettingsView(): React.JSX.Element {
   const settings = useStore((s) => s.settings)
   const providers = useStore((s) => s.providers)
@@ -2253,13 +2448,47 @@ export function SettingsView(): React.JSX.Element {
       await refreshProviders()
     })
   }
+  const removeProvider = (providerId: string, name: string): void => {
+    if (!project) return
+    if (!window.confirm(`移除自定义平台「${name}」？已登录的分区会保留，不会删除账号数据。`))
+      return
+    void api.removeProvider(project.id, providerId).then(async () => {
+      const st = useStore.getState()
+      const closing = st.tabs.filter((t) => t.providerId === providerId)
+      const activeClosed = closing.some((t) => t.id === st.activeTabId)
+      for (const t of closing) st.closeTab(t.id)
+      if (activeClosed) {
+        useStore.setState({
+          activeSession: null,
+          plan: null,
+          streamingText: '',
+          streamingTps: 0,
+          thinkingText: '',
+          pendingReplySessionId: '',
+          confirmRequest: null
+        })
+      }
+      await refreshProviders()
+    })
+  }
   const [activeSection, setActiveSection] = useState('appearance')
+  const [addPlatformOpen, setAddPlatformOpen] = useState(false)
+  const settingsSection = useStore((s) => s.settingsSection)
   const jump = (id: string): void => {
     setActiveSection(id)
     document
       .getElementById(`settings-${id}`)
       ?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
+  // 工作台「添加平台」卡片跳到设置里的平台分组；消费后清空，避免下次进设置又滚过去
+  useEffect(() => {
+    if (!settingsSection) return
+    const timer = window.setTimeout(() => {
+      jump(settingsSection)
+      useStore.setState({ settingsSection: null })
+    }, 80)
+    return () => window.clearTimeout(timer)
+  }, [settingsSection])
   // 滚动时同步左侧导航高亮：滚到哪个分组就点亮哪个
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -2689,6 +2918,17 @@ export function SettingsView(): React.JSX.Element {
           >
             {project ? (
               <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                    已接入 {providers.length} 个平台 · 可添加任意网页版 AI
+                  </span>
+                  <button
+                    className="btn btn-sm btn-outline"
+                    onClick={() => setAddPlatformOpen(true)}
+                  >
+                    <IconPlus size={12} /> 添加平台
+                  </button>
+                </div>
                 {providers.map((p) => (
                   <div
                     key={p.id}
@@ -2698,11 +2938,20 @@ export function SettingsView(): React.JSX.Element {
                     <div className="mb-2 flex items-center gap-2">
                       <span className="text-[12.5px] font-medium">{p.name}</span>
                       <span
-                        className="truncate font-mono text-[10.5px]"
+                        className="min-w-0 flex-1 truncate font-mono text-[10.5px]"
                         style={{ color: 'var(--text-hint)' }}
                       >
                         {p.home}
                       </span>
+                      {!p.builtIn && (
+                        <button
+                          className="btn btn-ghost btn-icon btn-sm shrink-0"
+                          title="移除自定义平台"
+                          onClick={() => removeProvider(p.id, p.name)}
+                        >
+                          <IconTrash size={11} />
+                        </button>
+                      )}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
                       {p.accounts.map((a) => {
@@ -2729,6 +2978,13 @@ export function SettingsView(): React.JSX.Element {
                             >
                               {a.label || '默认账号'}
                             </button>
+                            <span
+                              aria-hidden
+                              className="w-px self-stretch"
+                              style={{
+                                background: active ? 'rgba(255,255,255,.32)' : 'var(--border)'
+                              }}
+                            />
                             <button
                               className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--danger-soft)]"
                               style={{
@@ -2765,6 +3021,13 @@ export function SettingsView(): React.JSX.Element {
               </div>
             )}
           </SettingGroup>
+          {addPlatformOpen && project && (
+            <AddPlatformDialog
+              projectId={project.id}
+              onClose={() => setAddPlatformOpen(false)}
+              onAdded={refreshProviders}
+            />
+          )}
 
           {/* MCP：完整管理在独立页面，设置里只做概览入口 */}
           <SettingGroup

@@ -119,6 +119,9 @@ interface LidowState {
   tabs: WebTab[]
   activeTabId: string | null
   view: ViewId
+  /** 打开设置页时要定位的分组（添加平台入口用），消费后清空 */
+  settingsSection: string | null
+  requestSettings(section?: string): void
   rightOpen: boolean
   /** 纯净模式侧栏宽度（拖拽分隔线调整，持久化到 localStorage） */
   sidebarWidth: number
@@ -269,6 +272,7 @@ export const useStore = create<LidowState>((set, get) => ({
   tabs: [],
   activeTabId: null,
   view: 'home',
+  settingsSection: null,
   rightOpen: true,
   // 记住上次拖拽的侧栏宽度（localStorage 读不到时用默认 268）
   sidebarWidth: (() => {
@@ -378,6 +382,9 @@ export const useStore = create<LidowState>((set, get) => ({
 
   setView(v) {
     set({ view: v, rightOpen: v === 'home' ? get().rightOpen : false })
+  },
+  requestSettings(section) {
+    set({ view: 'settings', settingsSection: section ?? 'appearance' })
   },
   toggleRight() {
     set({ rightOpen: !get().rightOpen })
