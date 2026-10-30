@@ -321,6 +321,13 @@ export interface AppSettings {
   batchDeleteThreshold: number
   /** Lidow 连续向同一个 AI 网页发送消息的最小间隔（毫秒） */
   webSendIntervalMs: number
+  /** 内置 HTTP API（OpenAI 兼容），默认关闭；启用后必须带 Bearer Token */
+  apiServer: {
+    enabled: boolean
+    host: string
+    port: number
+    token: string
+  }
   /**
    * 权限模式（对齐 ZCode 的四档）：
    *  - plan      ：编辑前先出计划，用户确认后才动
@@ -494,7 +501,13 @@ export type OverlayEvent =
   /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */
   | { type: 'net-stream'; text: string; think?: string; finished: boolean }
   /** 网络层 hook：一轮回复完整结束（status 区分 stopped/error/finished） */
-  | { type: 'net-response'; text: string; status: 'finished' | 'stopped' | 'error'; reason?: string; tokens?: number }
+  | {
+      type: 'net-response'
+      text: string
+      status: 'finished' | 'stopped' | 'error'
+      reason?: string
+      tokens?: number
+    }
   /** 网络层 hook：请求失败 */
   | { type: 'net-error'; text: string; reason: string }
   /** 用户在网页输入框里亲手发送的消息（纯净模式同步用） */

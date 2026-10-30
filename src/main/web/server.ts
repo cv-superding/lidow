@@ -28,6 +28,8 @@ export interface WebServerOptions {
   host: string
   token?: string
   invoke: (method: string, args: unknown[]) => unknown
+  /** OpenAI 兼容接口（/v1/*）；返回 false 表示该路径不归它处理 */
+  openai?: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean>
 }
 
 /**
@@ -98,6 +100,22 @@ export class WebServer {
       res.end('ok')
       return
     }
+    if (url.pathname.startsWith('/v1/')) {
+      if (!this.authorized(req, url)) {
+        res.writeHead(401, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(
+          JSON.stringify({ error: { message: 'unauthorized', type: 'authentication_error' } })
+        )
+        return
+      }
+      if (this.opts.openai) {
+        const handled = await this.opts.openai(req, res, url)
+        if (handled) return
+      }
+      res.writeHead(404, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ error: { message: 'not found', type: 'not_found_error' } }))
+      return
+    }
     if (url.pathname === '/api/events') {
       if (!this.authorized(req, url)) {
         res.writeHead(401, { 'content-type': 'text/plain; charset=utf-8' })
@@ -166,7 +184,9 @@ export class WebServer {
     }
     res.writeHead(200, {
       'content-type': MIME[extname(file).toLowerCase()] ?? 'application/octet-stream',
-      'cache-control': file.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable'
+      'cache-control': file.endsWith('index.html')
+        ? 'no-cache'
+        : 'public, max-age=31536000, immutable'
     })
     createReadStream(file).pipe(res)
   }

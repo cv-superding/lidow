@@ -1,6 +1,7 @@
 import { ipcMain, webContents, type WebContents } from 'electron'
 import type { OverlayCommand, OverlayEvent } from '@shared/types'
 import { Logger } from '@main/infra/log'
+import { quietWindow, remainingSendDelay } from '@main/bridge/sendTiming'
 
 const SEND_TIMEOUT_MS = 20_000
 const REPLY_TIMEOUT_MS = 10 * 60_000
@@ -237,7 +238,8 @@ export class OverlayManager {
         ch.lastActivityAt = Date.now()
         // 有内容说明页面还在生成：把软错误的宽限往后顺延
         this.rearmErrorGrace(ch)
-        for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
+        for (const r of ch.chunkResolvers)
+          r(payload.text, this.estimateTps(payload.text.length, ch))
         break
       }
       case 'stream-heartbeat': {
@@ -282,7 +284,8 @@ export class OverlayManager {
         ch.thinkBuf = payload.think ?? ''
         // 有增量 = 页面仍在生成；把软错误宽限顺延，避免中途插话
         if (payload.text || payload.think) this.rearmErrorGrace(ch)
-        for (const r of ch.chunkResolvers) r(payload.text, this.estimateTps(payload.text.length, ch))
+        for (const r of ch.chunkResolvers)
+          r(payload.text, this.estimateTps(payload.text.length, ch))
         // 思考过程流式上报（纯净模式折叠块显示）
         if (payload.think) {
           const sessionId = this.sessionOfWebContents(sender.id)
@@ -431,7 +434,8 @@ export class OverlayManager {
       }
       case 'page-snapshot': {
         const sessionId = this.sessionOfWebContents(sender.id)
-        if (sessionId && payload.text.trim()) this.onPageSnapshot?.(sessionId, payload.text, payload.think)
+        if (sessionId && payload.text.trim())
+          this.onPageSnapshot?.(sessionId, payload.text, payload.think)
         break
       }
       case 'chat-deleted': {
@@ -562,7 +566,12 @@ export class OverlayManager {
       if (wait > 0) await new Promise((r) => setTimeout(r, wait))
       if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
       // 网络层还在出字/思考时不要发：重试提示会被平台排成“中途插话”
-      await this.waitForPageQuiet(ch)
+      await this.waitForPageQuiet(ch, quietWindow(interval))
+      if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
+      // 设置里的间隔是“上一条回复结束后等多久”，从页面最后一次活动算起，
+      // 不能从上次发送算起：长回复早就超过间隔，等于没有等待。
+      const remain = remainingSendDelay(ch.lastActivityAt, interval)
+      if (remain > 0) await new Promise((r) => setTimeout(r, remain))
       if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
       this.lastSendAt.set(wcId, Date.now())
       await this.sendNow(ch, text)
@@ -600,7 +609,10 @@ export class OverlayManager {
     ch.netError = undefined
     ch.streamBuf = ''
     const sendP = new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('发送超时（页面可能弹出拦截确认）')), SEND_TIMEOUT_MS)
+      const timer = setTimeout(
+        () => reject(new Error('发送超时（页面可能弹出拦截确认）')),
+        SEND_TIMEOUT_MS
+      )
       ch.sendResolvers.add((ok, err) => {
         clearTimeout(timer)
         if (ok) resolve()
@@ -610,8 +622,6 @@ export class OverlayManager {
     target.send('lidow:overlay-cmd', { kind: 'send', text } satisfies OverlayCommand)
     return sendP
   }
-
-
 
   /** 会话 → hook 源码（页面导航/重载后需要重新注入，SPA 内部跳转不会丢） */
   private hookSources = new Map<string, string>()
@@ -697,7 +707,10 @@ export class OverlayManager {
   /** 等待网页当前轮真正结束（供 loop 在注册等待器之前调用） */
   async waitPageIdle(sessionId: string): Promise<void> {
     const ch = await this.waitForChannel(sessionId)
-    if (ch) await this.waitForPageQuiet(ch)
+    if (ch) {
+      const interval = Math.max(0, Math.min(60_000, Number(this.sendIntervalProvider()) || 0))
+      await this.waitForPageQuiet(ch, quietWindow(interval))
+    }
   }
 
   /**
@@ -725,7 +738,10 @@ export class OverlayManager {
   }
 
   /** 等待一轮完整回复；失败时 reject（供 loop 的重试引擎接管） */
-  async awaitReply(sessionId: string, onChunk: (partial: string, tps: number) => void): Promise<string> {
+  async awaitReply(
+    sessionId: string,
+    onChunk: (partial: string, tps: number) => void
+  ): Promise<string> {
     // 首次发送时 webview 可能还在 attach：等待通道就绪而不是立即失败
     const ch = await this.waitForChannel(sessionId)
     if (!ch) return Promise.reject(new Error('网页未连接（平台页面未加载完成，请稍后重试）'))
@@ -780,7 +796,7 @@ export class OverlayManager {
 
   /** 截断/空回复/流或网络异常都可能只是网络层误报：先等页面自己收尾，不急着重试 */
   private isSoftStreamError(reason: string): boolean {
-    return /incomplete|^empty$|^stream$|^network$|^xhr$/i.test(reason)
+    return /incomplete|^empty$|^stream(-error)?$|^network$|^xhr$/i.test(reason)
   }
 
   private clearErrorGrace(ch: Channel): void {

@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   deleteProtection: true,
   batchDeleteThreshold: 200,
   webSendIntervalMs: 1000,
+  apiServer: { enabled: false, host: '127.0.0.1', port: 6080, token: '' },
   permissionMode: 'autonomous',
   ssrfProtection: true,
   commandTimeoutMs: 30_000,
@@ -1052,8 +1053,27 @@ export class AppContext {
     return this.webScripts.get(providerId) ?? []
   }
 
+  private apiEventListeners = new Set<
+    (event: { type: string; sessionId: string; [k: string]: unknown }) => void
+  >()
+
+  /** 内置 HTTP API 等进程内订阅者：与渲染层事件同源，不经过 IPC/SSE */
+  onEvent(
+    listener: (event: { type: string; sessionId: string; [k: string]: unknown }) => void
+  ): () => void {
+    this.apiEventListeners.add(listener)
+    return () => this.apiEventListeners.delete(listener)
+  }
+
   emit(event: { type: string; sessionId: string; [k: string]: unknown }): void {
     this.emitFn?.(event)
+    for (const listener of this.apiEventListeners) {
+      try {
+        listener(event)
+      } catch {
+        /* 订阅方异常不能影响主事件流 */
+      }
+    }
   }
 
   /** 向 webview 下发对应 provider 的 DOM 适配器（bindSession 与 ready 双路径调用） */

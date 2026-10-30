@@ -16,6 +16,7 @@ function makeSettings(): AppSettings {
     deleteProtection: true,
     batchDeleteThreshold: 200,
     webSendIntervalMs: 0,
+    apiServer: { enabled: false, host: '127.0.0.1', port: 6080, token: '' },
     permissionMode: 'full',
     ssrfProtection: true,
     commandTimeoutMs: 30_000,
@@ -216,7 +217,14 @@ describe('重启后的最终回答恢复', () => {
     const { loop, session, addTurn } = makeHarness()
     addTurn({ id: 'u1', role: 'user', text: '今天济南的天气咋样', ts: Date.now(), status: 'done' })
     const answer = '济南今天晴，11~23℃。'
-    addTurn({ id: 'a1', role: 'assistant', text: answer, ts: Date.now(), status: 'done', think: '用户问天气' })
+    addTurn({
+      id: 'a1',
+      role: 'assistant',
+      text: answer,
+      ts: Date.now(),
+      status: 'done',
+      think: '用户问天气'
+    })
     loop.syncExternalReply(
       'sess_1',
       answer,

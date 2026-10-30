@@ -31,7 +31,20 @@ import type {
 /** renderer → main 可调用接口（preload contextBridge 实现同名方法） */
 export interface LidowApi {
   // 应用
-  getAppState(): Promise<{ projects: ProjectInfo[]; activeProjectId: string | null; settings: AppSettings; version: string }>
+  getAppState(): Promise<{
+    projects: ProjectInfo[]
+    activeProjectId: string | null
+    settings: AppSettings
+    version: string
+  }>
+  /** 内置 HTTP API 运行状态（桌面版按设置启停，Web 版常驻） */
+  getApiStatus(): Promise<{
+    mode: 'desktop' | 'web'
+    running: boolean
+    host: string
+    port: number
+    error: string
+  }>
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>
   pickDirectory(): Promise<string | null>
   openProject(root: string): Promise<ProjectInfo>
@@ -47,19 +60,41 @@ export interface LidowApi {
 
   // Provider / 账号
   listProviders(projectId: string): Promise<ProviderDescriptor[]>
-  addProvider(desc: Omit<ProviderDescriptor, 'builtIn' | 'enabled' | 'accounts'>): Promise<ProviderDescriptor>
+  addProvider(
+    desc: Omit<ProviderDescriptor, 'builtIn' | 'enabled' | 'accounts'>
+  ): Promise<ProviderDescriptor>
   removeProvider(projectId: string, providerId: string): Promise<void>
   addAccount(projectId: string, providerId: string, label: string): Promise<ProviderDescriptor>
-  switchAccount(projectId: string, providerId: string, accountId: string): Promise<ProviderDescriptor>
-  removeAccount(projectId: string, providerId: string, accountId: string): Promise<ProviderDescriptor>
-  updateProviderAdapter(projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']): Promise<ProviderDescriptor>
+  switchAccount(
+    projectId: string,
+    providerId: string,
+    accountId: string
+  ): Promise<ProviderDescriptor>
+  removeAccount(
+    projectId: string,
+    providerId: string,
+    accountId: string
+  ): Promise<ProviderDescriptor>
+  updateProviderAdapter(
+    projectId: string,
+    providerId: string,
+    adapter: ProviderDescriptor['adapter']
+  ): Promise<ProviderDescriptor>
 
   // 会话
   listSessions(projectId: string, providerId?: string): Promise<SessionMeta[]>
   getSession(sessionId: string): Promise<Session | null>
-  createSession(projectId: string, providerId: string, parentSessionId?: string, accountId?: string): Promise<Session>
+  createSession(
+    projectId: string,
+    providerId: string,
+    parentSessionId?: string,
+    accountId?: string
+  ): Promise<Session>
   /** 删除会话；默认同时删除网页端对话（deleteWebChat=false 只删本地） */
-  deleteSession(sessionId: string, deleteWebChat?: boolean): Promise<{ webDeleted?: boolean; message?: string }>
+  deleteSession(
+    sessionId: string,
+    deleteWebChat?: boolean
+  ): Promise<{ webDeleted?: boolean; message?: string }>
   /** 删除项目内所有 0 轮次会话（保留 keepSessionId），返回清理数 */
   cleanupEmptySessions(projectId: string, keepSessionId?: string): Promise<number>
   renameSession(sessionId: string, title: string): Promise<void>
@@ -68,7 +103,11 @@ export interface LidowApi {
   /** Web 版：让服务端隐藏宿主打开/绑定该会话的网页 */
   hostAttachSession(sessionId: string): Promise<boolean>
   /** Web 版：导入平台 Cookie（浏览器 DevTools 的 Cookie 请求头或 JSON 数组） */
-  importProviderCookies(providerId: string, cookieText: string, accountId?: string): Promise<{ imported: number }>
+  importProviderCookies(
+    providerId: string,
+    cookieText: string,
+    accountId?: string
+  ): Promise<{ imported: number }>
   compactSession(sessionId: string): Promise<Session>
 
   // Agent 循环
@@ -77,7 +116,11 @@ export interface LidowApi {
   stop(sessionId: string, level: StopLevel): Promise<void>
   confirmTool(callId: string, approved: boolean, rememberChoice?: boolean): Promise<void>
   /** 确认/放弃计划：第一个参数是会话 id（计划按会话存储） */
-  confirmPlan(sessionId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]): Promise<void>
+  confirmPlan(
+    sessionId: string,
+    approved: boolean,
+    edits?: { id: string; title: string; detail: string }[]
+  ): Promise<void>
   abortPlan(sessionId: string): Promise<void>
 
   // 工具/文件
@@ -125,7 +168,10 @@ export interface LidowApi {
   listInstalledPlugins(): Promise<InstalledPlugin[]>
   /** 内置精选插件（本地直装，不依赖网络） */
   listBuiltinPlugins(): Promise<MarketPlugin[]>
-  searchMarket(query: string, category?: string): Promise<{ items: MarketPlugin[]; warning?: string }>
+  searchMarket(
+    query: string,
+    category?: string
+  ): Promise<{ items: MarketPlugin[]; warning?: string }>
   installPlugin(id: string): Promise<InstalledPlugin[]>
   uninstallPlugin(id: string): Promise<InstalledPlugin[]>
   togglePlugin(id: string, enabled: boolean): Promise<InstalledPlugin[]>
@@ -155,7 +201,10 @@ export interface LidowApi {
   /** 打开导出目录并返回路径 */
   openExportDir(): Promise<string>
   /** 内置终端：执行一条命令（独立于 AI，用户手动运行），返回输出 */
-  runTerminal(command: string, cwd?: string): Promise<{ output: string; exitCode: number | null; timedOut: boolean }>
+  runTerminal(
+    command: string,
+    cwd?: string
+  ): Promise<{ output: string; exitCode: number | null; timedOut: boolean }>
   /** 内置终端默认工作目录（当前项目根） */
   terminalCwd(): Promise<string>
   /** 已注册工具清单（内置 + MCP + 插件），供帮助面板展示 */
@@ -171,7 +220,11 @@ export interface LidowApi {
   listKnowledgeBases(): Promise<KnowledgeBase[]>
   addKnowledgeBase(name: string, root: string): Promise<KnowledgeBase>
   removeKnowledgeBase(id: string): Promise<void>
-  searchKnowledge(kbId: string, query: string, limit?: number): Promise<{ path: string; score: number; snippet: string }[]>
+  searchKnowledge(
+    kbId: string,
+    query: string,
+    limit?: number
+  ): Promise<{ path: string; score: number; snippet: string }[]>
 
   // 快捷指令
   listQuickCommands(): Promise<QuickCommand[]>
@@ -179,7 +232,10 @@ export interface LidowApi {
   deleteQuickCommand(id: string): Promise<QuickCommand[]>
 
   // 视图控制
-  attachWebview(providerId: string, accountId: string): Promise<{
+  attachWebview(
+    providerId: string,
+    accountId: string
+  ): Promise<{
     partition: string
     overlayPath: string
     home: string
@@ -190,17 +246,32 @@ export interface LidowApi {
   /** 切换会话后把页面落到该会话自己的对话（providerUrl 或新聊天） */
   landSession(sessionId: string): Promise<void>
   /** 无会话时下发 adapter 与项目目录（决定是否弹首次引导） */
-  syncProjectToWebview(webContentsId: number, adapter?: DomAdapter, providerId?: string, accountId?: string): Promise<boolean>
+  syncProjectToWebview(
+    webContentsId: number,
+    adapter?: DomAdapter,
+    providerId?: string,
+    accountId?: string
+  ): Promise<boolean>
   setPureMode(on: boolean): Promise<void>
   /** 触发网页内交互（深度思考 / 智能搜索 / 上传文件） */
-  overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
+  overlayToggle(
+    sessionId: string,
+    kind: 'toggle-think' | 'toggle-search' | 'upload-file'
+  ): Promise<boolean>
   /** 选择本机文件并附加到当前网页会话的输入区（桌面纯模式） */
-  uploadWebFile(sessionId: string): Promise<{ ok: boolean; canceled?: boolean; count?: number; message?: string }>
+  uploadWebFile(
+    sessionId: string
+  ): Promise<{ ok: boolean; canceled?: boolean; count?: number; message?: string }>
   /** 粘贴剪贴板里的图片：data URL 注入当前网页会话的输入区 */
-  pasteWebImages(sessionId: string, images: string[]): Promise<{ ok: boolean; count?: number; message?: string }>
+  pasteWebImages(
+    sessionId: string,
+    images: string[]
+  ): Promise<{ ok: boolean; count?: number; message?: string }>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
-  checkUpdate(manual?: boolean): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
+  checkUpdate(
+    manual?: boolean
+  ): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
   /** 当前更新状态（启动时自动检查的结果可能早于渲染层订阅） */
   getUpdateState(): Promise<UpdateState>
   /** 下载并安装更新（便携版打开 Releases 页） */
@@ -256,7 +327,15 @@ export type LidowEvent =
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }
   | { type: 'tool-start'; sessionId: string; result: ToolResult }
-  | { type: 'tool-confirm-required'; sessionId: string; result: ToolResult; callId: string; name: string; input: Record<string, unknown>; reason: string }
+  | {
+      type: 'tool-confirm-required'
+      sessionId: string
+      result: ToolResult
+      callId: string
+      name: string
+      input: Record<string, unknown>
+      reason: string
+    }
   | { type: 'plan-proposed'; sessionId: string; plan: TaskPlan }
   | { type: 'overlay-event'; providerId: string; event: unknown }
   | { type: 'ui-input'; sessionId: string; text: string }

@@ -133,6 +133,7 @@ Google OAuth 会被平台拒绝，请用邮箱/验证码登录。
 - [使用手册](docs/usage.md)（5 分钟上手 + 全视图说明）
 - [Docker 部署](docs/docker.md)（原生 Web UI、登录态导入、持久化与常见问题）
 - [架构设计](docs/architecture.md)
+- [HTTP API](docs/api.md)（OpenAI 兼容 `/v1`、流式、Nginx/Caddy 反代）
 - [Provider 开发](docs/provider-dev.md)（自定义平台 / 选择器调试）
 - [插件开发](docs/plugin-dev.md)
 - [DSH 兼容覆盖](docs/dsh-coverage.md)

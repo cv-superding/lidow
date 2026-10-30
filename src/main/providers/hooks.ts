@@ -20,7 +20,15 @@ export interface ProviderHookSpec {
   /** 判定是否为「用户主动停止」请求 */
   isStopStream?: (url: string, method: string) => boolean
   /** 从 SSE 帧对象中提取回复文本（返回增量） */
-  extract: (frame: unknown) => { text?: string; think?: string; finished?: boolean; incomplete?: boolean; exhausted?: boolean } | null
+  extract: (
+    frame: unknown
+  ) => {
+    text?: string
+    think?: string
+    finished?: boolean
+    incomplete?: boolean
+    exhausted?: boolean
+  } | null
   /** 从帧对象捕获 token/消息 id（可选） */
   captureMeta?: (frame: unknown) => { accumulatedTokens?: number; msgIds?: unknown } | null
   /**
@@ -59,7 +67,10 @@ interface ExtractCtx {
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
-function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], currentIndex: -1, observed: false }): ExtractResult | null {
+function deepseekExtract(
+  frame: unknown,
+  ctx: ExtractCtx = { fragmentTypes: [], currentIndex: -1, observed: false }
+): ExtractResult | null {
   const f = frame as Record<string, unknown>
   if (!f || typeof f !== 'object') return null
   const p = typeof f.p === 'string' ? f.p : undefined
@@ -93,7 +104,9 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
     if (resp && typeof resp === 'object') {
       const frags = resp.fragments
       if (Array.isArray(frags) && frags.length > 0) {
-        const types = frags.map((fr) => String((fr as { type?: string })?.type ?? 'RESPONSE').toUpperCase())
+        const types = frags.map((fr) =>
+          String((fr as { type?: string })?.type ?? 'RESPONSE').toUpperCase()
+        )
         ctx.fragmentTypes = types
         ctx.currentIndex = types.length - 1
         const first = !ctx.observed
@@ -102,7 +115,12 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
         const merged: ExtractResult = {}
         for (let i = 0; i < frags.length; i++) {
           const fr = frags[i] as { content?: string; text?: string }
-          const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
+          const content =
+            typeof fr?.content === 'string'
+              ? fr.content
+              : typeof fr?.text === 'string'
+                ? fr.text
+                : ''
           if (!content) continue
           if (types[i] === 'THINK') merged.think = (merged.think ?? '') + content
           else merged.text = (merged.text ?? '') + content
@@ -119,7 +137,8 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
       const fr = frag as { type?: string; content?: string; text?: string }
       const type = String(fr?.type ?? 'RESPONSE').toUpperCase()
       ctx.fragmentTypes.push(type)
-      const content = typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
+      const content =
+        typeof fr?.content === 'string' ? fr.content : typeof fr?.text === 'string' ? fr.text : ''
       if (!content) continue
       if (type === 'THINK') merged.think = (merged.think ?? '') + content
       else merged.text = (merged.text ?? '') + content
@@ -139,7 +158,7 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
       const m = /\/fragments\/(-?\d+)\//.exec(p)
       const raw = m ? Number(m[1]) : -1
       const idx = raw === -1 ? ctx.currentIndex : raw
-      const type = idx >= 0 ? ctx.fragmentTypes[idx] ?? '' : ''
+      const type = idx >= 0 ? (ctx.fragmentTypes[idx] ?? '') : ''
       if (type === 'THINK') return { think: v }
       return { text: v }
     }
@@ -154,7 +173,11 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
 }
 
 /** 生成注入主世界的自包含 IIFE 源码 */
-export function buildHookSource(spec: ProviderHookSpec, sysPrompt = '', repeatSysPrompt = false): string {
+export function buildHookSource(
+  spec: ProviderHookSpec,
+  sysPrompt = '',
+  repeatSysPrompt = false
+): string {
   // 内联进模板前先做一次 JS 字符串字面量转义（含换行/引号/反斜杠）
   const sysLiteral = JSON.stringify(sysPrompt)
   const promptField = spec.promptField ? JSON.stringify(spec.promptField) : 'null'
@@ -624,8 +647,10 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = '', repeatSy
 /** DeepSeek：POST /api/v0/chat/completion，SSE 帧 p/v 补丁结构 */
 export const DEEPSEEK_HOOK: ProviderHookSpec = {
   id: 'deepseek',
-  isCompletion: (url, method) => method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/completion') !== -1,
-  isStopStream: (url, method) => method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/stop_stream') !== -1,
+  isCompletion: (url, method) =>
+    method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/completion') !== -1,
+  isStopStream: (url, method) =>
+    method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/stop_stream') !== -1,
   extract: deepseekExtract,
   captureMeta: () => null,
   promptField: 'prompt',
@@ -635,7 +660,8 @@ export const DEEPSEEK_HOOK: ProviderHookSpec = {
 /** ChatGPT：POST /backend-api/conversation，data: 行内为 JSON 增量（message.content.parts） */
 export const CHATGPT_HOOK: ProviderHookSpec = {
   id: 'chatgpt',
-  isCompletion: (url, method) => method.toUpperCase() === 'POST' && /\/backend-api\/(conversation|f\/conversation)/.test(url),
+  isCompletion: (url, method) =>
+    method.toUpperCase() === 'POST' && /\/backend-api\/(conversation|f\/conversation)/.test(url),
   extract: (frame) => {
     const f = frame as {
       message?: { author?: { role?: string }; content?: { parts?: unknown[] }; status?: string }
@@ -651,12 +677,16 @@ export const CHATGPT_HOOK: ProviderHookSpec = {
       const ctas = Array.isArray(f.banner_info.call_to_action) ? f.banner_info.call_to_action : []
       if (ctas.includes('continue_in_new_chat')) return { exhausted: true }
     }
+    if (f.type === 'message_stream_complete') return { finished: true }
     const msg = f.message
     if (msg?.author?.role === 'assistant' && Array.isArray(msg.content?.parts)) {
       const text = msg.content.parts.filter((x) => typeof x === 'string').join('')
       return { text }
     }
-    if (msg?.status === 'finished_successfully') return { finished: true }
+    // 用户消息也会带 finished_successfully：不能拿它当本轮回复结束
+    if (msg?.author?.role === 'assistant' && msg?.status === 'finished_successfully') {
+      return { finished: true }
+    }
     return null
   }
 }
@@ -664,13 +694,21 @@ export const CHATGPT_HOOK: ProviderHookSpec = {
 /** Claude：POST /api/.../completion，SSE 事件含 completion 字段增量 */
 export const CLAUDE_HOOK: ProviderHookSpec = {
   id: 'claude',
-  isCompletion: (url, method) => method.toUpperCase() === 'POST' && /\/api\/organizations\/.+\/chat_conversations\/.+\/completion/.test(url),
+  isCompletion: (url, method) =>
+    method.toUpperCase() === 'POST' &&
+    /\/api\/organizations\/.+\/chat_conversations\/.+\/completion/.test(url),
   isStopStream: (url, method) => method.toUpperCase() === 'POST' && /\/completion\/stop/.test(url),
   extract: (frame) => {
-    const f = frame as { type?: string; completion?: string; stop_reason?: string; delta?: { text?: string } }
+    const f = frame as {
+      type?: string
+      completion?: string
+      stop_reason?: string
+      delta?: { text?: string }
+    }
     if (!f || typeof f !== 'object') return null
     if (f.type === 'completion' && typeof f.completion === 'string') return { text: f.completion }
-    if (f.type === 'content_block_delta' && typeof f.delta?.text === 'string') return { text: f.delta.text }
+    if (f.type === 'content_block_delta' && typeof f.delta?.text === 'string')
+      return { text: f.delta.text }
     if (f.stop_reason) return { finished: true }
     return null
   }

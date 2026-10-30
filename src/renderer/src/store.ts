@@ -230,6 +230,7 @@ export const useStore = create<LidowState>((set, get) => ({
     deleteProtection: true,
     batchDeleteThreshold: 200,
     webSendIntervalMs: 1000,
+    apiServer: { enabled: false, host: '127.0.0.1', port: 6080, token: '' },
     permissionMode: 'autonomous',
     ssrfProtection: true,
     commandTimeoutMs: 30000,
@@ -322,29 +323,36 @@ export const useStore = create<LidowState>((set, get) => ({
     // 每条事件被处理多遍（实测：右下角同一条通知出现两次）
     if (get().booted || bootPromise) return
     bootPromise = (async () => {
-    const state = await api.getAppState()
-    set({ booted: true, version: state.version, settings: state.settings, pureMode: state.settings.pureMode, projects: state.projects, activeProjectId: state.activeProjectId })
-    get().applyTheme(state.settings)
-    api.onEvent((e) => get().handleEvent(e))
-    // main 的自动检查可能早于本窗口订阅：补拉一次当前状态
-    void api
-      .getUpdateState()
-      .then((u) => set({ updateState: u }))
-      .catch(() => undefined)
-    // 启动即加载快捷指令：此前只有访问「快捷指令」管理页后才写进 store，
-    // 直接进纯净模式输入 / 看不到已保存的自定义指令。
-    void api
-      .listQuickCommands()
-      .then((c) => set({ quickCmds: c }))
-      .catch(() => undefined)
-    if (state.projects.length > 0) {
-      await get().refreshProviders()
-      await get().refreshSessions()
-    } else {
-      // 没有项目也要有平台列表：空态里要能选平台先进 AI 页面，
-      // 初始化引导由 overlay 注入在网页里（cuckoo 同款）
-      await get().refreshProviders()
-    }
+      const state = await api.getAppState()
+      set({
+        booted: true,
+        version: state.version,
+        settings: state.settings,
+        pureMode: state.settings.pureMode,
+        projects: state.projects,
+        activeProjectId: state.activeProjectId
+      })
+      get().applyTheme(state.settings)
+      api.onEvent((e) => get().handleEvent(e))
+      // main 的自动检查可能早于本窗口订阅：补拉一次当前状态
+      void api
+        .getUpdateState()
+        .then((u) => set({ updateState: u }))
+        .catch(() => undefined)
+      // 启动即加载快捷指令：此前只有访问「快捷指令」管理页后才写进 store，
+      // 直接进纯净模式输入 / 看不到已保存的自定义指令。
+      void api
+        .listQuickCommands()
+        .then((c) => set({ quickCmds: c }))
+        .catch(() => undefined)
+      if (state.projects.length > 0) {
+        await get().refreshProviders()
+        await get().refreshSessions()
+      } else {
+        // 没有项目也要有平台列表：空态里要能选平台先进 AI 页面，
+        // 初始化引导由 overlay 注入在网页里（cuckoo 同款）
+        await get().refreshProviders()
+      }
     })()
     try {
       await bootPromise
@@ -467,7 +475,7 @@ export const useStore = create<LidowState>((set, get) => ({
       ? s.activeSession?.providerId === providerId
         ? s.activeSession.id
         : ''
-      : s.activeSession?.id ?? ''
+      : (s.activeSession?.id ?? '')
     const sessionId = tab?.sessionId || fallbackId
     // 确保有后台 webview 承载（webview 是对话驱动通道）
     void s.openProviderTab(providerId, sessionId, tab?.accountId ?? s.activeSession?.accountId)
@@ -613,7 +621,10 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async openSession(id) {
     const seq = ++sessionSeq
-    const [s, plan] = await Promise.all([api.getSession(id), api.getActivePlan(id).catch(() => null)])
+    const [s, plan] = await Promise.all([
+      api.getSession(id),
+      api.getActivePlan(id).catch(() => null)
+    ])
     if (seq !== sessionSeq) return // 期间用户又切了会话/标签/项目
     const same = get().activeSession?.id === id
     set({
@@ -650,7 +661,6 @@ export const useStore = create<LidowState>((set, get) => ({
     }
   },
 
-
   async openProviderTab(providerId, sessionId, accountId) {
     if (WEB_MODE) {
       if (sessionId) void api.hostAttachSession(sessionId)
@@ -668,7 +678,9 @@ export const useStore = create<LidowState>((set, get) => ({
     const targetKey = accountKeyOf(target)
     // 同一平台同一账号只保留一个标签：再次选择账号应该是切回已有页面，
     // 而不是用同样的 partition 再造一个 webview（看起来像重新登录）。
-    const existing = get().tabs.find((t) => t.providerId === providerId && accountKeyOf(t.accountId) === targetKey)
+    const existing = get().tabs.find(
+      (t) => t.providerId === providerId && accountKeyOf(t.accountId) === targetKey
+    )
     if (existing) {
       set({ activeTabId: existing.id })
       if (sessionId) {
@@ -692,7 +704,8 @@ export const useStore = create<LidowState>((set, get) => ({
       providerId,
       providerName: provider.name,
       accountId: target,
-      accountName: account?.label ?? (provider.accounts.length > 0 && !targetKey ? '默认账号' : undefined),
+      accountName:
+        account?.label ?? (provider.accounts.length > 0 && !targetKey ? '默认账号' : undefined),
       partition: info.partition,
       overlayPath: info.overlayPath,
       home: info.home,
@@ -718,7 +731,7 @@ export const useStore = create<LidowState>((set, get) => ({
   closeTab(id) {
     const { tabs, activeTabId } = get()
     const next = tabs.filter((t) => t.id !== id)
-    set({ tabs: next, activeTabId: activeTabId === id ? next[0]?.id ?? null : activeTabId })
+    set({ tabs: next, activeTabId: activeTabId === id ? (next[0]?.id ?? null) : activeTabId })
   },
 
   setActiveTab(id) {
@@ -754,10 +767,12 @@ export const useStore = create<LidowState>((set, get) => ({
       reviewFiles: [],
       reviewActivePath: ''
     })
-    void Promise.all([api.getSession(sid), api.getActivePlan(sid).catch(() => null)]).then(([sess, plan]) => {
-      if (seq !== sessionSeq || get().activeTabId !== id) return // 期间又切走了
-      set({ activeSession: sess, plan: sess ? plan : null })
-    })
+    void Promise.all([api.getSession(sid), api.getActivePlan(sid).catch(() => null)]).then(
+      ([sess, plan]) => {
+        if (seq !== sessionSeq || get().activeTabId !== id) return // 期间又切走了
+        set({ activeSession: sess, plan: sess ? plan : null })
+      }
+    )
   },
 
   async bindTabSession(tabId, sessionId, webContentsId) {
@@ -765,9 +780,12 @@ export const useStore = create<LidowState>((set, get) => ({
     // 幂等：同会话同 wcId 已绑定 → 不再做任何事。
     // 缺了这句，WebTabs 的补绑 effect 会「绑定→更新tab→effect重跑→再绑定」死循环，
     // 每秒打爆主进程几十次 bindSession + hook 注入（实测应用因此假死）。
-    if (prev && prev.sessionId === sessionId && webContentsId > 0 && prev.wcId === webContentsId) return
+    if (prev && prev.sessionId === sessionId && webContentsId > 0 && prev.wcId === webContentsId)
+      return
     set((s) => ({
-      tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t))
+      tabs: s.tabs.map((t) =>
+        t.id === tabId ? { ...t, sessionId, wcId: webContentsId > 0 ? webContentsId : t.wcId } : t
+      )
     }))
     if (webContentsId > 0) {
       // 主进程 bindSession 会解除同一 webview 上的旧会话绑定（单绑定不变量），
@@ -847,7 +865,9 @@ export const useStore = create<LidowState>((set, get) => ({
     let wcId = webviewWcId(tabId)
     if (wcId <= 0) wcId = await waitWebviewWcId(tabId, 66)
     if (wcId > 0) {
-      set((s) => ({ tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, wcId, sessionId: activeSession.id } : t)) }))
+      set((s) => ({
+        tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, wcId, sessionId: activeSession.id } : t))
+      }))
       await api.bindSession(activeSession.id, wcId)
     } else {
       get().notice('网页尚未就绪，未能绑定会话（请稍后重试发送）', 'warn')
@@ -890,7 +910,8 @@ export const useStore = create<LidowState>((set, get) => ({
   async checkUpdate(manual = false) {
     const cur = get().updateState
     // main 正在下载/已下载：重复 check 只会打断流程
-    if (cur.phase === 'checking' || cur.phase === 'downloading' || cur.phase === 'downloaded') return
+    if (cur.phase === 'checking' || cur.phase === 'downloading' || cur.phase === 'downloaded')
+      return
     // 用户主动检查时重新展示提示，避免之前点过「稍后」后看不到结果
     if (manual) set({ updateDismissedVersion: '' })
     set({ updateState: { ...cur, phase: 'checking', manual, message: '' } })
@@ -927,10 +948,15 @@ export const useStore = create<LidowState>((set, get) => ({
     set({ updateState: { ...cur, phase: 'downloading', percent: 0, manual: true } })
     try {
       const r = await api.downloadUpdate()
-      if (!r.ok) set({ updateState: { ...get().updateState, phase: 'error', manual: true, message: r.message } })
+      if (!r.ok)
+        set({
+          updateState: { ...get().updateState, phase: 'error', manual: true, message: r.message }
+        })
       else if (get().updateState.phase !== 'downloaded') {
         // 便携版不会真的下载/安装：回退到 available，避免进度条永远停在 0%
-        set({ updateState: { ...get().updateState, phase: cur.portable ? 'available' : 'downloaded' } })
+        set({
+          updateState: { ...get().updateState, phase: cur.portable ? 'available' : 'downloaded' }
+        })
         get().notice(r.message)
       }
     } catch (e) {
@@ -950,7 +976,6 @@ export const useStore = create<LidowState>((set, get) => ({
     set({ updateDismissedVersion: v ?? '' })
   },
 
-
   async refreshAll() {
     const s = get()
     await Promise.all([
@@ -960,7 +985,12 @@ export const useStore = create<LidowState>((set, get) => ({
         set({ projects: st.projects, activeProjectId: st.activeProjectId })
       })(),
       s.refreshSessions(),
-      (async () => set({ skills: await api.listSkills(), agents: await api.listAgents(), rules: await api.listRules() }))(),
+      (async () =>
+        set({
+          skills: await api.listSkills(),
+          agents: await api.listAgents(),
+          rules: await api.listRules()
+        }))(),
       (async () => set({ memoryList: await api.listMemory() }))(),
       (async () => {
         set({ mcpServers: await api.listMcpServers(), mcpTools: await api.listMcpTools() })
@@ -983,7 +1013,9 @@ export const useStore = create<LidowState>((set, get) => ({
         set((st) => ({
           sessions: st.sessions.map((m) => (m.id === e.sessionId ? { ...m, title: e.title } : m)),
           activeSession:
-            st.activeSession?.id === e.sessionId ? { ...st.activeSession, title: e.title } : st.activeSession
+            st.activeSession?.id === e.sessionId
+              ? { ...st.activeSession, title: e.title }
+              : st.activeSession
         }))
         break
       case 'session-deleted': {
@@ -1017,7 +1049,9 @@ export const useStore = create<LidowState>((set, get) => ({
         const sid = e.sessionId
         const st0 = get()
         const target =
-          (e.webContentsId !== undefined ? st0.tabs.find((t) => t.wcId === e.webContentsId) : undefined) ??
+          (e.webContentsId !== undefined
+            ? st0.tabs.find((t) => t.wcId === e.webContentsId)
+            : undefined) ??
           st0.tabs.find((t) => e.providerId && t.providerId === e.providerId && !t.sessionId)
         if (target) {
           set((st) => ({
@@ -1042,7 +1076,12 @@ export const useStore = create<LidowState>((set, get) => ({
         if (WEB_MODE) break
         void (async () => {
           const sess = await api.getSession(e.sessionId).catch(() => null)
-          if (sess) await get().openProviderTab(sess.providerId, sess.id, sess.accountId ?? DEFAULT_ACCOUNT_ID)
+          if (sess)
+            await get().openProviderTab(
+              sess.providerId,
+              sess.id,
+              sess.accountId ?? DEFAULT_ACCOUNT_ID
+            )
         })()
         break
       }
@@ -1106,11 +1145,15 @@ export const useStore = create<LidowState>((set, get) => ({
         // 自动续接：主进程已把网页绑定到新会话，视图和标签状态都要跟上，
         // 否则后续消息会重新绑回旧会话、续接后的回复也看不到。
         set((st) => ({
-          pendingReplySessionId: st.pendingReplySessionId === e.fromSessionId ? e.sessionId : st.pendingReplySessionId,
-          tabs: st.tabs.map((t) => (t.sessionId === e.fromSessionId ? { ...t, sessionId: e.sessionId } : t))
+          pendingReplySessionId:
+            st.pendingReplySessionId === e.fromSessionId ? e.sessionId : st.pendingReplySessionId,
+          tabs: st.tabs.map((t) =>
+            t.sessionId === e.fromSessionId ? { ...t, sessionId: e.sessionId } : t
+          )
         }))
         void api.getSession(e.sessionId).then((sess) => {
-          if (sess && get().activeSession?.id === e.fromSessionId) set({ activeSession: sess, plan: null })
+          if (sess && get().activeSession?.id === e.fromSessionId)
+            set({ activeSession: sess, plan: null })
         })
         void get().refreshSessions()
         break
@@ -1144,7 +1187,8 @@ export const useStore = create<LidowState>((set, get) => ({
         const ts = Date.now()
         set({ notices: [...s.notices.slice(-20), { level: e.level, message: e.message, ts }] })
         // 任务被忽略时不会产生回复轮：清掉等待态，避免「正在思考」永久停留
-        if (e.level === 'warn' && e.message.includes('已有任务在执行')) set({ pendingReplySessionId: '' })
+        if (e.level === 'warn' && e.message.includes('已有任务在执行'))
+          set({ pendingReplySessionId: '' })
         get().scheduleNoticeRemoval(ts)
         break
       }

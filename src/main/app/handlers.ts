@@ -1,4 +1,12 @@
-import { app, BrowserWindow, dialog, shell, nativeTheme, session as electronSession, webContents } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  shell,
+  nativeTheme,
+  session as electronSession,
+  webContents
+} from 'electron'
 import type { OpenDialogOptions } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -23,7 +31,6 @@ import type {
   StopLevel
 } from '@shared/types'
 
-
 /** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
 function applyNativeTheme(theme: unknown): void {
   // 主题映射：light/graphite 是浅色系，dark/midnight 是深色系，system 跟随系统。
@@ -31,7 +38,14 @@ function applyNativeTheme(theme: unknown): void {
   const LIGHT_THEMES = new Set(['light', 'graphite', 'warm'])
   const DARK_THEMES = new Set(['dark', 'midnight'])
   const key = String(theme ?? 'dark')
-  const t = key === 'system' ? 'system' : LIGHT_THEMES.has(key) ? 'light' : DARK_THEMES.has(key) ? 'dark' : 'dark'
+  const t =
+    key === 'system'
+      ? 'system'
+      : LIGHT_THEMES.has(key)
+        ? 'light'
+        : DARK_THEMES.has(key)
+          ? 'dark'
+          : 'dark'
   if (nativeTheme.themeSource !== t) nativeTheme.themeSource = t
 }
 
@@ -48,7 +62,8 @@ async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise
   const exts = filePaths.map((p) => p.split('.').pop()?.toLowerCase() ?? '')
   const wantImage = exts.length > 0 && exts.every((e) => IMAGE_EXTS.has(e))
   const inputCount = (await wc
-    .executeJavaScript(`(() => {
+    .executeJavaScript(
+      `(() => {
       const xs = [...document.querySelectorAll('input[type=file]')].filter((el) => !el.disabled)
       if (!xs.length) return 0
       document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))
@@ -64,7 +79,8 @@ async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise
       const pick = xs.find(accepts) || xs[0]
       pick.setAttribute('data-lidow-upload-input', '1')
       return xs.length
-    })()`)
+    })()`
+    )
     .catch(() => 0)) as number
   if (!inputCount) throw new Error('网页输入区没有文件上传入口，请先在 AI 页面点一次附件按钮')
   let attached = false
@@ -83,7 +99,10 @@ async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise
       selector: 'input[data-lidow-upload-input]'
     })) as { nodeId?: number }
     if (!found?.nodeId) throw new Error('未找到文件输入框')
-    await wc.debugger.sendCommand('DOM.setFileInputFiles', { files: filePaths, nodeId: found.nodeId })
+    await wc.debugger.sendCommand('DOM.setFileInputFiles', {
+      files: filePaths,
+      nodeId: found.nodeId
+    })
   } catch (e) {
     Logger.warn('session', `附加文件失败: ${e instanceof Error ? e.message : String(e)}`)
     throw new Error(`附加文件失败：${e instanceof Error ? e.message : String(e)}`, { cause: e })
@@ -107,7 +126,8 @@ async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise
 /** 全量 IPC 方法注册：方法名 = LidowApi 契约方法名（renderer Proxy 按 name 调用） */
 export function registerHandlers(
   register: (name: string, fn: IpcHandler) => void,
-  ctx: AppContext
+  ctx: AppContext,
+  hooks?: { onSettingsChanged?: () => void }
 ): void {
   const R = register
 
@@ -126,6 +146,7 @@ export function registerHandlers(
     applyNativeTheme(next.theme)
     // 每轮注入开关/系统提示词变化后，已经打开的网页 hook 立即生效
     ctx.refreshProviderHooks()
+    hooks?.onSettingsChanged?.()
     return next
   })
   R('pickDirectory', () => showDirectoryPicker(parentWindowFor()))
@@ -164,7 +185,9 @@ export function registerHandlers(
     const queueHidden = (ref: (typeof refs)[number]): void => {
       const partition = ctx.projectChatPartition(ref)
       const home =
-        ctx.projectChatHome(ref) || BUILT_IN_PROVIDERS.find((p) => p.id === ref.providerId)?.home || ''
+        ctx.projectChatHome(ref) ||
+        BUILT_IN_PROVIDERS.find((p) => p.id === ref.providerId)?.home ||
+        ''
       const key = `${partition}|${home}`
       const group = hiddenGroups.get(key) ?? { partition, home, refs: [] }
       group.refs.push(ref)
@@ -264,10 +287,15 @@ export function registerHandlers(
     return ctx.providerRegistryOf(pid).list()
   })
   R('addProvider', (...args: unknown[]) => {
-    const [projectId, desc] = args as [string, { id: string; name: string; home: string; adapter?: Partial<ProviderDescriptor['adapter']> }]
+    const [projectId, desc] = args as [
+      string,
+      { id: string; name: string; home: string; adapter?: Partial<ProviderDescriptor['adapter']> }
+    ]
     return ctx.providerRegistryOf(String(projectId)).add(desc)
   })
-  R('removeProvider', (projectId: string, providerId: string) => ctx.providerRegistryOf(String(projectId)).remove(String(providerId)))
+  R('removeProvider', (projectId: string, providerId: string) =>
+    ctx.providerRegistryOf(String(projectId)).remove(String(providerId))
+  )
   R('addAccount', (projectId: string, providerId: string, label: string) => {
     const reg = ctx.providerRegistryOf(String(projectId))
     reg.addAccount(String(providerId), String(label ?? ''))
@@ -290,8 +318,10 @@ export function registerHandlers(
     reg.removeAccount(String(providerId), acc)
     return reg.get(String(providerId))
   })
-  R('updateProviderAdapter', (projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']) =>
-    ctx.providerRegistryOf(String(projectId)).update(String(providerId), { adapter })
+  R(
+    'updateProviderAdapter',
+    (projectId: string, providerId: string, adapter: ProviderDescriptor['adapter']) =>
+      ctx.providerRegistryOf(String(projectId)).update(String(providerId), { adapter })
   )
   /**
    * Web 版登录态：浏览器拿不到系统目录对话框，也没有可操作的网页窗口。
@@ -322,7 +352,10 @@ export function registerHandlers(
         })
         imported++
       } catch (e) {
-        Logger.warn('provider', `Cookie 写入失败 ${c.name}: ${e instanceof Error ? e.message : String(e)}`)
+        Logger.warn(
+          'provider',
+          `Cookie 写入失败 ${c.name}: ${e instanceof Error ? e.message : String(e)}`
+        )
       }
     }
     // 已经打开的宿主页面需要重载才能用新登录态
@@ -345,8 +378,14 @@ export function registerHandlers(
   })
   R('getSession', (sessionId: string) => ctx.sessionOf(String(sessionId)))
   R('createSession', (...args: unknown[]) => {
-    const [projectId, providerId, parentSessionId, accountId] = args as [string, string, string?, string?]
-    if (!ctx.projectAvailable(String(projectId))) throw new Error('项目目录不存在，请到「工作区」重新选择目录')
+    const [projectId, providerId, parentSessionId, accountId] = args as [
+      string,
+      string,
+      string?,
+      string?
+    ]
+    if (!ctx.projectAvailable(String(projectId)))
+      throw new Error('项目目录不存在，请到「工作区」重新选择目录')
     const store = ctx.sessionStoreOf(String(projectId))
     // 新建前回收同平台的历史空会话（0 轮次）：点一次平台建一次会话，
     // 用户没发消息就切走的话，列表会被「新会话」堆满（实测堆过 11 个）
@@ -396,7 +435,9 @@ export function registerHandlers(
     const boundWcId = ctx.overlay.wcIdOfSession(sid)
     // 当前会话没绑定网页时，用同平台/同账号的网页执行删除；
     // 否则用户切到别的会话后，删除旧会话就永远删不到网页端。
-    const wcId = boundWcId ?? (session ? ctx.webContentsIdForProvider(session.providerId, session.accountId) : undefined)
+    const wcId =
+      boundWcId ??
+      (session ? ctx.webContentsIdForProvider(session.providerId, session.accountId) : undefined)
     // 先停掉正在跑的任务：否则循环后续 appendTurn 会写进已删除的会话
     ctx.loop.stop(sid, 'all')
 
@@ -421,7 +462,10 @@ export function registerHandlers(
         message = res.ok
           ? '会话已删除（含网页端对话）'
           : `本地会话已删除；网页端删除失败：${res.reason ?? '未知原因'}`
-        Logger.info('session', `网页端删除 session=${sid.slice(-6)} ok=${res.ok}${res.reason ? ` reason=${res.reason}` : ''}`)
+        Logger.info(
+          'session',
+          `网页端删除 session=${sid.slice(-6)} ok=${res.ok}${res.reason ? ` reason=${res.reason}` : ''}`
+        )
       }
     }
 
@@ -479,19 +523,29 @@ export function registerHandlers(
   R('confirmTool', (callId: string, approved: boolean) => {
     ctx.resolveConfirm(String(callId), Boolean(approved))
   })
-  R('confirmPlan', (sessionId: string, approved: boolean, edits?: { id: string; title: string; detail: string }[]) => {
-    const sid = String(sessionId)
-    if (!approved) {
-      ctx.plans.abort(sid)
-      return
+  R(
+    'confirmPlan',
+    (
+      sessionId: string,
+      approved: boolean,
+      edits?: { id: string; title: string; detail: string }[]
+    ) => {
+      const sid = String(sessionId)
+      if (!approved) {
+        ctx.plans.abort(sid)
+        return
+      }
+      // 确认后必须让 AI 真正开始执行：否则它停在「等待确认」的答复上，
+      // 用户点了确认也看不到任何后续动作。
+      const plan = ctx.plans.confirm(sid, edits)
+      if (!plan) return
+      ctx.lastSessionId = sid
+      void ctx.loop.run(
+        sid,
+        '用户已确认计划，请按顺序执行计划中的各项任务；每完成一项更新 todoWrite，全部完成后给出总结。'
+      )
     }
-    // 确认后必须让 AI 真正开始执行：否则它停在「等待确认」的答复上，
-    // 用户点了确认也看不到任何后续动作。
-    const plan = ctx.plans.confirm(sid, edits)
-    if (!plan) return
-    ctx.lastSessionId = sid
-    void ctx.loop.run(sid, '用户已确认计划，请按顺序执行计划中的各项任务；每完成一项更新 todoWrite，全部完成后给出总结。')
-  })
+  )
   R('abortPlan', (sessionId: string) => {
     const sid = String(sessionId)
     ctx.plans.abort(sid)
@@ -510,10 +564,13 @@ export function registerHandlers(
     boardOf().add(String(title))
     return boardOf().list()
   })
-  R('setTodoStatus', (id: string, status: 'pending' | 'running' | 'done' | 'failed' | 'skipped') => {
-    boardOf().setStatus(String(id), status)
-    return boardOf().list()
-  })
+  R(
+    'setTodoStatus',
+    (id: string, status: 'pending' | 'running' | 'done' | 'failed' | 'skipped') => {
+      boardOf().setStatus(String(id), status)
+      return boardOf().list()
+    }
+  )
   R('clearDoneTodos', () => {
     boardOf().clearDone()
     return boardOf().list()
@@ -536,8 +593,12 @@ export function registerHandlers(
       `---`,
       ``,
       ...session.turns.map((t) => {
-        const role = t.role === 'user' ? '## 🧑 用户' : t.role === 'assistant' ? '## 🤖 AI' : '## ⚙️ 系统'
-        const tools = t.toolResults?.map((r) => `> 工具 ${r.name} → ${r.ok ? '✓' : '✗'} ${r.durationMs}ms`).join('\n') ?? ''
+        const role =
+          t.role === 'user' ? '## 🧑 用户' : t.role === 'assistant' ? '## 🤖 AI' : '## ⚙️ 系统'
+        const tools =
+          t.toolResults
+            ?.map((r) => `> 工具 ${r.name} → ${r.ok ? '✓' : '✗'} ${r.durationMs}ms`)
+            .join('\n') ?? ''
         return `${role}\n\n${t.text}\n${tools ? `\n${tools}\n` : ''}`
       })
     ].join('\n')
@@ -559,7 +620,8 @@ export function registerHandlers(
   R('openExportDir', () => {
     const project = ctx.activeProject()
     if (!project) throw new Error('请先打开项目')
-    if (!isProjectRootAvailable(project.root)) throw new Error('项目目录不存在，请到「工作区」重新选择目录')
+    if (!isProjectRootAvailable(project.root))
+      throw new Error('项目目录不存在，请到「工作区」重新选择目录')
     const dir = join(project.root, '.lidow', 'exports')
     mkdirSync(dir, { recursive: true })
     void shell.openPath(dir)
@@ -576,7 +638,12 @@ export function registerHandlers(
       explorer: [process.platform === 'win32' ? 'explorer.exe' : 'xdg-open', [dir]],
       vscode: ['code', [dir]],
       pycharm: ['pycharm64.exe', [dir]],
-      terminal: [process.platform === 'win32' ? 'powershell.exe' : 'bash', process.platform === 'win32' ? ['-NoExit', '-Command', `Set-Location -LiteralPath '${dir}'`] : ['-i']]
+      terminal: [
+        process.platform === 'win32' ? 'powershell.exe' : 'bash',
+        process.platform === 'win32'
+          ? ['-NoExit', '-Command', `Set-Location -LiteralPath '${dir}'`]
+          : ['-i']
+      ]
     }
     const [bin, args] = map[String(appId)] ?? map.explorer!
     try {
@@ -633,7 +700,9 @@ export function registerHandlers(
   const skillImports = () => import('@main/ecosystem/skills')
   R('listSkills', () => skillImports().then((m) => m.listSkills(ctx.activeProject()?.root)))
   R('getSkillDir', (scope: 'project' | 'user') =>
-    skillImports().then((m) => m.skillsDirForScope(scope === 'project' ? 'project' : 'user', ctx.activeProject()?.root))
+    skillImports().then((m) =>
+      m.skillsDirForScope(scope === 'project' ? 'project' : 'user', ctx.activeProject()?.root)
+    )
   )
   R('createSkill', (input: SkillDraft) =>
     skillImports().then((m) => m.createSkill(input, ctx.activeProject()?.root))
@@ -642,7 +711,9 @@ export function registerHandlers(
     skillImports().then((m) => m.updateSkill(String(path), input, ctx.activeProject()?.root))
   )
   R('setSkillEnabled', (path: string, enabled: boolean) =>
-    skillImports().then((m) => m.setSkillEnabled(String(path), Boolean(enabled), ctx.activeProject()?.root))
+    skillImports().then((m) =>
+      m.setSkillEnabled(String(path), Boolean(enabled), ctx.activeProject()?.root)
+    )
   )
   R('trashSkill', (path: string) =>
     skillImports().then((m) => m.trashSkill(String(path), ctx.activeProject()?.root))
@@ -657,12 +728,18 @@ export function registerHandlers(
   R('installSkillsFromGitHub', (url: string, scope: 'project' | 'user', category?: string) =>
     import('@main/ecosystem/skillInstall').then((m) =>
       m.installSkillsFromGitHub(
-        { url: String(url), scope: scope === 'project' ? 'project' : 'user', category: category ? String(category) : undefined },
+        {
+          url: String(url),
+          scope: scope === 'project' ? 'project' : 'user',
+          category: category ? String(category) : undefined
+        },
         ctx.activeProject()?.root
       )
     )
   )
-  R('listExternalSkills', () => skillImports().then((m) => m.listExternalSkills(ctx.activeProject()?.root)))
+  R('listExternalSkills', () =>
+    skillImports().then((m) => m.listExternalSkills(ctx.activeProject()?.root))
+  )
   R('importExternalSkills', (paths: string[], scope: 'project' | 'user', category?: string) =>
     skillImports().then((m) =>
       m.importExternalSkills(
@@ -731,12 +808,16 @@ export function registerHandlers(
   R('getTokenStats', () => ctx.tokenStats())
 
   // ---------- 任务 / 审计 ----------
-  R('listAudit', (sessionId?: string, limit?: number) => ctx.audit.list(sessionId ? String(sessionId) : undefined, Number(limit ?? 200)))
+  R('listAudit', (sessionId?: string, limit?: number) =>
+    ctx.audit.list(sessionId ? String(sessionId) : undefined, Number(limit ?? 200))
+  )
   R('revertAudit', (entryId: string) => ctx.audit.revert(String(entryId)))
 
   // ---------- 知识库 ----------
   R('listKnowledgeBases', () => ctx.knowledge.list())
-  R('addKnowledgeBase', (name: string, root: string) => ctx.knowledge.add(String(name), String(root)))
+  R('addKnowledgeBase', (name: string, root: string) =>
+    ctx.knowledge.add(String(name), String(root))
+  )
   R('removeKnowledgeBase', (id: string) => ctx.knowledge.remove(String(id)))
   R('searchKnowledge', (kbId: string, query: string, limit?: number) =>
     ctx.knowledge.search(String(kbId), String(query), Number(limit ?? 5))
@@ -749,7 +830,8 @@ export function registerHandlers(
 
   // ---------- 视图 ----------
   R('attachWebview', (providerId: string, accountId: string) => {
-    if (!providerId || typeof providerId !== 'string') throw new Error('attachWebview 缺少 providerId')
+    if (!providerId || typeof providerId !== 'string')
+      throw new Error('attachWebview 缺少 providerId')
     const overlayPath = join(__dirname, '../preload/overlay.js')
     const project = ctx.activeProject()
     // 没有项目时也允许打开 AI 页面：初始化引导由 overlay 注入在网页里
@@ -795,7 +877,12 @@ export function registerHandlers(
     if (prev && prev !== sid && !ctx.loop.isRunning(prev)) {
       const prevSession = ctx.sessionOf(prev)
       // 有网页对话地址或已发过提示词的空会话不是“空壳”，不能当垃圾清理
-      if (prevSession && prevSession.turns.length === 0 && !prevSession.providerUrl && !prevSession.systemPromptSent) {
+      if (
+        prevSession &&
+        prevSession.turns.length === 0 &&
+        !prevSession.providerUrl &&
+        !prevSession.systemPromptSent
+      ) {
         const prevProject = findProjectOfSession(ctx, prev)
         if (prevProject) ctx.sessionStoreOf(prevProject).delete(prev)
         ctx.overlay.unbindSession(prev)
@@ -804,7 +891,8 @@ export function registerHandlers(
     }
     ctx.overlay.bindSession(sid, wcId)
     const boundSession = ctx.sessionOf(sid)
-    if (boundSession) ctx.registerWebviewProvider(wcId, boundSession.providerId, boundSession.accountId)
+    if (boundSession)
+      ctx.registerWebviewProvider(wcId, boundSession.providerId, boundSession.accountId)
     ctx.configureOverlay(sid)
     // 首次绑定/换绑必须把页面落到该会话自己的对话：
     // 新会话没有 providerUrl → 切到新对话，避免它继承网页当前那条旧对话
@@ -818,34 +906,45 @@ export function registerHandlers(
    */
   /** 让页面落到指定会话自己的对话（有 providerUrl 导航回原对话，否则开新聊天） */
   R('landSession', (sessionId: string) => ctx.landSession(String(sessionId)))
-  R('syncProjectToWebview', (webContentsId: number, adapter?: unknown, providerId?: string, accountId?: string) => {
-    const id = Number(webContentsId)
-    if (providerId) ctx.registerWebviewProvider(id, String(providerId), accountId ? String(accountId) : undefined)
-    // 渲染层可能还没拿到 adapter（无会话时 tab 记录可能是空的）。
-    // 按 providerId 精确查表，不要随便拿一个平台的 adapter ——
-    // 每个平台的 avatar 选择器不同，用错会导致登录态误判。
-    let ad = adapter as DomAdapter | undefined
-    if (!ad && providerId) {
-      ad = ctx.activeProject()
-        ? ctx.providerRegistryOf(ctx.activeProject()!.id).get(String(providerId))?.adapter
-        : BUILT_IN_PROVIDERS.find((p) => p.id === String(providerId))?.adapter
+  R(
+    'syncProjectToWebview',
+    (webContentsId: number, adapter?: unknown, providerId?: string, accountId?: string) => {
+      const id = Number(webContentsId)
+      if (providerId)
+        ctx.registerWebviewProvider(
+          id,
+          String(providerId),
+          accountId ? String(accountId) : undefined
+        )
+      // 渲染层可能还没拿到 adapter（无会话时 tab 记录可能是空的）。
+      // 按 providerId 精确查表，不要随便拿一个平台的 adapter ——
+      // 每个平台的 avatar 选择器不同，用错会导致登录态误判。
+      let ad = adapter as DomAdapter | undefined
+      if (!ad && providerId) {
+        ad = ctx.activeProject()
+          ? ctx.providerRegistryOf(ctx.activeProject()!.id).get(String(providerId))?.adapter
+          : BUILT_IN_PROVIDERS.find((p) => p.id === String(providerId))?.adapter
+      }
+      if (ad) ctx.overlay.sendCmdToWebContents(id, { kind: 'configure', adapter: ad })
+      const project = ctx.activeProject()
+      const root = project?.root ?? null
+      // 没有绑定会话 = 新开的网页/新窗口：即使项目已有历史，也给一个初始化入口，
+      // 否则用户无法把新对话接到当前项目（只能看一个没有 Lidow 引导的空白页）。
+      ctx.syncChatWatchToWebview(id)
+      return ctx.overlay.sendCmdToWebContents(id, {
+        kind: 'set-project',
+        projectRoot: root,
+        initialized: ctx.settings.get().pureMode
+      })
     }
-    if (ad) ctx.overlay.sendCmdToWebContents(id, { kind: 'configure', adapter: ad })
-    const project = ctx.activeProject()
-    const root = project?.root ?? null
-    // 没有绑定会话 = 新开的网页/新窗口：即使项目已有历史，也给一个初始化入口，
-    // 否则用户无法把新对话接到当前项目（只能看一个没有 Lidow 引导的空白页）。
-    ctx.syncChatWatchToWebview(id)
-    return ctx.overlay.sendCmdToWebContents(id, {
-      kind: 'set-project',
-      projectRoot: root,
-      initialized: ctx.settings.get().pureMode
-    })
-  })
+  )
   /** 透传网页内交互命令（深度思考/智能搜索/上传文件） */
-  R('overlayToggle', (sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file') => {
-    return ctx.overlay.sendCmd(String(sessionId), { kind })
-  })
+  R(
+    'overlayToggle',
+    (sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file') => {
+      return ctx.overlay.sendCmd(String(sessionId), { kind })
+    }
+  )
   /**
    * 桌面纯模式：本机选文件后直接写入网页的 file input。
    * 不能只点 input[type=file]：纯模式下网页被遮住，平台原生文件框会弹在后面；
@@ -864,13 +963,27 @@ export function registerHandlers(
         { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'] },
         {
           name: '文档',
-          extensions: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'md', 'csv', 'json']
+          extensions: [
+            'pdf',
+            'doc',
+            'docx',
+            'xls',
+            'xlsx',
+            'ppt',
+            'pptx',
+            'txt',
+            'md',
+            'csv',
+            'json'
+          ]
         },
         { name: '所有文件', extensions: ['*'] }
       ]
     }
     const parent = parentWindowFor(wcId)
-    const res = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
+    const res = parent
+      ? await dialog.showOpenDialog(parent, options)
+      : await dialog.showOpenDialog(options)
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true }
     await attachFilesToWebInput(wcId, res.filePaths)
     return {
@@ -898,7 +1011,10 @@ export function registerHandlers(
   })
   /** 按文案点击平台自带按钮（底部 chip 转发，各平台功能不同） */
   R('overlayAction', (sessionId: string, keywords: string[]) => {
-    return ctx.overlay.sendCmd(String(sessionId), { kind: 'click-keywords', keywords: keywords ?? [] })
+    return ctx.overlay.sendCmd(String(sessionId), {
+      kind: 'click-keywords',
+      keywords: keywords ?? []
+    })
   })
   R('setPureMode', (on: boolean) => {
     ctx.settings.set({ pureMode: Boolean(on) })
@@ -908,11 +1024,11 @@ export function registerHandlers(
   })
   R('checkUpdate', (manual?: boolean) => ctx.updateCheck(Boolean(manual)))
   R('getUpdateState', () => import('@main/app/platform').then((m) => m.getUpdateState()))
-  R('downloadUpdate', () =>
-    import('@main/app/platform').then((m) => m.downloadAndInstallUpdate())
-  )
+  R('downloadUpdate', () => import('@main/app/platform').then((m) => m.downloadAndInstallUpdate()))
   R('listTemplates', () => ctx.templates())
-  R('applyTemplate', (templateId: string, root: string) => ctx.applyTemplate(String(templateId), String(root)))
+  R('applyTemplate', (templateId: string, root: string) =>
+    ctx.applyTemplate(String(templateId), String(root))
+  )
   R('pushToSync', (text: string) => ctx.pushSync(String(text)))
 }
 
