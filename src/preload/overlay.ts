@@ -635,8 +635,9 @@ let projectFolderTimer: number | undefined
 let pendingFolderProject = ''
 let pendingFolderUrl = ''
 let pendingFolderTimer: number | undefined
-/** 程序化点击侧栏链接时，短暂放行 capture 拦截 */
+/** 程序化点击侧栏链接时，短暂放行 capture 拦截（只放行目标对话） */
 let suppressActivateUntil = 0
+let suppressChatKey = ''
 
 function isDeepSeekPage(): boolean {
   return /(^|\.)deepseek\.com$/i.test(location.hostname)
@@ -756,6 +757,7 @@ function openChatInPage(url: string): boolean {
     }) ?? links.find((a) => String(a.href).includes(id))
   if (!match) return false
   suppressActivateUntil = Date.now() + 1500
+  suppressChatKey = chatUrlKey(url)
   match.click()
   return true
 }
@@ -898,14 +900,18 @@ function setupProjectFolderClicks(): void {
     (ev) => {
       if (!isDeepSeekPage() || !projectFolders) return
       if (ev.button !== 0) return
-      // 主进程用程序化 click 做 SPA 切换时，放行原生导航
-      if (Date.now() < suppressActivateUntil) return
       const target = ev.target as HTMLElement | null
       if (!target || target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')) return
       const link = target.closest<HTMLAnchorElement>('a[href*="/a/chat/s/"]')
       if (!link) return
       const key = chatUrlKey(link.href)
       if (!key) return
+      // 只放行程序化点击的那一个对话；用户随后点别的对话仍然要正常切项目
+      if (Date.now() < suppressActivateUntil && key === suppressChatKey) {
+        suppressActivateUntil = 0
+        suppressChatKey = ''
+        return
+      }
       const found = projectFolderChats().find((x) => chatUrlKey(x.chat.url) === key)
       if (!found) return
       const action = target.closest('button,[role="button"],[aria-haspopup]')
