@@ -14,11 +14,19 @@ export interface ToolContext {
     outputBufferLimit: number
     ssrfProtection: boolean
     dangerConfirm: boolean
+    /** 删除保护：文件先移入回收站 */
+    deleteProtection: boolean
+    /** 单任务批量删除审批阈值 */
+    batchDeleteThreshold: number
     /** 权限模式：plan/ask 全确认、autonomous 只问风险、full 少问 */
     permissionMode?: 'plan' | 'ask' | 'autonomous' | 'full'
   }
   /** 危险操作确认门（UI 二次确认），返回是否放行 */
   confirm: (reason: string) => Promise<boolean>
+  /** 系统回收站；失败时 deleteFile 回退到项目 .lidow/trash */
+  trashItem?: (path: string) => Promise<void>
+  /** 当前任务共享的删除计数（超过阈值只审批一次） */
+  deleteBatch?: { count: number; approved: boolean }
   /** 注入 JS 到当前网页（injectJS 工具用） */
   injectJs?: (code: string) => Promise<unknown>
   /** 审计记录回调 */

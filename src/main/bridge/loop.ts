@@ -140,6 +140,8 @@ interface RunningLoop {
   resolveStop?: () => void
   /** 当前工具批次的取消句柄：stop('tool') 用它中止正在执行的命令 */
   abort?: AbortController
+  /** 本任务累计软删除数量：达到设置阈值时只审批一次 */
+  deleteBatch?: { count: number; approved: boolean }
 }
 
 /**
@@ -904,10 +906,14 @@ export class AgentLoop {
       }
     }
     const base = this.deps.toolCtxBase(sessionId)
+    // 同一任务内所有 deleteFile 共享计数，避免 200 个文件弹 200 次确认
+    const running = this.running.get(sessionId)
+    if (running && !running.deleteBatch) running.deleteBatch = { count: 0, approved: false }
     const ctx: ToolContext = {
       ...base,
       sessionId,
       signal,
+      deleteBatch: running?.deleteBatch,
       confirm: (reason) => this.deps.confirm(sessionId, reason)
     }
     try {

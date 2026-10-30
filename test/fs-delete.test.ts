@@ -5,7 +5,16 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { deleteFileTool, writeTool } from '@main/tools/fs'
 import type { ToolContext } from '@main/tools/types'
 
-function makeCtx(root: string, approve = true): ToolContext {
+function makeCtx(
+  root: string,
+  approve: boolean | ((reason: string) => boolean) = true,
+  opts: {
+    protection?: boolean
+    threshold?: number
+    batch?: { count: number; approved: boolean }
+    onConfirm?: (reason: string) => void
+  } = {}
+): ToolContext {
   return {
     projectRoot: root,
     settings: {
@@ -14,9 +23,15 @@ function makeCtx(root: string, approve = true): ToolContext {
       outputBufferLimit: 1024 * 1024,
       ssrfProtection: true,
       dangerConfirm: true,
+      deleteProtection: opts.protection ?? false,
+      batchDeleteThreshold: opts.threshold ?? 200,
       permissionMode: 'autonomous'
     },
-    confirm: async () => approve
+    deleteBatch: opts.batch,
+    confirm: async (reason) => {
+      opts.onConfirm?.(reason)
+      return typeof approve === 'function' ? approve(reason) : approve
+    }
   }
 }
 
@@ -65,6 +80,39 @@ describe('deleteFile 安全边界', () => {
     expect(r.ok).toBe(true)
     expect(existsSync(join(root, 'a.txt'))).toBe(false)
     expect(readdirSync(root).filter((f) => f.includes('.lidow-bak-')).length).toBe(1)
+  })
+
+  it('删除保护开启时移入回收站而不是永久删除', async () => {
+    const root = tmp()
+    writeFileSync(join(root, 'a.txt'), 'hello')
+    const r = await deleteFileTool.run({ path: 'a.txt' }, makeCtx(root, true, { protection: true }))
+    expect(r.ok).toBe(true)
+    expect(r.output).toContain('回收站')
+    expect(existsSync(join(root, 'a.txt'))).toBe(false)
+    const trash = join(root, '.lidow', 'trash')
+    expect(existsSync(trash)).toBe(true)
+    expect(readdirSync(trash).some((f) => f.includes('a.txt'))).toBe(true)
+  })
+
+  it('批量删除达到阈值时只统一审批一次', async () => {
+    const root = tmp()
+    writeFileSync(join(root, 'a.txt'), 'a')
+    writeFileSync(join(root, 'b.txt'), 'b')
+    const batch = { count: 0, approved: false }
+    const confirms: string[] = []
+    const ctx = makeCtx(root, true, {
+      protection: true,
+      threshold: 2,
+      batch,
+      onConfirm: (reason) => confirms.push(reason)
+    })
+    expect((await deleteFileTool.run({ path: 'a.txt' }, ctx)).ok).toBe(true)
+    expect(confirms).toHaveLength(0)
+    expect((await deleteFileTool.run({ path: 'b.txt' }, ctx)).ok).toBe(true)
+    expect(confirms).toHaveLength(1)
+    expect(confirms[0]).toContain('2')
+    expect(batch.count).toBe(2)
+    expect(batch.approved).toBe(true)
   })
 
   it('允许删除空目录', async () => {

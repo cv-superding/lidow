@@ -38,6 +38,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   language: 'zh-CN',
   pureMode: false,
   dangerConfirm: true,
+  deleteProtection: true,
+  batchDeleteThreshold: 200,
   permissionMode: 'autonomous',
   ssrfProtection: true,
   commandTimeoutMs: 30_000,
@@ -1363,9 +1365,12 @@ export class AppContext {
         outputBufferLimit: s.outputBufferLimit,
         ssrfProtection: s.ssrfProtection,
         dangerConfirm: s.dangerConfirm,
+        deleteProtection: s.deleteProtection,
+        batchDeleteThreshold: s.batchDeleteThreshold,
         permissionMode: s.permissionMode
       },
       confirm: (reason) => this.requestConfirm(sessionId, reason),
+      trashItem: (path) => shell.trashItem(path),
       injectJs: (code) => this.overlay.executeJs(sessionId, code),
       audit: (kind, summary, detail, backupPath) => this.audit.record(sessionId, kind, summary, detail, backupPath)
     }

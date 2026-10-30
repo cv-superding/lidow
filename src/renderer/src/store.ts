@@ -227,6 +227,8 @@ export const useStore = create<LidowState>((set, get) => ({
     language: 'zh-CN',
     pureMode: false,
     dangerConfirm: true,
+    deleteProtection: true,
+    batchDeleteThreshold: 200,
     permissionMode: 'autonomous',
     ssrfProtection: true,
     commandTimeoutMs: 30000,
@@ -778,6 +780,8 @@ export const useStore = create<LidowState>((set, get) => ({
       get().notice('请先初始化项目（选择工作目录），AI 才有可以操作的文件系统', 'warn')
       return
     }
+    // 新一轮任务开始：清掉上一轮可能迟到的思考/流式残留，避免旧内容显示在新任务下
+    set({ thinkingText: '', streamingText: '', streamingTps: 0 })
     let { activeSession } = get()
     // 没有活动会话：自动新建（纯净模式直接发送的兜底）
     if (!activeSession) {

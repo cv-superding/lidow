@@ -1,8 +1,18 @@
-import { mkdirSync, readdirSync, readFileSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync
+} from 'node:fs'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import fg from 'fast-glob'
 import { createTwoFilesPatch } from 'diff'
-import type { ToolDef } from './types'
+import type { ToolContext, ToolDef } from './types'
 import { clampOutput, num, str } from './types'
 
 /** 路径安全：强制限制在项目根内，拒绝越界（目录隔离） */
@@ -186,9 +196,28 @@ export const grepTool: ToolDef = {
   }
 }
 
+/** 软删除落点：优先系统回收站，失败回退项目 .lidow/trash（跨平台/无桌面环境可用） */
+export async function moveToTrash(path: string, ctx: ToolContext): Promise<void> {
+  if (ctx.trashItem) {
+    try {
+      await ctx.trashItem(path)
+      return
+    } catch {
+      /* Linux/Docker 等无系统回收站时回退到项目回收目录 */
+    }
+  }
+  const trashRoot = join(ctx.projectRoot, '.lidow', 'trash')
+  mkdirSync(trashRoot, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  let dest = join(trashRoot, `${stamp}-${basename(path)}`)
+  for (let i = 2; existsSync(dest); i++) dest = join(trashRoot, `${stamp}-${i}-${basename(path)}`)
+  renameSync(path, dest)
+}
+
 export const deleteFileTool: ToolDef = {
   name: 'deleteFile',
-  description: '删除项目内的单个文件或空目录。需确认。非空目录请先逐项删除其中的文件。',
+  description:
+    '删除项目内的单个文件或空目录。删除保护开启时移入回收站；单个任务达到批量阈值时会统一请求审批。非空目录请先逐项删除其中的文件。',
   parameters: { path: { type: 'string', description: '项目内相对路径', required: true } },
   dangerLevel: 'confirm',
   async run(input, ctx) {
@@ -209,8 +238,28 @@ export const deleteFileTool: ToolDef = {
     if (isDir && readdirSync(abs).length > 0) {
       return { ok: false, output: '', error: `目录非空，拒绝递归删除：${relPath}（请先逐项删除其中的文件）` }
     }
-    const ok = await ctx.confirm(`删除${isDir ? '空目录' : '文件'}：${relPath}`)
-    if (!ok) return { ok: false, output: '', error: '用户拒绝删除' }
+
+    const protection = ctx.settings.deleteProtection === true
+    const threshold = Math.max(1, Math.floor(ctx.settings.batchDeleteThreshold || 200))
+    if (protection) {
+      if (ctx.deleteBatch) {
+        const next = ctx.deleteBatch.count + 1
+        if (next >= threshold && !ctx.deleteBatch.approved) {
+          const ok = await ctx.confirm(
+            `本次任务将删除 ${next} 个项目，达到批量删除审批阈值 ${threshold}。删除会进入回收站，是否继续？`
+          )
+          if (!ok) return { ok: false, output: '', error: '用户拒绝批量删除' }
+          ctx.deleteBatch.approved = true
+        }
+      } else {
+        const ok = await ctx.confirm(`删除${isDir ? '空目录' : '文件'}：${relPath}（将移入回收站）`)
+        if (!ok) return { ok: false, output: '', error: '用户拒绝删除' }
+      }
+    } else if (ctx.settings.dangerConfirm) {
+      const ok = await ctx.confirm(`永久删除${isDir ? '空目录' : '文件'}：${relPath}`)
+      if (!ok) return { ok: false, output: '', error: '用户拒绝删除' }
+    }
+
     let backupPath: string | undefined
     if (!isDir) {
       try {
@@ -220,9 +269,23 @@ export const deleteFileTool: ToolDef = {
         /* 文件不可读（权限）时仍尝试删除 */
       }
     }
+    if (protection) {
+      try {
+        await moveToTrash(abs, ctx)
+      } catch (e) {
+        return {
+          ok: false,
+          output: '',
+          error: `移入回收站失败，未删除 ${relPath}：${e instanceof Error ? e.message : String(e)}`
+        }
+      }
+      if (ctx.deleteBatch) ctx.deleteBatch.count++
+      ctx.audit?.('file-delete', `移入回收站 ${relPath}`, { path: abs, trash: true }, backupPath)
+      return { ok: true, output: `已移入回收站：${relPath}` }
+    }
     if (isDir) rmdirSync(abs)
     else unlinkSync(abs)
-    ctx.audit?.('file-delete', `删除 ${relPath}`, { path: abs }, backupPath)
+    ctx.audit?.('file-delete', `删除 ${relPath}`, { path: abs, trash: false }, backupPath)
     return { ok: true, output: `已删除 ${relPath}` }
   }
 }

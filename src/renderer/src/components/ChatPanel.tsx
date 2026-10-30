@@ -492,6 +492,15 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     return turns.flatMap((t) => t.toolResults ?? [])
   }, [turns])
   const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
+  // 实时思考只在任务进行中显示：刚发出（最后一轮是用户）或正在生成/执行；
+  // 任务结束后网页侧迟到的 think-chunk 不能再挂到最终答复下面。
+  const liveThinking = Boolean(
+    thinkingText &&
+      activeSession &&
+      (running ||
+        pendingReplySessionId === activeSession.id ||
+        turns[turns.length - 1]?.role === 'user')
+  )
   // 已发送但首包还没到：显示「正在思考」，避免看起来卡死
   const waiting = Boolean(
     activeSession &&
@@ -803,7 +812,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {taskChangeResults.length > 0 && (
             <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
           )}
-          {thinkingText && mode === 'pure' && <ThinkingBlock text={thinkingText} streaming={!streamingText} />}
+          {/* 只显示当前任务进行中的实时思考；任务结束后网页可能还有迟到的思考块，
+              不能让它挂在最终答复下面，看起来像「还在想」 */}
+          {liveThinking && mode === 'pure' && (
+            <ThinkingBlock text={thinkingText} streaming={!streamingText} />
+          )}
 
           {streamingText && mode === 'pure' && (
             <div className="flex flex-col gap-2">
@@ -916,38 +929,53 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             boxShadow: 'var(--shadow)'
           }}
         >
-          {/* 斜杠菜单锚定在输入框上，而不是整块输入区（否则会偏到侧栏附近） */}
+          {/* 斜杠菜单锚定在输入框上；宽度与输入框一致（Qoder 同款命令面板） */}
           {slashOpen && (
             <div
-              className="anim-pop absolute bottom-full left-0 z-50 mb-1.5 max-h-[320px] w-[320px] overflow-y-auto rounded-[var(--r-lg)] p-1"
+              className="anim-pop absolute bottom-full left-0 z-50 mb-2 w-full max-w-[calc(100vw-32px)] overflow-hidden rounded-[var(--r-xl)]"
               style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
             >
-              <div className="text-label px-2 py-1.5">指令</div>
-              {slashFiltered.map((c, i) => (
-                <button
-                  key={c.key}
-                  ref={i === slashIndex ? slashSelectedRef : undefined}
-                  className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2 py-1.5 text-left text-[12px] transition-colors duration-[100ms]"
-                  style={{ background: i === slashIndex ? 'var(--bg-active)' : 'transparent' }}
-                  onMouseEnter={() => setSlashIndex(i)}
-                  onClick={() => {
-                    setInput(c.template.includes('{{input}}') ? c.template : `${c.template} `)
-                    setSlashOpen(false)
-                  }}
-                >
-                  <span className="font-mono text-[11.5px]" style={{ color: 'var(--accent)' }}>
-                    {c.trigger}
-                  </span>
-                  <span className="truncate" style={{ color: 'var(--text-dim)' }}>
-                    {c.label}
-                  </span>
-                </button>
-              ))}
-              {slashFiltered.length === 0 && (
-                <div className="px-2 py-2 text-[11px]" style={{ color: 'var(--text-hint)' }}>
-                  没有匹配的指令或技能
-                </div>
-              )}
+              <div className="border-b px-3 py-2 text-[11px] font-medium" style={{ borderColor: 'var(--border-soft)', color: 'var(--text-dim)' }}>
+                命令
+              </div>
+              <div className="max-h-[300px] overflow-y-auto p-1">
+                {slashFiltered.map((c, i) => (
+                  <button
+                    key={c.key}
+                    ref={i === slashIndex ? slashSelectedRef : undefined}
+                    className="flex h-[32px] w-full items-center gap-3 rounded-[var(--r-sm)] px-2.5 text-left transition-colors duration-[100ms]"
+                    style={{ background: i === slashIndex ? 'var(--bg-active)' : 'transparent' }}
+                    onMouseEnter={() => setSlashIndex(i)}
+                    onClick={() => {
+                      setInput(c.template.includes('{{input}}') ? c.template : `${c.template} `)
+                      setSlashOpen(false)
+                    }}
+                  >
+                    <span
+                      className="w-[190px] shrink-0 truncate whitespace-nowrap font-mono text-[12px] font-medium"
+                      style={{ color: i === slashIndex ? 'var(--accent)' : 'var(--text)' }}
+                      title={c.trigger}
+                    >
+                      {c.trigger}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                      {c.label}
+                    </span>
+                  </button>
+                ))}
+                {slashFiltered.length === 0 && (
+                  <div className="px-2.5 py-3 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                    没有匹配的指令或技能
+                  </div>
+                )}
+              </div>
+              <div
+                className="flex items-center justify-between border-t px-3 py-2 text-[11px]"
+                style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}
+              >
+                <span>输入内容以搜索命令、技能或快捷指令</span>
+                <IconChevronDown size={12} className="opacity-60" />
+              </div>
             </div>
           )}
           <textarea

@@ -1926,8 +1926,44 @@ export function SettingsView(): React.JSX.Element {
         </SettingGroup>
 
         {/* 安全 */}
-        <SettingGroup id="settings-security" title="安全" desc="危险操作拦截、网络防护与提示注入防御。">
-          <ToggleRow label="危险命令需确认" desc="删除文件、强推分支等操作执行前弹窗确认" checked={s.dangerConfirm} onChange={(v) => patch({ dangerConfirm: v })} />
+        <SettingGroup id="settings-security" title="安全" desc="危险操作拦截、删除保护、网络防护与提示注入防御。">
+          <ToggleRow label="危险命令需确认" desc="危险命令、永久删除等操作执行前弹窗确认" checked={s.dangerConfirm} onChange={(v) => patch({ dangerConfirm: v })} />
+          <ToggleRow
+            label="删除保护"
+            desc="开启后 AI 通过文件工具删除时优先移入系统废纸篓/回收站，关闭后按系统删除"
+            checked={s.deleteProtection}
+            onChange={(v) => patch({ deleteProtection: v })}
+          />
+          <div className="flex items-start gap-3 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="text-[12.5px]">批量删除审批</div>
+              <div
+                className="mt-0.5 text-[11.5px] leading-relaxed"
+                style={{ color: s.deleteProtection ? 'var(--text-hint)' : 'var(--warning)' }}
+              >
+                {s.deleteProtection
+                  ? '单个任务通过文件工具删除达到该数量时，执行前统一请求审批'
+                  : '需开启删除保护'}
+              </div>
+            </div>
+            <input
+              className="field shrink-0 text-center tabular-nums"
+              style={{ width: 90, flex: '0 0 auto' }}
+              type="number"
+              min={1}
+              max={10000}
+              disabled={!s.deleteProtection}
+              defaultValue={s.batchDeleteThreshold}
+              onBlur={(e) => {
+                const n = Math.max(1, Math.min(10000, Math.floor(Number(e.target.value) || 200)))
+                e.currentTarget.value = String(n)
+                patch({ batchDeleteThreshold: n })
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+            />
+          </div>
           <ToggleRow label="SSRF 防护" desc="阻止工具访问内网地址与云元数据端点" checked={s.ssrfProtection} onChange={(v) => patch({ ssrfProtection: v })} />
           <ToggleRow label="安全 MOD" desc="识别并改写 AI 的拒绝回复" checked={s.securityMod.enabled} onChange={(v) => patch({ securityMod: { ...s.securityMod, enabled: v } })} />
           <ToggleRow label="CTF / 安全研究模式" desc="在系统提示词中附加授权测试上下文" checked={s.securityMod.ctfInject} onChange={(v) => patch({ securityMod: { ...s.securityMod, ctfInject: v } })} />

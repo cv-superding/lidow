@@ -311,6 +311,10 @@ export interface AppSettings {
   language: 'zh-CN' | 'en-US'
   pureMode: boolean
   dangerConfirm: boolean
+  /** 删除保护：文件先移入系统回收站/废纸篓（失败时回退到项目 .lidow/trash） */
+  deleteProtection: boolean
+  /** 单个任务删除达到该数量时，执行前统一审批 */
+  batchDeleteThreshold: number
   /**
    * 权限模式（对齐 ZCode 的四档）：
    *  - plan      ：编辑前先出计划，用户确认后才动

@@ -251,7 +251,15 @@ export class DshHost {
   private voidCtx(): ToolContext {
     return {
       projectRoot: this.deps.projectRoot(),
-      settings: { commandTimeoutMs: 30000, sandboxTimeoutMs: 60000, outputBufferLimit: 1048576, ssrfProtection: true, dangerConfirm: false },
+      settings: {
+        commandTimeoutMs: 30000,
+        sandboxTimeoutMs: 60000,
+        outputBufferLimit: 1048576,
+        ssrfProtection: true,
+        dangerConfirm: false,
+        deleteProtection: false,
+        batchDeleteThreshold: 200
+      },
       confirm: async () => true
     }
   }

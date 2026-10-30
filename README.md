@@ -16,7 +16,7 @@
 [![Electron](https://img.shields.io/badge/Electron-45-47848F?logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Tests](https://img.shields.io/badge/tests-151%20passing-brightgreen.svg)](#快速开始)
+[![Tests](https://img.shields.io/badge/tests-153%20passing-brightgreen.svg)](#快速开始)
 [![Node](https://img.shields.io/badge/node-%E2%89%A520.19-339933?logo=nodedotjs&logoColor=white)](#快速开始)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/cv-superding/lidow/pulls)
 [![Docker](https://img.shields.io/badge/Docker-Native%20Web%20UI-2496ED?logo=docker&logoColor=white)](docs/docker.md)
@@ -69,6 +69,7 @@ Lidow 把 DeepSeek / Claude / ChatGPT / Gemini / 豆包 / 通义千问 / 文心�
 
 **安全**
 - 危险命令复合检测（rm 语义解析、管道注入、变体归一化）+ UI 二次确认
+- **安全**：删除保护默认开启，文件删除优先进入系统回收站（无回收站环境回退 `.lidow/trash`）；批量删除阈值默认 200，可在设置中调整并统一审批
 - SSRF 防护（私网/回环/元数据端点，重定向逐跳校验）
 - 工具路径锁定项目目录；执行审计全留痕，文件操作**单步回滚**
 - 安全 MOD（可选）：CTF 授权模式提示、AI 拒绝检测与续写（上限防循环）
