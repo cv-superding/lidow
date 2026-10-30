@@ -26,7 +26,8 @@ import {
   IconChevronDown,
   IconClose,
   IconDiff,
-  IconFolder
+  IconFolder,
+  IconFile
 } from './icons'
 
 const SLASH_COMMANDS = [
@@ -43,7 +44,8 @@ const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
   {
     title: '了解这个项目',
     desc: '扫描目录结构与依赖，给出一份项目说明',
-    prompt: '先读一下这个项目的结构和关键配置，然后给我一份简洁的项目说明：技术栈、入口文件、主要模块。'
+    prompt:
+      '先读一下这个项目的结构和关键配置，然后给我一份简洁的项目说明：技术栈、入口文件、主要模块。'
   },
   {
     title: '创建文件',
@@ -93,7 +95,11 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
             }
             return (
               <pre>
-                {html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{children}</code>}
+                {html ? (
+                  <code dangerouslySetInnerHTML={{ __html: html }} />
+                ) : (
+                  <code>{children}</code>
+                )}
               </pre>
             )
           }
@@ -106,35 +112,62 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
 }
 
 /** 可折叠处理过程（思考）：默认只露一行摘要，展开才显示完整推理（Qoder 同款活动流） */
-function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }): React.JSX.Element {
+function ThinkingBlock({
+  text,
+  streaming
+}: {
+  text: string
+  streaming: boolean
+}): React.JSX.Element {
   const [open, setOpen] = useState(false)
   if (!text) return <></>
   const preview = text.replace(/\s+/g, ' ').trim().slice(0, 72)
   return (
-    <div className="overflow-hidden rounded-[var(--r-lg)]" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+    <div
+      className="overflow-hidden rounded-[var(--r-lg)]"
+      style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+    >
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
         style={{ color: 'var(--text-dim)' }}
         onClick={() => setOpen((v) => !v)}
       >
-        <span className="shrink-0" style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}>
+        <span
+          className="shrink-0"
+          style={{ color: streaming ? 'var(--accent)' : 'var(--text-hint)' }}
+        >
           <IconSpark size={13} />
         </span>
         <span className="shrink-0 font-medium">{streaming ? '思考中' : '已处理'}</span>
-        {streaming && <span className="anim-breathe h-1 w-1 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />}
+        {streaming && (
+          <span
+            className="anim-breathe h-1 w-1 shrink-0 rounded-full"
+            style={{ background: 'var(--accent)' }}
+          />
+        )}
         {!open && preview ? (
-          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: 'var(--text-hint)' }}>
+          <span
+            className="min-w-0 flex-1 truncate text-[11px]"
+            style={{ color: 'var(--text-hint)' }}
+          >
             · {preview}
           </span>
         ) : (
           <span className="flex-1" />
         )}
-        <IconChevronRight size={12} className={`shrink-0 transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`} />
+        <IconChevronRight
+          size={12}
+          className={`shrink-0 transition-transform duration-[200ms] ${open ? 'rotate-90' : ''}`}
+        />
       </button>
       {open && (
         <div
           className="max-h-72 overflow-y-auto border-t px-3.5 py-3 text-[12px] leading-[1.7] whitespace-pre-wrap"
-          style={{ borderColor: 'var(--border-soft)', color: 'var(--text-dim)', background: 'var(--surface-sunken)' }}
+          style={{
+            borderColor: 'var(--border-soft)',
+            color: 'var(--text-dim)',
+            background: 'var(--surface-sunken)'
+          }}
         >
           {text}
         </div>
@@ -173,15 +206,24 @@ function ToolGroup({
   const secs = running && startedAt ? Math.max(0, Math.round((now - startedAt) / 1000)) : 0
   const labels = [...new Set(results.map((r) => toolLabel(r.name)))].slice(0, 4)
   return (
-    <div className="overflow-hidden rounded-[var(--r-lg)]" style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}>
+    <div
+      className="overflow-hidden rounded-[var(--r-lg)]"
+      style={{ border: '1px solid var(--border)', background: 'var(--surface)' }}
+    >
       <button
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
         onClick={() => setOpen((v) => !v)}
       >
         {running ? (
-          <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
+          <span
+            className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full"
+            style={{ background: 'var(--accent)' }}
+          />
         ) : (
-          <span className="shrink-0" style={{ color: failed > 0 ? 'var(--danger)' : 'var(--success)' }}>
+          <span
+            className="shrink-0"
+            style={{ color: failed > 0 ? 'var(--danger)' : 'var(--success)' }}
+          >
             {failed > 0 ? <IconClose size={10} /> : <IconCheck size={11} />}
           </span>
         )}
@@ -189,7 +231,10 @@ function ToolGroup({
           {running ? `正在执行中 · ${secs}s` : `执行工具 ${results.length} 次`}
         </span>
         {labels.length > 0 ? (
-          <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: 'var(--text-hint)' }}>
+          <span
+            className="min-w-0 flex-1 truncate text-[11px]"
+            style={{ color: 'var(--text-hint)' }}
+          >
             {labels.join('、')}
           </span>
         ) : (
@@ -206,7 +251,10 @@ function ToolGroup({
         />
       </button>
       {open && (
-        <div className="anim-fade flex flex-col gap-1 border-t px-2 py-2" style={{ borderColor: 'var(--border-soft)' }}>
+        <div
+          className="anim-fade flex flex-col gap-1 border-t px-2 py-2"
+          style={{ borderColor: 'var(--border-soft)' }}
+        >
           {results.map((r) => (
             <ToolCard key={r.callId} result={r} flat />
           ))}
@@ -233,7 +281,13 @@ function diffFiles(results: ToolResult[]): ReviewFile[] {
   return [...byPath.values()]
 }
 
-function ChangeCard({ results, running }: { results: ToolResult[]; running: boolean }): React.JSX.Element | null {
+function ChangeCard({
+  results,
+  running
+}: {
+  results: ToolResult[]
+  running: boolean
+}): React.JSX.Element | null {
   const files = diffFiles(results)
   if (files.length === 0) return null
   const stats = {
@@ -244,12 +298,19 @@ function ChangeCard({ results, running }: { results: ToolResult[]; running: bool
   return (
     <button
       className="flex items-center gap-2 self-start rounded-[var(--r-lg)] px-3 py-2 text-[12px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
-      style={{ border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
+      style={{
+        border: '1px solid var(--border)',
+        background: 'var(--surface)',
+        color: 'var(--text-dim)'
+      }}
       title="在右侧审阅变更"
       onClick={() => useStore.getState().openReview(files)}
     >
       {running ? (
-        <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
+        <span
+          className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ background: 'var(--accent)' }}
+        />
       ) : (
         <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
           <IconDiff size={13} />
@@ -277,7 +338,11 @@ function PendingIndicator({ since }: { since: number }): React.JSX.Element {
   return (
     <div
       className="anim-fade flex items-center gap-2 self-start rounded-[var(--r-lg)] border px-3 py-[7px] text-[12px]"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface)', color: 'var(--text-dim)' }}
+      style={{
+        borderColor: 'var(--border)',
+        background: 'var(--surface)',
+        color: 'var(--text-dim)'
+      }}
     >
       <span className="anim-breathe inline-flex" style={{ color: 'var(--accent)' }}>
         <IconSpark size={14} />
@@ -375,12 +440,19 @@ function PermissionPicker(): React.JSX.Element {
     <div ref={boxRef} className="relative">
       <button className="composer-chip" title="权限模式" onClick={() => setOpen((v) => !v)}>
         <cur.icon size={12} /> {cur.label}
-        <IconChevronDown size={10} className={`transition-transform duration-[150ms] ${open ? 'rotate-180' : ''}`} />
+        <IconChevronDown
+          size={10}
+          className={`transition-transform duration-[150ms] ${open ? 'rotate-180' : ''}`}
+        />
       </button>
       {open && (
         <div
           className="anim-pop absolute bottom-[calc(100%+6px)] left-0 z-50 w-[240px] overflow-hidden rounded-[var(--r-lg)] p-1"
-          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          style={{
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-lg)'
+          }}
         >
           {PERMISSION_MODES.map((m) => {
             const active = m.id === settings.permissionMode
@@ -392,10 +464,15 @@ function PermissionPicker(): React.JSX.Element {
                 }`}
                 onClick={() => {
                   setOpen(false)
-                  void api.updateSettings({ permissionMode: m.id }).then((next) => useStore.setState({ settings: next }))
+                  void api
+                    .updateSettings({ permissionMode: m.id })
+                    .then((next) => useStore.setState({ settings: next }))
                 }}
               >
-                <span className="mt-[2px] shrink-0" style={{ color: active ? 'var(--accent)' : 'var(--text-hint)' }}>
+                <span
+                  className="mt-[2px] shrink-0"
+                  style={{ color: active ? 'var(--accent)' : 'var(--text-hint)' }}
+                >
                   <m.icon size={14} />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -447,6 +524,26 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     return providersForComposer.find((x) => x.id === pid)?.adapter?.composerActions ?? []
   }, [activeSessionId, tabsForComposer, providersForComposer])
   const [input, setInput] = useState('')
+  const [pendingAttachments, setPendingAttachments] = useState<
+    Record<string, { key: string; name: string; preview?: string }[]>
+  >({})
+  const attachments = activeSession?.id ? (pendingAttachments[activeSession.id] ?? []) : []
+  const addAttachments = (
+    sessionId: string,
+    items: { path: string; name: string; preview?: string }[]
+  ): void => {
+    if (items.length === 0) return
+    setPendingAttachments((prev) => ({
+      ...prev,
+      [sessionId]: [
+        ...(prev[sessionId] ?? []),
+        ...items.map((it) => ({ key: it.path, name: it.name, preview: it.preview }))
+      ]
+    }))
+  }
+  const clearAttachments = (sessionId: string): void => {
+    setPendingAttachments((prev) => (prev[sessionId]?.length ? { ...prev, [sessionId]: [] } : prev))
+  }
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
@@ -462,7 +559,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   // 打开斜杠菜单时重新扫描技能/快捷指令：新装的技能和刚保存的指令不需要重启软件
   useEffect(() => {
     if (!slashOpen) return
-    void api.listSkills().then(setSkills).catch(() => setSkills([]))
+    void api
+      .listSkills()
+      .then(setSkills)
+      .catch(() => setSkills([]))
     void api
       .listQuickCommands()
       .then((c) => useStore.setState({ quickCmds: c }))
@@ -482,7 +582,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const allTurns = useMemo(() => activeSession?.turns ?? [], [activeSession])
   // workbench 模式只显示发生过工具调用的轮次——网页里已有完整对话，这里不重复
   const turns = useMemo(
-    () => (mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns),
+    () =>
+      mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns,
     [allTurns, mode]
   )
   // 当前任务（最后一条用户消息之后）的全部工具结果：文件变更汇总用
@@ -492,23 +593,25 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     }
     return turns.flatMap((t) => t.toolResults ?? [])
   }, [turns])
-  const running = activeSession ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0 : false
+  const running = activeSession
+    ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0
+    : false
   // 实时思考只在任务进行中显示：刚发出（最后一轮是用户）或正在生成/执行；
   // 任务结束后网页侧迟到的 think-chunk 不能再挂到最终答复下面。
   const liveThinking = Boolean(
     thinkingText &&
-      activeSession &&
-      (running ||
-        pendingReplySessionId === activeSession.id ||
-        turns[turns.length - 1]?.role === 'user')
+    activeSession &&
+    (running ||
+      pendingReplySessionId === activeSession.id ||
+      turns[turns.length - 1]?.role === 'user')
   )
   // 已发送但首包还没到：显示「正在思考」，避免看起来卡死
   const waiting = Boolean(
     activeSession &&
-      pendingReplySessionId === activeSession.id &&
-      allTurns[allTurns.length - 1]?.role === 'user' &&
-      !streamingText &&
-      !thinkingText
+    pendingReplySessionId === activeSession.id &&
+    allTurns[allTurns.length - 1]?.role === 'user' &&
+    !streamingText &&
+    !thinkingText
   )
   // 工具批次执行中（turn.status=streaming 且已有结果）：停止按钮应中止工具而不是生成
   const lastTurn = turns[turns.length - 1]
@@ -550,7 +653,9 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         : await api.pickDirectory()
       if (dir) await useStore.getState().openProject(dir)
     } catch (e) {
-      useStore.getState().notice(`选择目录失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      useStore
+        .getState()
+        .notice(`选择目录失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     } finally {
       setInitPicking(false)
     }
@@ -578,14 +683,18 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         await api.renameSession(session.id, title)
         useStore.setState((cur) => ({
           activeSession:
-            cur.activeSession?.id === session.id ? { ...cur.activeSession, title, titleLocked: true } : cur.activeSession,
+            cur.activeSession?.id === session.id
+              ? { ...cur.activeSession, title, titleLocked: true }
+              : cur.activeSession,
           sessions: cur.sessions.map((s) => (s.id === session.id ? { ...s, title } : s))
         }))
       }
 
       // 等 webview attach 并完成绑定：初始化提示词必须发进这条新对话
       const tabs = useStore.getState().tabs
-      const tab = tabs.find((t) => t.sessionId === session.id) ?? tabs.find((t) => t.providerId === session.providerId)
+      const tab =
+        tabs.find((t) => t.sessionId === session.id) ??
+        tabs.find((t) => t.providerId === session.providerId)
       if (tab) {
         const wcId = webviewWcId(tab.id)
         if (wcId <= 0) await waitWebviewWcId(tab.id, 60)
@@ -600,7 +709,9 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       }
       window.setTimeout(() => document.querySelector<HTMLTextAreaElement>('textarea')?.focus(), 60)
     } catch (e) {
-      useStore.getState().notice(`初始化失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      useStore
+        .getState()
+        .notice(`初始化失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     } finally {
       setInitStarting(false)
     }
@@ -637,6 +748,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       }
       await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
       await useStore.getState().sendPrompt(text)
+      clearAttachments(created.id)
       return
     }
     if (text === '/compact') {
@@ -645,22 +757,37 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       return
     }
     if (text === '/memory') {
-      await sendPrompt('请用 remember 工具保存本次会话的关键结论与用户偏好（若无可保存内容请直接说明）。')
+      await sendPrompt(
+        '请用 remember 工具保存本次会话的关键结论与用户偏好（若无可保存内容请直接说明）。'
+      )
+      clearAttachments(session.id)
       return
     }
     if (text === '/plan') {
       await sendPrompt('请先用 planSubmit 工具把这个需求拆解为分步计划，等待我确认后再执行。')
+      clearAttachments(session.id)
       return
     }
     await sendPrompt(text)
+    clearAttachments(session.id)
   }
 
   const slashItems = useMemo(
     () => [
-      ...SLASH_COMMANDS.map((c) => ({ key: c.cmd, trigger: c.cmd, label: c.desc, template: c.cmd })),
+      ...SLASH_COMMANDS.map((c) => ({
+        key: c.cmd,
+        trigger: c.cmd,
+        label: c.desc,
+        template: c.cmd
+      })),
       ...quickCmds
         .filter((q) => q.enabled)
-        .map((q) => ({ key: `q_${q.id}`, trigger: `/${q.trigger}`, label: q.name, template: q.template })),
+        .map((q) => ({
+          key: `q_${q.id}`,
+          trigger: `/${q.trigger}`,
+          label: q.name,
+          template: q.template
+        })),
       // 技能也作为斜杠命令暴露；输入后由 AI 调 readSkill 读取正文（渐进披露，不塞满上下文）
       ...skills
         .filter((s) => s.name.trim() && s.enabled !== false)
@@ -695,14 +822,20 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         className="flex h-11 shrink-0 items-center gap-2 border-b px-4"
         style={{ borderColor: 'var(--border)', background: 'var(--surface)' }}
       >
-        <span className="truncate text-[12.5px] font-medium">{activeSession?.title ?? '新会话'}</span>
-        {activeSession && (
-          <span className="badge badge-accent">{activeSession.providerId}</span>
-        )}
+        <span className="truncate text-[12.5px] font-medium">
+          {activeSession?.title ?? '新会话'}
+        </span>
+        {activeSession && <span className="badge badge-accent">{activeSession.providerId}</span>}
         <span className="flex-1" />
         {running && (
-          <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
-            <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+          <span
+            className="flex items-center gap-1.5 text-[11px]"
+            style={{ color: 'var(--text-hint)' }}
+          >
+            <span
+              className="anim-breathe h-1.5 w-1.5 rounded-full"
+              style={{ background: 'var(--accent)' }}
+            />
             {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中'}
           </span>
         )}
@@ -718,7 +851,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 <span
                   className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[19px] font-bold"
                   style={{
-                    background: 'linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 62%, #8b5cf6))',
+                    background:
+                      'linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 62%, #8b5cf6))',
                     color: 'var(--on-accent)',
                     boxShadow: '0 6px 20px color-mix(in srgb, var(--accent) 28%, transparent)'
                   }}
@@ -728,7 +862,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 {mode === 'workbench' ? (
                   <>
                     <div className="text-[15px] font-semibold">Agent 活动面板</div>
-                    <div className="max-w-[400px] text-[12.5px] leading-[1.75]" style={{ color: 'var(--text-dim)' }}>
+                    <div
+                      className="max-w-[400px] text-[12.5px] leading-[1.75]"
+                      style={{ color: 'var(--text-dim)' }}
+                    >
                       这里只显示本地工具调用、文件改动与需要确认的操作。
                       <br />
                       对话内容看左侧网页，不重复显示。
@@ -739,7 +876,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     <div className="text-[15px] font-semibold">
                       {activeSession ? '开始你的第一个任务' : '新建一个任务开始'}
                     </div>
-                    <div className="max-w-[400px] text-[12.5px] leading-[1.75]" style={{ color: 'var(--text-dim)' }}>
+                    <div
+                      className="max-w-[400px] text-[12.5px] leading-[1.75]"
+                      style={{ color: 'var(--text-dim)' }}
+                    >
                       网页中的 AI 会调用本地工具读写文件、执行命令，
                       <br />
                       结果实时回传到这个面板。
@@ -759,7 +899,9 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     }}
                     onClick={() => {
                       setInitName(
-                        activeSession?.title && activeSession.title !== '新会话' ? activeSession.title : ''
+                        activeSession?.title && activeSession.title !== '新会话'
+                          ? activeSession.title
+                          : ''
                       )
                       setInitOpen(true)
                     }}
@@ -772,11 +914,17 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="block text-[13px] font-semibold">初始化项目</span>
-                      <span className="mt-0.5 block truncate text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                      <span
+                        className="mt-0.5 block truncate text-[11.5px]"
+                        style={{ color: 'var(--text-dim)' }}
+                      >
                         {project?.root ?? '选择一个工作目录，AI 才能读写本地文件'}
                       </span>
                     </span>
-                    <span className="flex shrink-0 items-center gap-0.5 text-[11.5px]" style={{ color: 'var(--accent)' }}>
+                    <span
+                      className="flex shrink-0 items-center gap-0.5 text-[11.5px]"
+                      style={{ color: 'var(--accent)' }}
+                    >
                       {project ? '更换' : '选择目录'}
                       <IconChevronRight size={12} />
                     </span>
@@ -794,7 +942,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                         }}
                       >
                         <span className="text-[12px] font-medium">{q.title}</span>
-                        <span className="line-clamp-2 text-[11px] leading-[1.55]" style={{ color: 'var(--text-hint)' }}>
+                        <span
+                          className="line-clamp-2 text-[11px] leading-[1.55]"
+                          style={{ color: 'var(--text-hint)' }}
+                        >
                           {q.desc}
                         </span>
                       </button>
@@ -822,11 +973,20 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {streamingText && mode === 'pure' && (
             <div className="flex flex-col gap-2">
               {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI */}
-              <div className="whitespace-pre-wrap text-[13.5px] leading-[1.68]" style={{ color: 'var(--text-body)' }}>
+              <div
+                className="whitespace-pre-wrap text-[13.5px] leading-[1.68]"
+                style={{ color: 'var(--text-body)' }}
+              >
                 {stripCitationMarkers(streamingText)}
               </div>
-              <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
-                <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
+              <span
+                className="flex items-center gap-1.5 text-[11px]"
+                style={{ color: 'var(--text-hint)' }}
+              >
+                <span
+                  className="anim-breathe h-1.5 w-1.5 rounded-full"
+                  style={{ background: 'var(--accent)' }}
+                />
                 {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}
               </span>
             </div>
@@ -893,7 +1053,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         <div className="mx-auto mb-2 w-full max-w-[780px] px-6">
           <div
             className="anim-pop rounded-[var(--r-lg)] p-3"
-            style={{ background: 'var(--danger-soft)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)' }}
+            style={{
+              background: 'var(--danger-soft)',
+              border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)'
+            }}
           >
             <div className="mb-1 flex flex-wrap items-center gap-2">
               <span className="text-[12.5px] font-semibold" style={{ color: 'var(--danger)' }}>
@@ -901,7 +1064,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               </span>
               {confirmRequest.sessionId && confirmRequest.sessionId !== activeSession?.id && (
                 <span className="text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-                  来自「{sessions.find((s) => s.id === confirmRequest.sessionId)?.title ?? '其他会话'}」
+                  来自「
+                  {sessions.find((s) => s.id === confirmRequest.sessionId)?.title ?? '其他会话'}」
                 </span>
               )}
             </div>
@@ -935,9 +1099,16 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {slashOpen && (
             <div
               className="anim-pop absolute bottom-full left-0 z-50 mb-2 w-full max-w-[calc(100vw-32px)] overflow-hidden rounded-[var(--r-xl)]"
-              style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+              style={{
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                boxShadow: 'var(--shadow-lg)'
+              }}
             >
-              <div className="border-b px-3 py-2 text-[11px] font-medium" style={{ borderColor: 'var(--border-soft)', color: 'var(--text-dim)' }}>
+              <div
+                className="border-b px-3 py-2 text-[11px] font-medium"
+                style={{ borderColor: 'var(--border-soft)', color: 'var(--text-dim)' }}
+              >
                 命令
               </div>
               <div className="max-h-[300px] overflow-y-auto p-1">
@@ -960,7 +1131,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     >
                       {c.trigger}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                    <span
+                      className="min-w-0 flex-1 truncate text-[11.5px]"
+                      style={{ color: 'var(--text-dim)' }}
+                    >
                       {c.label}
                     </span>
                   </button>
@@ -973,11 +1147,46 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               </div>
               <div
                 className="flex items-center justify-between border-t px-3 py-2 text-[11px]"
-                style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)', color: 'var(--text-hint)' }}
+                style={{
+                  borderColor: 'var(--border-soft)',
+                  background: 'var(--surface-sunken)',
+                  color: 'var(--text-hint)'
+                }}
               >
                 <span>输入内容以搜索命令、技能或快捷指令</span>
                 <IconChevronDown size={12} className="opacity-60" />
               </div>
+            </div>
+          )}
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 px-4 pt-2.5">
+              {attachments.map((a) =>
+                a.preview ? (
+                  <div
+                    key={a.key}
+                    className="h-12 w-12 overflow-hidden rounded-[10px]"
+                    style={{ border: '1px solid var(--border-strong)', background: 'var(--bg)' }}
+                    title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
+                  >
+                    <img src={a.preview} alt={a.name} className="h-full w-full object-cover" />
+                  </div>
+                ) : (
+                  <div
+                    key={a.key}
+                    className="flex h-12 max-w-[220px] items-center gap-1.5 rounded-[10px] px-2.5"
+                    style={{
+                      border: '1px solid var(--border)',
+                      background: 'var(--surface-sunken)'
+                    }}
+                    title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
+                  >
+                    <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
+                      <IconFile size={13} />
+                    </span>
+                    <span className="truncate text-[11px]">{a.name}</span>
+                  </div>
+                )
+              )}
             </div>
           )}
           <textarea
@@ -1006,7 +1215,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 return
               }
               const session = activeSession
-              useStore.getState().notice(`正在附加 ${files.length} 张图片…`)
+              const pastedUrls: string[] = []
               void Promise.all(
                 files.slice(0, 4).map(
                   (f) =>
@@ -1018,28 +1227,49 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     })
                 )
               )
-                .then((images) => api.pasteWebImages(session.id, images))
-                .then((r) =>
-                  useStore.getState().notice(r.message ?? (r.ok ? '图片已附加' : '图片附加失败'), r.ok ? 'info' : 'warn')
-                )
+                .then((images) => {
+                  pastedUrls.push(...images)
+                  return api.pasteWebImages(session.id, images)
+                })
+                .then((r) => {
+                  if (r.ok) {
+                    // 本地 data URL 已在内存里，直接拿来预览；主进程只补文件路径/名称
+                    addAttachments(
+                      session.id,
+                      pastedUrls.map((src, i) => ({
+                        path: r.files?.[i]?.path ?? `paste-${Date.now()}-${i}`,
+                        name: r.files?.[i]?.name ?? `粘贴图片 ${i + 1}`,
+                        preview: src
+                      }))
+                    )
+                    return
+                  }
+                  useStore.getState().notice(r.message ?? '图片附加失败', 'warn')
+                })
                 .catch((err) =>
                   useStore
                     .getState()
-                    .notice(`图片附加失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+                    .notice(
+                      `图片附加失败：${err instanceof Error ? err.message : String(err)}`,
+                      'error'
+                    )
                 )
             }}
             onKeyDown={(e) => {
               if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 e.preventDefault()
                 const n = slashFiltered.length
-                if (n > 0) setSlashIndex((i) => (e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n))
+                if (n > 0)
+                  setSlashIndex((i) => (e.key === 'ArrowDown' ? (i + 1) % n : (i - 1 + n) % n))
                 return
               }
               if (slashOpen && e.key === 'Enter') {
                 const item = slashFiltered[slashIndex]
                 if (item) {
                   e.preventDefault()
-                  setInput(item.template.includes('{{input}}') ? item.template : `${item.template} `)
+                  setInput(
+                    item.template.includes('{{input}}') ? item.template : `${item.template} `
+                  )
                   setSlashOpen(false)
                   return
                 }
@@ -1073,10 +1303,15 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                   title={`切换${a.label}`}
                   style={
                     active
-                      ? { color: 'var(--accent)', borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)' }
+                      ? {
+                          color: 'var(--accent)',
+                          borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)'
+                        }
                       : undefined
                   }
-                  onClick={() => activeSession && void api.overlayAction(activeSession.id, a.keywords)}
+                  onClick={() =>
+                    activeSession && void api.overlayAction(activeSession.id, a.keywords)
+                  }
                 >
                   <IconSpark size={12} /> {a.label}
                 </button>
@@ -1095,10 +1330,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                   .uploadWebFile(activeSession.id)
                   .then((r) => {
                     if (r.canceled) return
-                    useStore.getState().notice(
-                      r.message ?? (r.ok ? `已附加 ${r.count ?? 0} 个文件` : '文件附加失败'),
-                      r.ok ? 'info' : 'warn'
-                    )
+                    if (r.ok) {
+                      addAttachments(activeSession.id, r.files ?? [])
+                      return
+                    }
+                    useStore.getState().notice(r.message ?? '文件附加失败', 'warn')
                   })
                   .catch((e) =>
                     useStore
@@ -1112,7 +1348,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             <PermissionPicker />
             <span className="flex-1" />
             {running ? (
-              <button className="btn btn-sm btn-danger" onClick={() => void stop(toolRunning ? 'tool' : 'generate')}>
+              <button
+                className="btn btn-sm btn-danger"
+                onClick={() => void stop(toolRunning ? 'tool' : 'generate')}
+              >
                 <IconStop size={11} /> {toolRunning ? '停止工具' : '停止生成'}
               </button>
             ) : (
@@ -1147,7 +1386,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               boxShadow: '0 24px 64px rgba(0,0,0,.28)'
             }}
           >
-            <div className="flex items-center gap-2.5 border-b px-5 py-4" style={{ borderColor: 'var(--border-soft)' }}>
+            <div
+              className="flex items-center gap-2.5 border-b px-5 py-4"
+              style={{ borderColor: 'var(--border-soft)' }}
+            >
               <span
                 className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
                 style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
@@ -1206,10 +1448,18 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               className="flex items-center justify-end gap-2 border-t px-5 py-3"
               style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
             >
-              <button className="btn btn-sm btn-ghost" disabled={initPicking} onClick={() => setInitOpen(false)}>
+              <button
+                className="btn btn-sm btn-ghost"
+                disabled={initPicking}
+                onClick={() => setInitOpen(false)}
+              >
                 取消
               </button>
-              <button className="btn btn-sm btn-outline" disabled={initPicking} onClick={() => void pickProjectDir()}>
+              <button
+                className="btn btn-sm btn-outline"
+                disabled={initPicking}
+                onClick={() => void pickProjectDir()}
+              >
                 {initPicking ? '选择中…' : project ? '更换目录' : '选择目录'}
               </button>
               <button

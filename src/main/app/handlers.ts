@@ -8,8 +8,8 @@ import {
   webContents
 } from 'electron'
 import type { OpenDialogOptions } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { AppContext } from './context'
 import type { IpcHandler } from '../index'
 import { TodoBoard } from '@main/ecosystem/todos'
@@ -121,6 +121,35 @@ async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise
     }
   }
   await new Promise((r) => setTimeout(r, ATTACH_SETTLE_MS))
+}
+
+/** 附件缩略图：图片小于 2MB 时回传 data URL，供纯模式输入框显示预览 */
+const PREVIEW_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  svg: 'image/svg+xml'
+}
+
+function describeWebFiles(paths: string[]): { path: string; name: string; preview?: string }[] {
+  return paths.map((file) => {
+    const name = basename(file)
+    const mime = PREVIEW_MIME[extname(file).slice(1).toLowerCase()]
+    if (!mime) return { path: file, name }
+    try {
+      if (statSync(file).size > 2 * 1024 * 1024) return { path: file, name }
+      return {
+        path: file,
+        name,
+        preview: `data:${mime};base64,${readFileSync(file).toString('base64')}`
+      }
+    } catch {
+      return { path: file, name }
+    }
+  })
 }
 
 /** 全量 IPC 方法注册：方法名 = LidowApi 契约方法名（renderer Proxy 按 name 调用） */
@@ -989,6 +1018,7 @@ export function registerHandlers(
     return {
       ok: true,
       count: res.filePaths.length,
+      files: describeWebFiles(res.filePaths),
       message: `已附加 ${res.filePaths.length} 个文件到网页输入框，发送消息即可一起上传`
     }
   })
@@ -1006,6 +1036,7 @@ export function registerHandlers(
     return {
       ok: true,
       count: files.length,
+      files: describeWebFiles(files),
       message: `已附加 ${files.length} 张图片到网页输入框，发送消息即可一起上传`
     }
   })
