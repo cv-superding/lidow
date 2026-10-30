@@ -77,4 +77,14 @@ describe('删除项目目录后的主进程保护', () => {
     expect(context).toContain('deleteLocalSessions')
     expect(context).toContain('projectChatRefs')
   })
+
+  it('项目文件夹点击先乐观高亮，并优先走 SPA 切换', () => {
+    const overlay = readFileSync(join(process.cwd(), 'src/preload/overlay.ts'), 'utf8')
+    expect(overlay).toContain('setPendingFolder')
+    expect(overlay).toContain('paintProjectFolderActive')
+    expect(overlay).toContain('openChatInPage')
+    expect(overlay).toContain('suppressActivateUntil')
+    expect(overlay).toContain('--lpf-hover')
+    expect(context).toContain('this.overlay.openChatInPage')
+  })
 })

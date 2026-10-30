@@ -35,8 +35,8 @@ interface Channel {
   hookBound?: boolean
   /** 上一轮的服务端累计 token（accumulated_token_usage 是会话累计值，本轮消耗 = 差值） */
   lastAcc?: number
-  /** 最近一次「把回复交给等待方」的时间：迟到的 net-response 不能再当成外部消息接管 */
-  lastResolveAt?: number
+  /** 最近一次交给等待方的回复文本：迟到的同一段 net-response 不能再接管 */
+  lastResolvedText?: string
   /** 最近一次网页流活动（网络层/ DOM）：发送前据此等页面真正静下来 */
   lastActivityAt?: number
 }
@@ -53,6 +53,8 @@ export class OverlayManager {
   private sendChains = new Map<number, Promise<void>>()
   private lastSendAt = new Map<number, number>()
   private sendIntervalProvider: () => number = () => 1000
+  /** openChatInPage 的应答（overlay 回传 open-chat-result） */
+  private openChatResolvers = new Set<(ok: boolean) => void>()
   private onFloatAction?: (sessionId: string, action: string) => void
   /** 思考过程增量回调（供 renderer 折叠块显示） */
   private onThinkChunk?: (sessionId: string, think: string) => void
@@ -60,6 +62,8 @@ export class OverlayManager {
   private onPageReply?: (sessionId: string, text: string) => void
   /** 用户在网页输入框里亲手发送的消息（同步回纯净模式的用户轮次） */
   private onPageUserMessage?: (sessionId: string, text: string) => void
+  /** 页面重挂载后的最后一条 AI 回答（补齐重启/重载期间缺失的最终答复） */
+  private onPageSnapshot?: (sessionId: string, text: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
   /**
@@ -254,8 +258,9 @@ export class OverlayManager {
         if (ch.domFallbackTimer) clearTimeout(ch.domFallbackTimer)
         ch.domFallbackTimer = setTimeout(() => {
           ch.domFallbackTimer = undefined
-          ch.lastResolveAt = Date.now()
-          for (const r of ch.replyResolvers) r(ch.netText?.length ? ch.netText : payload.text)
+          const finalText = ch.netText?.length ? ch.netText : payload.text
+          ch.lastResolvedText = finalText
+          for (const r of ch.replyResolvers) r(finalText)
           ch.replyResolvers.clear()
           // 3 秒足够等网络层权威文本（它通常与 DOM 结束同时到达）。
           // 此前 12 秒会让没有 net hook 的平台每轮都多等 12 秒，且长回复期间
@@ -270,14 +275,8 @@ export class OverlayManager {
       // ---------- 网络层 hook（不依赖 DOM，优先于 DOM 轮询）----------
       case 'net-stream': {
         // 主世界 SSE 增量：直接把完整文本交给等待方（比 DOM 轮询更准更快）
-        const prevBuf = ch.streamBuf
         ch.streamBuf = payload.text
         if (payload.text || payload.think) ch.lastActivityAt = Date.now()
-        // 文本不是上一段的延续 = 新的一轮流；若当前没有等待方，说明是用户
-        // 在网页里自己发的消息，清掉「刚给过等待方」的标记以便正常接管
-        if (ch.replyResolvers.size === 0 && prevBuf && !payload.text.startsWith(prevBuf)) {
-          ch.lastResolveAt = undefined
-        }
         ch.thinkBuf = payload.think ?? ''
         // 有增量 = 页面仍在生成；把软错误宽限顺延，避免中途插话
         if (payload.text || payload.think) this.rearmErrorGrace(ch)
@@ -357,11 +356,12 @@ export class OverlayManager {
         ch.chunkResolvers.clear()
         for (const r of ch.replyResolvers) r(payload.text)
         ch.replyResolvers.clear()
-        if (hadWaiter) ch.lastResolveAt = Date.now()
-        // 没有等待方 → 用户在网页里自己发的消息；但刚交给等待方的回复可能
-        // 晚几百毫秒才从网络层到达（DOM 兜底已先 resolve），不能再次接管，
-        // 否则同一段工具调用会被执行两遍。
-        if (!hadWaiter && payload.text.trim() && Date.now() - (ch.lastResolveAt ?? 0) > 8_000) {
+        if (hadWaiter) ch.lastResolvedText = payload.text
+        // 没有等待方 → 可能是用户在网页里自己发的新消息，也可能是多阶段回答的
+        // 最终一段（搜索/深度思考完成后会再发一轮）。只按文本去重，不再用
+        // 「距上次 resolve 不足 8 秒」直接丢弃 —— 那会把最终答案吞掉。
+        if (!hadWaiter && payload.text.trim() && payload.text !== ch.lastResolvedText) {
+          ch.lastResolvedText = payload.text
           const sessionId = this.sessionOfWebContents(sender.id)
           if (sessionId) this.onPageReply?.(sessionId, payload.text)
         }
@@ -422,12 +422,14 @@ export class OverlayManager {
         break
       }
       case 'user-message': {
-        // 网页侧直发的用户消息：只记到当前绑定的会话，避免串台。
-        // 同时清掉上一轮的 resolve 时间，让这条消息的 AI 回复能正常接管
-        // （否则与上一条 lidow 回复间隔不足 8 秒时会被去重规则丢掉）。
-        ch.lastResolveAt = undefined
+        // 网页侧直发的用户消息：只记到当前绑定的会话，避免串台
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && payload.text.trim()) this.onPageUserMessage?.(sessionId, payload.text)
+        break
+      }
+      case 'page-snapshot': {
+        const sessionId = this.sessionOfWebContents(sender.id)
+        if (sessionId && payload.text.trim()) this.onPageSnapshot?.(sessionId, payload.text)
         break
       }
       case 'chat-deleted': {
@@ -436,6 +438,10 @@ export class OverlayManager {
       }
       case 'activate-chat': {
         if (payload.url) this.onActivateChat?.(sender.id, payload.url)
+        break
+      }
+      case 'open-chat-result': {
+        for (const r of [...this.openChatResolvers]) r(payload.ok)
         break
       }
       case 'login-state': {
@@ -494,6 +500,11 @@ export class OverlayManager {
   /** 注册「用户在网页里自己发消息」回调（纯净模式同步用户轮次） */
   setPageUserMessageHandler(fn: (sessionId: string, text: string) => void): void {
     this.onPageUserMessage = fn
+  }
+
+  /** 注册「页面重挂载时的最后一条 AI 回答」回调 */
+  setPageSnapshotHandler(fn: (sessionId: string, text: string) => void): void {
+    this.onPageSnapshot = fn
   }
 
   bindSession(sessionId: string, webContentsId: number): void {
@@ -579,6 +590,7 @@ export class OverlayManager {
     this.clearErrorGrace(ch)
     ch.lidowStopped = false
     ch.netText = undefined
+    ch.lastResolvedText = undefined
     ch.netError = undefined
     ch.streamBuf = ''
     const sendP = new Promise<void>((resolve, reject) => {
@@ -680,6 +692,30 @@ export class OverlayManager {
   async waitPageIdle(sessionId: string): Promise<void> {
     const ch = await this.waitForChannel(sessionId)
     if (ch) await this.waitForPageQuiet(ch)
+  }
+
+  /**
+   * 让网页通过点击侧栏链接做 SPA 切换（避免整页 reload 后项目文件夹消失几秒）。
+   * overlay 回传是否找到了链接；找不到由调用方回退 loadURL。
+   */
+  async openChatInPage(sessionId: string, url: string): Promise<boolean> {
+    const ch = await this.waitForChannel(sessionId)
+    if (!ch) return false
+    const target = this.targetOf(ch)
+    if (!target) return false
+    return new Promise<boolean>((resolve) => {
+      let done = false
+      const finish = (ok: boolean): void => {
+        if (done) return
+        done = true
+        this.openChatResolvers.delete(finish)
+        resolve(ok)
+      }
+      this.openChatResolvers.add(finish)
+      target.send('lidow:overlay-cmd', { kind: 'open-chat', url } satisfies OverlayCommand)
+      const timer = setTimeout(() => finish(false), 1800)
+      timer.unref?.()
+    })
   }
 
   /** 等待一轮完整回复；失败时 reject（供 loop 的重试引擎接管） */

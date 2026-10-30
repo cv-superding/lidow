@@ -194,17 +194,8 @@ function findLast(selectors: string[]): Element | null {
   return null
 }
 
-function lastBubbleText(): string {
-  const container = findFirst(adapter?.messages ?? [])
-  // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
-  const bubble = findLast(adapter?.bubble ?? [])
-  if (!bubble) {
-    if (!container) return ''
-    return (container as HTMLElement).innerText ?? ''
-  }
-  // markdown 渲染会把 ``` 围栏转成代码块 DOM：遍历时把代码块重包围栏，
-  // 否则解析器看不到 ```lidow ... ``` 边界（工具块永远解析失败）
-  const el = bubble as HTMLElement
+/** 把渲染后的 markdown DOM 还原成可解析文本（代码块补围栏、去掉思考/按钮） */
+function cleanRenderedText(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement
   // 思考区不属于回复正文：DOM 兜底时若把 .ds-think-content 一起抓进去，
   // 本地转录里就会「思考整段漏进气泡」（DeepSeek 分享页 DOM 已证实）
@@ -225,6 +216,41 @@ function lastBubbleText(): string {
   const fences = (text.match(/```/g) ?? []).length
   if (fences % 2 === 1) text += '\n```'
   return text
+}
+
+function lastBubbleText(): string {
+  const container = findFirst(adapter?.messages ?? [])
+  // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
+  const bubble = findLast(adapter?.bubble ?? [])
+  if (!bubble) {
+    if (!container) return ''
+    return (container as HTMLElement).innerText ?? ''
+  }
+  return cleanRenderedText(bubble as HTMLElement)
+}
+
+/**
+ * 最后一条 AI 消息的完整文本（不是最后一个 markdown block）。
+ * DeepSeek 会把一条长回答拆成多个 .ds-markdown--block；快照必须取整条消息，
+ * 否则重启恢复时只能补上最后一小段。
+ */
+function lastMessageText(): string {
+  const msgs = [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
+  const blocks = [...document.querySelectorAll<HTMLElement>('div.ds-markdown--block')].filter(visible)
+  const candidates = msgs.length > 0 ? msgs : blocks
+  const hasMarkdown = (el: HTMLElement): boolean =>
+    Boolean(el.querySelector('div.ds-markdown--block, div.ds-markdown, div[class*="ds-markdown"]'))
+  let el = candidates[candidates.length - 1]
+  if (el && !hasMarkdown(el)) {
+    for (let i = candidates.length - 2; i >= 0; i--) {
+      if (hasMarkdown(candidates[i]!)) {
+        el = candidates[i]
+        break
+      }
+    }
+  }
+  const text = el ? cleanRenderedText(el).trim() : ''
+  return text || lastBubbleText().trim()
 }
 
 function isStreaming(): boolean {
@@ -271,6 +297,7 @@ function watchMessages(): void {
       everFlag = true
       if (!streaming) {
         streaming = true
+        lastPageSnapshot = ''
         send({ type: 'stream-start' })
       }
     }
@@ -296,6 +323,7 @@ function watchMessages(): void {
       lastText = text
       if (!everFlag) {
         streaming = true
+        lastPageSnapshot = ''
         send({ type: 'stream-start' })
       }
       scheduleChunk()
@@ -562,6 +590,37 @@ function armChatDeleteWatch(): void {
   window.setTimeout(check, 800)
 }
 
+let pageSnapshotTimer: number | undefined
+let lastPageSnapshot = ''
+let pageSnapshotTries = 0
+
+/**
+ * 页面重新挂载（重启/重载/切回会话）时，把网页里最后一条 AI 回答补同步给
+ * 主进程：重启会中断在途的流，之后页面上已生成的最终回答不会再有网络事件。
+ */
+function schedulePageSnapshot(delay = 2200): void {
+  if (!isDeepSeekPage()) return
+  if (pageSnapshotTimer !== undefined) window.clearTimeout(pageSnapshotTimer)
+  pageSnapshotTimer = window.setTimeout(() => {
+    pageSnapshotTimer = undefined
+    if (!isDeepSeekPage()) return
+    // 还在生成/搜索时先等，避免把中间态当最终回答
+    if (isStreaming() || streaming) {
+      schedulePageSnapshot(1200)
+      return
+    }
+    const text = lastMessageText().trim()
+    if (!text) {
+      // 页面可能还没渲染完历史消息：有限次重试
+      if (pageSnapshotTries++ < 5) schedulePageSnapshot(1500)
+      return
+    }
+    if (text === lastPageSnapshot) return
+    lastPageSnapshot = text
+    send({ type: 'page-snapshot', text })
+  }, delay)
+}
+
 // ---------- DeepSeek 网页侧：项目文件夹 + 长会话时间线 ----------
 
 let projectFolders: ProjectFolderData | null = null
@@ -572,6 +631,12 @@ const projectFoldersShowAll = new Set<string>()
 let projectFoldersSeeded = false
 let projectFoldersActiveSeen = ''
 let projectFolderTimer: number | undefined
+/** 点击后先本地高亮，不等主进程/网页导航完成 */
+let pendingFolderProject = ''
+let pendingFolderUrl = ''
+let pendingFolderTimer: number | undefined
+/** 程序化点击侧栏链接时，短暂放行 capture 拦截 */
+let suppressActivateUntil = 0
 
 function isDeepSeekPage(): boolean {
   return /(^|\.)deepseek\.com$/i.test(location.hostname)
@@ -582,31 +647,40 @@ function ensureDeepSeekStyles(): void {
   const style = document.createElement('style')
   style.id = 'lidow-deepseek-style'
   style.textContent = `
-    #lidow-project-folders{margin:6px 10px 10px;border:1px solid rgba(127,127,127,.22);
-      border-radius:10px;background:rgba(127,127,127,.06);overflow:hidden;font-size:12px;color:inherit}
+    #lidow-project-folders{
+      --lpf-text:#0f1115;
+      --lpf-muted:color-mix(in srgb, var(--lpf-text) 52%, transparent);
+      --lpf-hover:color-mix(in srgb, var(--lpf-text) 9%, transparent);
+      --lpf-active-bg:color-mix(in srgb, #4d6bfe 12%, transparent);
+      --lpf-brand:#4d6bfe;
+      margin:2px 0 4px;color:var(--lpf-text);font-size:13px;font-family:var(--lpf-font,inherit)}
     #lidow-project-folders button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
-    .lpf-head{display:flex;align-items:center;gap:7px;width:100%;padding:8px 10px;font-size:11px;
-      font-weight:600;letter-spacing:.02em;color:rgba(127,127,127,.92)}
-    .lpf-badge{margin-left:auto;min-width:18px;padding:0 5px;border-radius:99px;background:rgba(127,127,127,.16);
-      text-align:center;font-size:10px;line-height:17px;font-weight:500;color:rgba(127,127,127,.95)}
-    .lpf-chevron{display:inline-flex;width:12px;justify-content:center;transition:transform .16s;opacity:.7}
+    .lpf-head{display:flex;align-items:center;gap:7px;width:100%;height:28px;padding:0 10px;border-radius:8px;
+      font-size:12px;font-weight:500;color:var(--lpf-muted);transition:background .12s,color .12s}
+    .lpf-head:hover{background:var(--lpf-hover);color:var(--lpf-text)}
+    .lpf-badge{margin-left:auto;min-width:0;background:none;padding:0;font-size:11px;font-weight:400;color:var(--lpf-muted)}
+    .lpf-chevron{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.45}
     .lpf-chevron.open{transform:rotate(90deg)}
-    .lpf-project-head{display:flex;align-items:center;gap:7px;width:100%;padding:6px 10px;border-radius:7px}
-    .lpf-project-head:hover{background:rgba(127,127,127,.1)}
-    .lpf-project-head.active{background:rgba(77,107,254,.13);color:#6b8cff}
-    .lpf-chev{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.55;font-size:10px}
+    .lpf-project-head{display:flex;align-items:center;gap:6px;width:100%;height:32px;padding:0 8px;border-radius:8px;
+      color:var(--lpf-text);transition:background .12s,color .12s}
+    .lpf-project-head:hover{background:var(--lpf-hover)}
+    .lpf-project-head.active{background:var(--lpf-active-bg);color:var(--lpf-brand)}
+    .lpf-chev{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.38;font-size:10px}
     .lpf-chev.open{transform:rotate(90deg)}
-    .lpf-folder{display:inline-flex;opacity:.8;flex-shrink:0}
-    .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:12px}
-    .lpf-count{font-size:10px;opacity:.5;flex-shrink:0}
-    .lpf-chats{padding:0 10px 6px 28px}
-    .lpf-chat{display:block;width:100%;padding:5px 7px;border-radius:6px;overflow:hidden;
-      text-overflow:ellipsis;white-space:nowrap;font-size:11.5px;opacity:.72}
-    .lpf-chat:hover{background:rgba(127,127,127,.1);opacity:1}
-    .lpf-chat.active{background:rgba(77,107,254,.14);color:#6b8cff;opacity:1}
-    .lpf-more{display:block;width:100%;padding:5px 7px;font-size:10.5px;opacity:.5;text-align:left}
-    .lpf-more:hover{opacity:.9}
-    .lpf-empty{padding:2px 10px 9px;font-size:10.5px;opacity:.5;line-height:1.6}
+    .lpf-folder{display:inline-flex;opacity:.55;flex-shrink:0;transition:opacity .12s}
+    .lpf-project-head:hover .lpf-folder,.lpf-project-head.active .lpf-folder{opacity:.9}
+    .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:13px;font-weight:500}
+    .lpf-count{font-size:11px;color:var(--lpf-muted);flex-shrink:0}
+    .lpf-chats{padding:1px 0 2px 32px}
+    .lpf-chat{display:flex;align-items:center;width:100%;height:30px;padding:0 8px;border-radius:7px;overflow:hidden;
+      text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:color-mix(in srgb, var(--lpf-text) 75%, transparent);
+      transition:background .12s,color .12s}
+    .lpf-chat:hover{background:var(--lpf-hover);color:var(--lpf-text)}
+    .lpf-chat.active{background:var(--lpf-active-bg);color:var(--lpf-brand)}
+    .lpf-more{display:flex;align-items:center;width:100%;height:26px;padding:0 8px;border-radius:7px;
+      font-size:11.5px;color:var(--lpf-muted);transition:background .12s,color .12s}
+    .lpf-more:hover{background:var(--lpf-hover);color:var(--lpf-text)}
+    .lpf-empty{padding:2px 10px 9px;font-size:11px;color:var(--lpf-muted);line-height:1.6}
     #lidow-timeline{position:fixed;right:2px;top:92px;bottom:96px;width:7px;z-index:2147483000;
       border-radius:99px;background:transparent;transition:width .16s,background .16s;cursor:pointer}
     #lidow-timeline:hover{width:34px;background:rgba(127,127,127,.13)}
@@ -634,12 +708,56 @@ function projectFolderChats(): { chat: { url: string }; project: string }[] {
   return (projectFolders?.projects ?? []).flatMap((p) => p.chats.map((chat) => ({ chat, project: p.id })))
 }
 
-function updateProjectFolderActive(): void {
+function setPendingFolder(projectId: string, urlKey: string): void {
+  pendingFolderProject = projectId
+  pendingFolderUrl = urlKey
+  if (pendingFolderTimer !== undefined) window.clearTimeout(pendingFolderTimer)
+  pendingFolderTimer = window.setTimeout(() => {
+    pendingFolderTimer = undefined
+    pendingFolderProject = ''
+    pendingFolderUrl = ''
+    paintProjectFolderActive()
+  }, 12_000)
+  paintProjectFolderActive()
+}
+
+function paintProjectFolderActive(): void {
   if (!projectFolders) return
-  const key = chatUrlKey(location.href)
-  for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-chat')) {
-    el.classList.toggle('active', chatUrlKey(el.dataset.url ?? '') === key)
+  const activeProject = pendingFolderProject || projectFolders.activeProjectId || ''
+  const activeUrl = pendingFolderUrl || chatUrlKey(location.href)
+  for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-project-head')) {
+    el.classList.toggle('active', el.dataset.id === activeProject)
   }
+  for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-chat')) {
+    el.classList.toggle('active', chatUrlKey(el.dataset.url ?? '') === activeUrl)
+  }
+}
+
+/** 优先点击侧栏里已有的对话链接（SPA 切换），避免整页 reload 导致面板消失 3 秒 */
+function openChatInPage(url: string): boolean {
+  let target: URL
+  try {
+    target = new URL(url, location.href)
+  } catch {
+    return false
+  }
+  const path = target.pathname.replace(/\/+$/, '')
+  const id = path.split('/').filter(Boolean).pop() ?? ''
+  if (!id) return false
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(visible)
+  const match =
+    links.find((a) => {
+      try {
+        const u = new URL(a.href, location.href)
+        return u.origin === target.origin && u.pathname.replace(/\/+$/, '') === path
+      } catch {
+        return false
+      }
+    }) ?? links.find((a) => String(a.href).includes(id))
+  if (!match) return false
+  suppressActivateUntil = Date.now() + 1500
+  match.click()
+  return true
 }
 
 function renderProjectFolders(): void {
@@ -659,16 +777,33 @@ function renderProjectFolders(): void {
     projectFoldersActiveSeen = projectFolders.activeProjectId
     projectFoldersExpanded.add(projectFoldersActiveSeen)
   }
+  // 主进程/网页导航确认后清掉乐观高亮
+  if (pendingFolderProject && projectFolders.activeProjectId === pendingFolderProject) pendingFolderProject = ''
+  if (pendingFolderUrl && chatUrlKey(location.href) === pendingFolderUrl) pendingFolderUrl = ''
+  if (!pendingFolderProject && !pendingFolderUrl && pendingFolderTimer !== undefined) {
+    window.clearTimeout(pendingFolderTimer)
+    pendingFolderTimer = undefined
+  }
+  const activeProjectForUi = pendingFolderProject || projectFolders.activeProjectId || ''
   const sig = JSON.stringify({ data: projectFolders, collapsed: projectFoldersCollapsed, expanded: [...projectFoldersExpanded] })
   if (existing && existing.isConnected && sig === projectFoldersSig) {
-    updateProjectFolderActive()
+    paintProjectFolderActive()
     return
   }
   const mount = findProjectFolderMount()
   if (!mount) return
+  // 用一条“非当前选中”的原生聊天链接取样，避免把激活态的蓝色当成正文色
+  const nativeLinks = [...mount.querySelectorAll<HTMLElement>('a[href*="/a/chat/s/"]')]
+  const nativeLink =
+    nativeLinks.find(
+      (a) =>
+        a.getAttribute('aria-current') !== 'page' &&
+        !/(^|[-_ ])(active|selected|current)([-_ ]|$)/i.test(String(a.className))
+    ) ?? nativeLinks[0]
+  const nativeStyle = nativeLink ? getComputedStyle(nativeLink) : getComputedStyle(mount)
   const total = projectFolders.projects.reduce((n, p) => n + p.chats.length, 0)
   const folderSvg =
-    '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.8h4.1l1.2 1.5H14v5.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.8Z"/></svg>'
+    '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35"><path d="M2 4.8h4.1l1.2 1.5H14v5.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.8Z"/></svg>'
   const body = projectFolders.projects
     .map((project) => {
       const open = projectFoldersExpanded.has(project.id)
@@ -688,7 +823,7 @@ function renderProjectFolders(): void {
           : '')
       return (
         `<div class="lpf-project">` +
-        `<button class="lpf-project-head${projectFolders?.activeProjectId === project.id ? ' active' : ''}" data-lpf="project" data-id="${escapeHtml(project.id)}">` +
+        `<button class="lpf-project-head${activeProjectForUi === project.id ? ' active' : ''}" data-lpf="project" data-id="${escapeHtml(project.id)}">` +
         `<span class="lpf-chev${open ? ' open' : ''}">›</span>` +
         `<span class="lpf-folder">${folderSvg}</span>` +
         `<span class="lpf-name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>` +
@@ -731,16 +866,30 @@ function renderProjectFolders(): void {
         renderProjectFolders()
       } else if (action === 'chat') {
         const url = target.dataset.url
-        if (url) send({ type: 'activate-chat', url })
+        if (url) {
+          const key = chatUrlKey(url)
+          const found = projectFolderChats().find((x) => chatUrlKey(x.chat.url) === key)
+          setPendingFolder(found?.project ?? '', key)
+          if (found) {
+            projectFoldersExpanded.add(found.project)
+            projectFoldersSig = ''
+            renderProjectFolders()
+          }
+          send({ type: 'activate-chat', url })
+        }
       }
     })
   }
   panel.innerHTML = html
+  if (nativeStyle) {
+    panel.style.setProperty('--lpf-text', nativeStyle.color)
+    panel.style.setProperty('--lpf-font', nativeStyle.fontFamily)
+  }
   if (panel.parentElement !== mount.parentElement || panel.nextElementSibling !== mount) {
     mount.insertAdjacentElement('beforebegin', panel)
   }
   projectFoldersSig = sig
-  updateProjectFolderActive()
+  paintProjectFolderActive()
 }
 
 function setupProjectFolderClicks(): void {
@@ -749,16 +898,22 @@ function setupProjectFolderClicks(): void {
     (ev) => {
       if (!isDeepSeekPage() || !projectFolders) return
       if (ev.button !== 0) return
+      // 主进程用程序化 click 做 SPA 切换时，放行原生导航
+      if (Date.now() < suppressActivateUntil) return
       const target = ev.target as HTMLElement | null
       if (!target || target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')) return
       const link = target.closest<HTMLAnchorElement>('a[href*="/a/chat/s/"]')
       if (!link) return
       const key = chatUrlKey(link.href)
       if (!key) return
-      const known = new Set(projectFolderChats().map((x) => chatUrlKey(x.chat.url)))
-      if (!known.has(key)) return
+      const found = projectFolderChats().find((x) => chatUrlKey(x.chat.url) === key)
+      if (!found) return
       const action = target.closest('button,[role="button"],[aria-haspopup]')
       if (action && action !== link) return
+      setPendingFolder(found.project, key)
+      projectFoldersExpanded.add(found.project)
+      projectFoldersSig = ''
+      renderProjectFolders()
       ev.preventDefault()
       ev.stopPropagation()
       send({ type: 'activate-chat', url: link.href })
@@ -769,11 +924,13 @@ function setupProjectFolderClicks(): void {
 
 function startProjectFolderWatch(): void {
   if (projectFolderTimer !== undefined) return
+  let timelineTick = 0
   projectFolderTimer = window.setInterval(() => {
     if (!isDeepSeekPage()) return
     renderProjectFolders()
-    renderTimeline()
-  }, 2500)
+    // 时间线要扫全部消息，成本高一些；保持 ~2.4s 刷新
+    if (timelineTick++ % 3 === 0) renderTimeline()
+  }, 800)
 }
 
 // ---------- 长会话时间线 ----------
@@ -1605,6 +1762,9 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
         watchMessages()
         setupFloatingBall()
         watchNativeNewChat()
+        lastPageSnapshot = ''
+        pageSnapshotTries = 0
+        schedulePageSnapshot()
       }
       break
     case 'tool-mask':
@@ -1637,6 +1797,9 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       projectFolders = cmd.folders ?? null
       projectFoldersSig = ''
       renderProjectFolders()
+      break
+    case 'open-chat':
+      send({ type: 'open-chat-result', ok: cmd.url ? openChatInPage(cmd.url) : false })
       break
     case 'send':
       void doSend(cmd.text ?? '')

@@ -451,7 +451,10 @@ export interface OverlayCommand {
     | 'click-keywords'
     | 'watch-chats'
     | 'project-folders'
+    | 'open-chat'
   text?: string
+  /** open-chat：要切换到的对话 URL */
+  url?: string
   /** watch-chats：当前项目下需要监听“网页侧是否被删除”的对话 URL */
   urls?: string[]
   /** project-folders：网页侧项目文件夹数据（DeepSeek 侧栏） */
@@ -496,7 +499,11 @@ export type OverlayEvent =
   | { type: 'net-error'; text: string; reason: string }
   /** 用户在网页输入框里亲手发送的消息（纯净模式同步用） */
   | { type: 'user-message'; text: string }
+  /** 页面重挂载后的最后一条 AI 回答（重启/重载后补齐缺失的最终答复） */
+  | { type: 'page-snapshot'; text: string }
   /** 网页侧用户删除了对话：主进程据此同步移除本地会话 */
   | { type: 'chat-deleted'; url: string }
   /** 用户点击网页侧项目对话：主进程切换到对应 Lidow 项目/会话 */
   | { type: 'activate-chat'; url: string }
+  /** 程序化 SPA 切换对话的结果（找不到侧栏链接时主进程回退 loadURL） */
+  | { type: 'open-chat-result'; ok: boolean }

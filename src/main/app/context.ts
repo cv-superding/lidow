@@ -419,6 +419,9 @@ export class AppContext {
     })
     // 网页里亲手发的用户消息也要出现在纯净模式（双向同步的另一半）
     this.overlay.setPageUserMessageHandler((sessionId, text) => this.recordWebUserMessage(sessionId, text))
+    // 页面重挂载时补齐最后一条 AI 回答：重启会中断流，之后网页上已有的最终答案
+    // 不会再产生网络事件，不补的话纯净模式会停在思考片段。
+    this.overlay.setPageSnapshotHandler((sessionId, text) => this.loop.syncExternalReply(sessionId, text))
     // 服务端权威 token 统计（SSE accumulated_token_usage 差值），按平台累计持久化
     this.overlay.setTokenUsageHandler((sessionId, tokens) => {
       const session = this.sessionOf(sessionId)
@@ -1130,8 +1133,22 @@ export class AppContext {
       level: 'info',
       message: `已切回项目「${project.name}」：${session.title}`
     })
+    // 先把新的活动项目推给网页：面板高亮立即更新，不用等导航完成
+    this.syncProjectFoldersToWebview(webContentsId)
     if (chatUrlKey(wc.getURL()) !== key) {
-      await wc.loadURL(session.providerUrl || rawUrl).catch(() => undefined)
+      const targetUrl = session.providerUrl || rawUrl
+      // 优先点侧栏里已有的链接做 SPA 切换；找不到才整页 loadURL。
+      // 整页 reload 会让注入的项目文件夹消失 1~3 秒，用户感知就是“切对话很慢”。
+      const opened = await this.overlay.openChatInPage(session.id, targetUrl)
+      if (opened) {
+        for (let i = 0; i < 15; i++) {
+          if (chatUrlKey(wc.getURL()) === key) break
+          await new Promise((r) => setTimeout(r, 100))
+        }
+      }
+      if (chatUrlKey(wc.getURL()) !== key) {
+        await wc.loadURL(targetUrl).catch(() => undefined)
+      }
     }
     this.syncProjectFoldersToWebview(webContentsId)
     Logger.info('project', `网页对话切回项目 ${project.name}: ${session.title}`)

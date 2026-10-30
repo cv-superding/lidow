@@ -99,6 +99,21 @@ describe('网页仍在生成时不得插入重试消息', () => {
     expect(loopSrc).toContain("msg.includes('用户在网页侧停止了生成')")
   })
 
+  it('多阶段回答的最终一段不能被 8 秒去重规则吞掉', () => {
+    expect(overlaySrc).toContain('lastResolvedText')
+    expect(overlaySrc).toContain('payload.text !== ch.lastResolvedText')
+    expect(overlaySrc).not.toContain('Date.now() - (ch.lastResolveAt ?? 0) > 8_000')
+  })
+
+  it('重启/重载后能从页面快照补齐最终回答，并修正思考片段', () => {
+    expect(preloadSrc).toContain('page-snapshot')
+    expect(preloadSrc).toContain('schedulePageSnapshot')
+    expect(overlaySrc).toContain('page-snapshot')
+    expect(loopSrc).toContain('syncExternalReply')
+    expect(loopSrc).toContain('忽略被当成回复的思考片段')
+    expect(loopSrc).toContain('最终回答替换思考/前半段')
+  })
+
   it('网页侧用户消息与纯文本回复都同步进会话转录', () => {
     expect(preloadSrc).toContain("type: 'user-message'")
     expect(preloadSrc).toContain('markOutgoing(text)')

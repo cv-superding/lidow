@@ -173,6 +173,8 @@ export class AgentLoop {
   private compactRuns = new Map<string, Promise<void>>()
   /** 已接管的网页侧回复指纹：DOM 与网络层双通道会重复上报同一条回复 */
   private adoptedRecently = new Map<string, number>()
+  /** 循环运行中到达的网页侧最终回答：循环收尾后再补，避免多阶段回答丢最后一段 */
+  private pendingExternal = new Map<string, string>()
 
   constructor(private deps: LoopDeps) {}
 
@@ -283,6 +285,11 @@ export class AgentLoop {
       this.handleLoopError(state.sessionId, err)
     } finally {
       this.finishRunning(state)
+      const pending = this.pendingExternal.get(state.sessionId)
+      if (pending) {
+        this.pendingExternal.delete(state.sessionId)
+        this.syncExternalReply(state.sessionId, pending)
+      }
       // 任务收尾才是自动压缩的正确时机：此刻没有在途的发送/等待，
       // 且上一任务留下的长转录正是需要摘要的对象
       this.maybeCompact(state.sessionId)
@@ -296,7 +303,11 @@ export class AgentLoop {
    * 首轮文本直接用已收到的回复，不再重新发送。
    */
   async adoptExternalReply(sessionId: string, text: string): Promise<void> {
-    if (this.running.has(sessionId)) return
+    if (this.running.has(sessionId)) {
+      // 多阶段回答的最终一段可能在循环收尾前到达；缓存到循环结束再补
+      if (text.trim()) this.pendingExternal.set(sessionId, text)
+      return
+    }
     // 压缩正在等摘要回复：不能再起一轮发送/等待，否则两边互相抢
     if (this.compacting.has(sessionId)) return
     if (!text.trim()) return
@@ -347,6 +358,12 @@ export class AgentLoop {
         // 同步进会话转录，否则纯净模式只看到用户消息、看不到 AI 的回答。
         const clean = (parsed.cleanText || text).trim()
         if (!clean) return
+        // 深度思考/搜索阶段的第一段有时只回传思考摘要，不能当成最终答复落盘
+        const thinkText = think.trim()
+        if (thinkText && (clean === thinkText || (clean.length < thinkText.length && thinkText.includes(clean)))) {
+          Logger.info('loop', `忽略被当成回复的思考片段 session=${sessionId}`)
+          return
+        }
         const turns = this.deps.store.get(sessionId)?.turns ?? []
         const lastAssistant = [...turns].reverse().find((t) => t.role === 'assistant')
         if (
@@ -355,6 +372,25 @@ export class AgentLoop {
           Date.now() - lastAssistant.ts < 30_000
         ) {
           return
+        }
+        // 上一轮只落了思考片段/前半段：最终回答到了就替换，而不是再插一条
+        if (lastAssistant && !lastAssistant.toolResults?.length && Date.now() - lastAssistant.ts < 5 * 60_000) {
+          const lastText = lastAssistant.text.trim()
+          const lastThink = (lastAssistant.think || '').trim()
+          const lastIsThinking = Boolean(
+            lastText && lastThink && (lastText === lastThink || (lastText.length < lastThink.length && lastThink.includes(lastText)))
+          )
+          const extendsLast = Boolean(lastText && clean.startsWith(lastText) && clean.length > lastText.length)
+          if (lastIsThinking || extendsLast) {
+            this.deps.store.patchTurn(sessionId, lastAssistant.id, {
+              text: clean,
+              ts: Date.now(),
+              status: 'done'
+            })
+            this.deps.emit({ type: 'session-updated', sessionId })
+            Logger.info('loop', `最终回答替换思考/前半段 session=${sessionId}`)
+            return
+          }
         }
         this.deps.store.appendTurn(sessionId, {
           id: `turn_${nanoid(8)}`,
@@ -416,8 +452,71 @@ export class AgentLoop {
       this.handleLoopError(state.sessionId, err)
     } finally {
       this.finishRunning(state)
+      const pending = this.pendingExternal.get(state.sessionId)
+      if (pending) {
+        this.pendingExternal.delete(state.sessionId)
+        this.syncExternalReply(state.sessionId, pending)
+      }
       this.maybeCompact(state.sessionId)
     }
+  }
+
+  /**
+   * 页面重挂载后的最后一条 AI 回答：补进转录。
+   * 不执行工具 —— 重启会中断在途的流，之后页面上已经生成的最终回答不会再有
+   * 网络事件；不补的话纯净模式会永远停在思考片段。
+   */
+  syncExternalReply(sessionId: string, rawText: string): void {
+    if (this.running.has(sessionId)) return
+    const text = rawText.trim()
+    if (!text) return
+    const store = this.deps.store
+    const session = store.get(sessionId)
+    if (!session) return
+    const turns = session.turns
+    const lastUser = [...turns].reverse().find((t) => t.role === 'user')
+    if (lastUser && lastUser.text.trim() === text) return
+    let lastIdx = -1
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (turns[i]!.role === 'assistant') {
+        lastIdx = i
+        break
+      }
+    }
+    const last = lastIdx >= 0 ? turns[lastIdx] : null
+    if (last) {
+      const lt = last.text.trim()
+      if (lt === text) return
+      // 上一轮只落了思考片段（text 是 think 的前缀）：优先用最终回答修正
+      const think = (last.think || '').trim()
+      if (think && (lt === think || (lt.length > 0 && lt.length < think.length && think.includes(lt)))) {
+        store.patchTurn(sessionId, last.id, { text, ts: Date.now(), status: 'done' })
+        this.deps.emit({ type: 'session-updated', sessionId })
+        Logger.info('loop', `用页面最终回答修正思考片段 session=${sessionId}`)
+        return
+      }
+      // 多阶段回答：本地是最终回答的前缀，直接替换
+      if (lt.length > 0 && text.startsWith(lt) && text.length > lt.length) {
+        store.patchTurn(sessionId, last.id, { text, ts: Date.now(), status: 'done' })
+        this.deps.emit({ type: 'session-updated', sessionId })
+        return
+      }
+      // 本地已有更完整的旧回答，不能用页面快照覆盖
+      if (lt.length > text.length && lt.includes(text)) return
+      // 页面快照包含本地已有回答（搜索 UI 等额外内容），无需重复落盘
+      if (!lt.includes(text) && text.includes(lt) && lt.length >= 80) return
+      // 同一回答已经在更早的轮次里出现过
+      if (turns.some((t) => t.role === 'assistant' && t.text.includes(text) && t.text.trim().length >= text.length)) return
+    }
+    store.appendTurn(sessionId, {
+      id: `turn_${nanoid(8)}`,
+      role: 'assistant',
+      text,
+      ts: Date.now(),
+      status: 'done'
+    })
+    this.deps.emit({ type: 'session-updated', sessionId })
+    Logger.info('loop', `页面快照补齐 AI 回答 session=${sessionId} len=${text.length}`)
   }
 
   /** 取会话里最近一条用户消息（纠偏时还原原始任务）；续接会话没有用户轮次时沿血缘回溯 */

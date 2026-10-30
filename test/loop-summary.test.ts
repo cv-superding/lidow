@@ -44,6 +44,7 @@ function makeSettings(): AppSettings {
 function makeHarness(): {
   loop: AgentLoop
   session: () => Session
+  addTurn: (turn: ChatTurn) => void
   prompts: string[]
   notifyDone: ReturnType<typeof vi.fn>
 } {
@@ -143,8 +144,58 @@ function makeHarness(): {
     takeThinking: () => '',
     rebindToSession: async () => undefined
   })
-  return { loop, session: () => session, prompts, notifyDone }
+  const addTurn = (turn: ChatTurn): void => {
+    session = { ...session, turns: [...session.turns, turn], updatedAt: Date.now() }
+  }
+  return { loop, session: () => session, addTurn, prompts, notifyDone }
 }
+
+describe('重启后的最终回答恢复', () => {
+  it('页面快照补齐最终回答，并替换只落了思考片段的轮次', () => {
+    const { loop, session, addTurn } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '郑州的', ts: Date.now(), status: 'done' })
+    addTurn({
+      id: 'a1',
+      role: 'assistant',
+      text: '用户问郑州的天气，我需要搜索',
+      ts: Date.now(),
+      status: 'done',
+      think: '用户问郑州的天气，我需要搜索郑州今天的天气并获取未来几天的预报'
+    })
+    const answer = '郑州今天晴，25/9℃。\n\n## 提示\n明天有雨，记得带伞。'
+    loop.syncExternalReply('sess_1', answer)
+    expect(session().turns).toHaveLength(2)
+    expect(session().turns[1]!.text).toBe(answer)
+    expect(session().turns[1]!.think).toContain('未来几天的预报')
+
+    // 同一快照重复到达不重复落盘
+    loop.syncExternalReply('sess_1', answer)
+    expect(session().turns).toHaveLength(2)
+  })
+
+  it('网页侧直接发的最终回答也替换思考片段，而不是再插一条', async () => {
+    const { loop, session, addTurn } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '郑州的', ts: Date.now(), status: 'done' })
+    addTurn({
+      id: 'a1',
+      role: 'assistant',
+      text: '用户问郑州的天气',
+      ts: Date.now(),
+      status: 'done',
+      think: '用户问郑州的天气，需要搜索后回答'
+    })
+    await loop.adoptExternalReply('sess_1', '郑州今天晴，25/9℃。')
+    expect(session().turns).toHaveLength(2)
+    expect(session().turns[1]!.text).toBe('郑州今天晴，25/9℃。')
+  })
+
+  it('快照是用户消息时不会误记成 AI 回答', () => {
+    const { loop, session, addTurn } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '郑州的', ts: Date.now(), status: 'done' })
+    loop.syncExternalReply('sess_1', '郑州的')
+    expect(session().turns).toHaveLength(1)
+  })
+})
 
 describe('长任务轮数上限', () => {
   it('到上限后请求收尾摘要并落盘，而不是静默停止', async () => {
