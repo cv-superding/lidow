@@ -23,7 +23,7 @@ describe('DeepSeek 项目文件夹树（网页注入）', () => {
   })
 
   it('右侧为原生多选按钮留出空间，避免角标重叠', () => {
-    expect(overlay).toContain('padding-right:30px')
+    expect(overlay).toContain('padding-right:40px')
     expect(overlay).toContain('data-lpf="chat-more"')
     expect(overlay).toContain("sidebarIsDark")
   })

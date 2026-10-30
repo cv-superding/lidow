@@ -22,6 +22,60 @@ describe('ProviderRegistry built-ins migration', () => {
     expect(reg.list().filter((p) => p.id === 'gemini')).toHaveLength(1)
   })
 
+  it('旧内置 adapter 会合并新版选择器，账号保留', () => {
+    const d = mkdtempSync(join(tmpdir(), 'lidow-providers-adapter-'))
+    try {
+      const old = structuredClone(BUILT_IN_PROVIDERS.find((p) => p.id === 'chatgpt')!)
+      delete old.adapter.profileName
+      old.accounts = [
+        { id: 'acc_keep', label: 'liding li', partition: 'persist:lidow-chatgpt-keep' }
+      ]
+      writeFileSync(join(d, 'providers.json'), JSON.stringify({ providers: [old] }))
+      const reg = new ProviderRegistry(d)
+      const p = reg.get('chatgpt')!
+      expect(p.adapter.profileName?.length).toBeGreaterThan(0)
+      expect(p.accounts[0]?.id).toBe('acc_keep')
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  it('自动账号名可被网页更新，手动命名后不再覆盖', () => {
+    const d = mkdtempSync(join(tmpdir(), 'lidow-providers-name-'))
+    try {
+      const reg = new ProviderRegistry(d)
+      const acc = reg.addAccount('chatgpt', '')
+      expect(acc.labelAuto).toBe(true)
+      reg.setAccountMeta('chatgpt', acc.id, { label: 'liding li' })
+      expect(reg.get('chatgpt')?.accounts[0]?.label).toBe('liding li')
+      // 模拟用户手动命名（labelAuto=false）
+      reg.update('chatgpt', {
+        accounts: reg.get('chatgpt')!.accounts.map((a) => ({ ...a, labelAuto: false }))
+      })
+      reg.setAccountMeta('chatgpt', acc.id, { label: '另一个名字' })
+      expect(reg.get('chatgpt')?.accounts[0]?.label).toBe('liding li')
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
+  it('可选默认账号并持久化，null 恢复隐式默认分区', () => {
+    const d = mkdtempSync(join(tmpdir(), 'lidow-providers-default-'))
+    try {
+      const reg = new ProviderRegistry(d)
+      const acc = reg.addAccount('chatgpt', 'liding li')
+      reg.setDefaultAccount('chatgpt', acc.id)
+      expect(reg.get('chatgpt')?.defaultAccountId).toBe(acc.id)
+      // 重新构造 registry（模拟重启）仍保留
+      const reg2 = new ProviderRegistry(d)
+      expect(reg2.get('chatgpt')?.defaultAccountId).toBe(acc.id)
+      reg2.setDefaultAccount('chatgpt', null)
+      expect(reg2.get('chatgpt')?.defaultAccountId).toBeUndefined()
+    } finally {
+      rmSync(d, { recursive: true, force: true })
+    }
+  })
+
   it('未指定账号时保持默认分区，新增/移除账号不会劫持老会话', () => {
     const reg = new ProviderRegistry(dir)
     reg.switchAccount('deepseek', 'acc_demo')

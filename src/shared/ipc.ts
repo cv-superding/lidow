@@ -8,6 +8,7 @@ import type {
   McpServerConfig,
   McpToolInfo,
   MemoryEntry,
+  ModelPickerInfo,
   InstalledPlugin,
   ProjectInfo,
   ProviderDescriptor,
@@ -78,6 +79,11 @@ export interface LidowApi {
   ): Promise<ProviderDescriptor>
   removeProvider(projectId: string, providerId: string): Promise<void>
   addAccount(projectId: string, providerId: string, label: string): Promise<ProviderDescriptor>
+  setDefaultAccount(
+    projectId: string,
+    providerId: string,
+    accountId: string | null
+  ): Promise<ProviderDescriptor>
   switchAccount(
     projectId: string,
     providerId: string,
@@ -286,6 +292,11 @@ export interface LidowApi {
   ): Promise<{ ok: boolean; count?: number; files?: WebAttachmentInfo[]; message?: string }>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
+  getModels(sessionId: string): Promise<ModelPickerInfo>
+  selectModel(
+    sessionId: string,
+    label: string
+  ): Promise<{ ok: boolean; label?: string; error?: string }>
   checkUpdate(
     manual?: boolean
   ): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
@@ -323,6 +334,8 @@ export interface UpdateState {
 
 export type LidowEvent =
   | { type: 'session-updated'; sessionId: string }
+  /** 平台账号的登录态/显示名变化：刷新平台卡片与账号选择器 */
+  | { type: 'providers-changed'; projectId: string }
   | { type: 'update-state'; state: UpdateState }
   /** 项目初始化完成：询问是否切到纯净模式（可稍后从左侧栏进入） */
   | { type: 'ui-pure-suggestion'; sessionId: string; webContentsId?: number; providerId?: string }

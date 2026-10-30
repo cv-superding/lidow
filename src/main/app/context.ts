@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Notification, shell, webContents } from 'electron'
+import { app, BrowserWindow, Notification, session, shell, webContents } from 'electron'
 import type { WebContents } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
@@ -42,7 +42,9 @@ import type {
   FileNode,
   ProjectFolderData,
   ProjectFolderProject,
+  ModelPickerInfo,
   ProjectInfo,
+  ProviderDescriptor,
   Session,
   SessionMeta
 } from '@shared/types'
@@ -126,7 +128,9 @@ function isGenericTitlePart(part: string, providerName: string): boolean {
     p === providerName.toLowerCase() ||
     p.includes('探索未至之境') ||
     p.includes('into the unknown') ||
-    p.includes('抖音旗下')
+    p.includes('抖音旗下') ||
+    p.includes('腾讯旗下') ||
+    p.includes('全能ai助手')
   )
 }
 
@@ -477,6 +481,11 @@ export class AppContext {
       this.loop.stop(sessionId, level)
     })
     this.overlay.onReady = (sessionId) => this.configureOverlay(sessionId)
+    // 账号显示名/登录态：网页里检测到后写回平台账号，卡片和账号选择器不再是「账号 N」
+    this.overlay.onLoginState = (webContentsId, loggedIn) =>
+      this.updateAccountMetaFromWeb(webContentsId, { loggedIn })
+    this.overlay.onProfileName = (webContentsId, name) =>
+      this.updateAccountMetaFromWeb(webContentsId, { label: name })
     // 登录成功 → 把「有没有工作目录」推给该网页，由 overlay 决定是否弹首次引导。
     // 这一步必须放在登录之后：登录页没有输入框，那时弹引导用户既看不懂也用不上。
     this.overlay.onInitProject = (webContentsId) => void this.pickAndOpenProject(webContentsId)
@@ -1127,6 +1136,95 @@ export class AppContext {
     })
     const wcId = this.overlay.wcIdOfSession(sessionId)
     if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
+  }
+
+  /** 把网页侧登录态/账号名写回 provider 账号（默认分区或显式账号） */
+  private updateAccountMetaFromWeb(
+    webContentsId: number,
+    patch: { label?: string; loggedIn?: boolean }
+  ): void {
+    const sid = this.overlay.sessionOfWebContents(webContentsId)
+    if (!sid) return
+    const current = this.sessionOf(sid)
+    if (!current) return
+    const reg = this.providerRegistryOf(current.projectId)
+    const provider = reg.get(current.providerId)
+    if (!provider) return
+    const accountId = current.accountId
+    let changed = false
+    if (!accountId || accountId === '__default__') {
+      const labelChanged = Boolean(patch.label && patch.label !== provider.defaultAccountLabel)
+      const loginChanged =
+        patch.loggedIn !== undefined && patch.loggedIn !== provider.defaultLoggedIn
+      if (labelChanged || loginChanged) {
+        reg.setDefaultAccountMeta(provider.id, patch)
+        changed = true
+      }
+    } else {
+      const account = provider.accounts.find((a) => a.id === accountId)
+      if (!account) return
+      // 自动名（账号 N 或上次检测到的名字）可被网页侧更新；
+      // 以后用户手动命名（labelAuto=false）不会被覆盖
+      const labelChanged = Boolean(
+        patch.label && account.labelAuto !== false && patch.label !== account.label
+      )
+      const loginChanged = patch.loggedIn !== undefined && patch.loggedIn !== account.loggedIn
+      if (labelChanged || loginChanged) {
+        reg.setAccountMeta(provider.id, accountId, patch)
+        changed = true
+      }
+    }
+    if (changed) {
+      this.emit({ type: 'providers-changed', projectId: current.projectId, sessionId: '' })
+    }
+  }
+
+  /** 账号登录态：优先用 Cookie 判断（无需打开网页）；判断不了的平台返回 undefined */
+  private async partitionLoginState(
+    projectId: string,
+    providerId: string,
+    accountId?: string
+  ): Promise<boolean | undefined> {
+    const reg = this.providerRegistryOf(projectId)
+    const provider = reg.get(providerId)
+    if (!provider) return undefined
+    const patterns: Record<string, RegExp[]> = {
+      chatgpt: [/^__Secure-next-auth\.session-token/, /^__Secure-authjs\.session-token/],
+      gemini: [/^(SID|SSID|HSID|__Secure-1PSID|__Secure-3PSID)$/],
+      claude: [/^sessionKey$/, /^__Secure-next-auth\.session-token/]
+      // deepseek 等把登录态放 localStorage，Cookie 判断不了，交给页面上报
+    }
+    const pats = patterns[providerId]
+    if (!pats) return undefined
+    try {
+      const ses = session.fromPartition(reg.partitionOf(providerId, accountId))
+      const cookies = await ses.cookies.get({ url: provider.home })
+      return cookies.some((c) => pats.some((re) => re.test(c.name)))
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 列表 + 登录态：ChatGPT/Gemini 用 Cookie 直接判断，其余用页面上报的持久值 */
+  async listProvidersWithLogin(projectId: string): Promise<ProviderDescriptor[]> {
+    const reg = this.providerRegistryOf(projectId)
+    const list = reg.list().map((p) => ({
+      ...p,
+      accounts: p.accounts.map((a) => ({ ...a }))
+    }))
+    await Promise.all(
+      list.map(async (p) => {
+        const def = await this.partitionLoginState(projectId, p.id)
+        if (def !== undefined) p.defaultLoggedIn = def
+        await Promise.all(
+          p.accounts.map(async (a) => {
+            const st = await this.partitionLoginState(projectId, p.id, a.id)
+            if (st !== undefined) a.loggedIn = st
+          })
+        )
+      })
+    )
+    return list
   }
 
   private registerEcosystemTools(): void {
@@ -2460,6 +2558,19 @@ export class AppContext {
 
   async dshCoverage(): Promise<{ total: number; implemented: string[]; missing: string[] }> {
     return this.dsh.coverage()
+  }
+
+  /** 读取网页侧模型菜单（纯净模式右侧模型下拉） */
+  async getModels(sessionId: string): Promise<ModelPickerInfo> {
+    return this.overlay.getModels(sessionId)
+  }
+
+  /** 切换网页侧模型 */
+  async selectModel(
+    sessionId: string,
+    label: string
+  ): Promise<{ ok: boolean; label?: string; error?: string }> {
+    return this.overlay.selectModel(sessionId, label)
   }
 
   /** 供测试/调试：直接读会话存储（按项目 id） */

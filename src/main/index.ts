@@ -234,7 +234,8 @@ function createWindow(host = false): BrowserWindow {
     show: !host || process.env.LIDOW_HOST_VISIBLE === '1',
     minWidth: 960,
     minHeight: 620,
-    backgroundColor: '#101014',
+    // 浅色底：切标签/网页重载时 webview 表面会短暂重建，深色底会闪一下黑屏
+    backgroundColor: '#f5f6f8',
     // 开发模式与打包/容器模式都使用品牌图标；不能依赖 Electron 默认图标
     icon: iconPath,
     autoHideMenuBar: true,

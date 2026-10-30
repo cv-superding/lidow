@@ -603,8 +603,9 @@ export const useStore = create<LidowState>((set, get) => ({
         // 会因为 accounts[0] 已变成新账号而跳到未登录分区。
         account = activeTab.accountId || DEFAULT_ACCOUNT_ID
       } else {
-        // 没有当前标签：用设置里选中的账号，否则默认分区（不是 accounts[0]）
-        account = provider?.activeAccountId ?? DEFAULT_ACCOUNT_ID
+        // 没有当前标签：用户选定的默认账号优先，否则最近活动账号/默认分区
+        account =
+          provider?.defaultAccountId ?? provider?.activeAccountId ?? DEFAULT_ACCOUNT_ID
       }
     }
     let s: Session
@@ -700,7 +701,10 @@ export const useStore = create<LidowState>((set, get) => ({
       (t) => t.providerId === providerId && accountKeyOf(t.accountId) === targetKey
     )
     if (existing) {
-      set({ activeTabId: existing.id })
+      // 空标签（只有网页、还没绑会话）要清掉旧平台的 activeSession，
+      // 否则纯净模式面板会继续显示上一个平台的会话和模型。
+      if (sessionId) set({ activeTabId: existing.id })
+      else get().setActiveTab(existing.id)
       if (sessionId) {
         // wcId 必须取自该标签自己的 webview：多标签时页面上有多个 <webview>，
         // 按 DOM 顺序取第一个会把 A 平台的会话绑到 B 平台的页面。
@@ -743,6 +747,8 @@ export const useStore = create<LidowState>((set, get) => ({
     if (sessionId) {
       const wcId = await waitWebviewWcId(tab.id, 60)
       if (wcId > 0) await get().bindTabSession(tab.id, sessionId, wcId)
+    } else {
+      get().setActiveTab(tab.id)
     }
   },
 
@@ -1101,6 +1107,13 @@ export const useStore = create<LidowState>((set, get) => ({
               sess.accountId ?? DEFAULT_ACCOUNT_ID
             )
         })()
+        break
+      }
+      case 'providers-changed': {
+        // 网页侧检测到账号名/登录态：刷新平台卡片与账号选择器
+        if (e.projectId === get().activeProjectId) {
+          void api.listProviders(e.projectId).then((providers) => set({ providers }))
+        }
         break
       }
       case 'session-updated': {

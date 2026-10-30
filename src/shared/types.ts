@@ -108,6 +108,10 @@ export interface DomAdapter {
   newChat: string[]
   /** 已登录标志（存在=已登录） */
   loginFlag: string[]
+  /** 网页侧账号显示名（侧栏头像/账号菜单），用于自动命名账号 */
+  profileName?: string[]
+  /** 网页侧模型选择器（按钮 + 菜单项选择器）；没有该字段的平台不显示模型下拉 */
+  model?: { button: string[]; items: string[] }
   /**
    * 输入框下方的平台自带功能（纯净模式底栏按平台渲染）。
    * 每个平台不一样：DeepSeek 是「深度思考/智能搜索」，豆包是「对话/项目/技能/快速」。
@@ -121,6 +125,10 @@ export interface ProviderAccount {
   label: string
   /** Electron partition 名，一个账号一个独立 session 持久化登录态 */
   partition: string
+  /** 最近一次检测到的登录态（启动时还会用 Cookie 校正） */
+  loggedIn?: boolean
+  /** 名称是否自动生成；false = 用户手动命名，网页侧不再覆盖 */
+  labelAuto?: boolean
 }
 
 export interface ProviderDescriptor {
@@ -132,6 +140,11 @@ export interface ProviderDescriptor {
   enabled: boolean
   accounts: ProviderAccount[]
   activeAccountId?: string
+  /** 默认分区登录态/网页账号名（没有显式账号时展示） */
+  defaultLoggedIn?: boolean
+  defaultAccountLabel?: string
+  /** 用户选定的默认账号（不设 = 隐式默认分区） */
+  defaultAccountId?: string
 }
 
 // ---------- Prompt 体系 ----------
@@ -439,10 +452,23 @@ export interface ProjectFolderData {
   activeProjectId: string | null
 }
 
+export interface ModelOption {
+  label: string
+  desc?: string
+  selected?: boolean
+}
+
+export interface ModelPickerInfo {
+  current: string
+  options: ModelOption[]
+}
+
 export interface OverlayCommand {
   kind:
     | 'send'
     | 'new-chat'
+    | 'get-models'
+    | 'select-model'
     | 'extract'
     | 'get-input'
     | 'set-input'
@@ -483,12 +509,17 @@ export interface OverlayCommand {
   show?: boolean
   /** click-keywords：要在页面里点击的按钮文案候选（平台功能各不相同） */
   keywords?: string[]
+  /** select-model：要切换到的模型名称 */
+  modelLabel?: string
 }
 
 export type OverlayEvent =
   | { type: 'ready' }
   | { type: 'nav'; url: string; title?: string }
   | { type: 'login-state'; loggedIn: boolean }
+  | { type: 'profile-name'; name: string }
+  | { type: 'model-options'; current: string; options: ModelOption[] }
+  | { type: 'model-selected'; ok: boolean; label?: string; error?: string }
   | { type: 'stream-start' }
   | { type: 'stream-chunk'; text: string }
   | { type: 'stream-end'; text: string }

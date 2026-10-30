@@ -1042,7 +1042,7 @@ function ensureDeepSeekStyles(): void {
       --lpf-pill-bg:rgba(15,17,21,.055);
       --lpf-pill-text:#8b939f;
       --lpf-ease:cubic-bezier(.4,0,.2,1);
-      margin:2px 0 6px;padding-right:30px;color:var(--lpf-text);font-size:14px;line-height:1.5;
+      box-sizing:border-box;max-width:100%;margin:2px 0 6px;padding-right:40px;color:var(--lpf-text);font-size:14px;line-height:1.5;
       font-family:var(--lpf-font,inherit)}
     #lidow-project-folders.lpf-dark{
       --lpf-hover:rgba(255,255,255,.06);
@@ -1564,13 +1564,29 @@ function evaluateLoginNow(): void {
   // 这条优先于输入框判断：豆包等平台的登录页也有 textarea（搜索框），
   // 只看输入框会误判成已登录，于是在没登录的平台上弹初始化（实测踩中）。
   const LOGIN_BTN_KWS = ['登录', '立即登录', '注册', 'Log in', 'Sign in', 'Sign up']
+  // 有些平台（通义千问实测）的“登录”不是 <button>，而是 div/span 包裹的可点击块；
+  // 只扫 button/a 会漏掉 → 把带输入框的未登录页误判成已登录，直接弹出初始化引导。
   const loginBtn = [
-    ...document.querySelectorAll<HTMLElement>('button, div[role="button"], a')
+    ...document.querySelectorAll<HTMLElement>('button, a, [role="button"], span, div')
   ].find((el) => {
-    const t = (el.textContent ?? '').trim()
+    if (!visible(el)) return false
+    if (el.children.length > 2) return false
+    const t = (el.innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim()
     if (!t || t.length > 8) return false
-    if (el.closest('#lidow-first-run, #lidow-first-run-banner')) return false
-    return LOGIN_BTN_KWS.includes(t)
+    if (el.closest('#lidow-ball, #lidow-menu, #lidow-first-run, #lidow-first-run-banner, #lidow-project-folders')) {
+      return false
+    }
+    if (!LOGIN_BTN_KWS.includes(t)) return false
+    // 必须像可点击入口：自身/祖先可点击，或 cursor:pointer
+    if (el.matches('button, a, [role="button"]') || el.closest('button, a, [role="button"]')) {
+      return true
+    }
+    let p: HTMLElement | null = el
+    for (let i = 0; i < 4 && p; i++) {
+      if (getComputedStyle(p).cursor === 'pointer') return true
+      p = p.parentElement
+    }
+    return false
   })
   const nowLoggedIn = onLoginPage
     ? false
@@ -1582,6 +1598,108 @@ function evaluateLoginNow(): void {
     loggedIn = nowLoggedIn
     renderFirstRun()
   }
+}
+
+/** 从账号菜单按钮提取显示名（去掉套餐后缀/Google 账号前缀） */
+function extractProfileName(el: Element): string {
+  const text = ((el as HTMLElement).innerText || el.textContent || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const aria = (el.getAttribute('aria-label') || '').trim()
+  const GENERIC =
+    /^(打开个人资料菜单|个人资料|个人资料菜单|账户菜单|账号菜单|Google 账号|账号|账户|设置|帮助|登录|注册|更多|菜单)$/
+  // 优先可见文案（ChatGPT 侧栏是“liding li + 套餐”）；头像按钮没有文字时用 aria-label
+  let raw = text && !GENERIC.test(text) ? text : aria || text
+  if (!raw) return ''
+  // Google 账号按钮：aria-label 形如 “Google 账号：xxx@gmail.com”
+  const colon = Math.max(raw.lastIndexOf('：'), raw.lastIndexOf(':'))
+  if (colon >= 0 && /google|账号|account/i.test(raw.slice(0, colon + 1))) {
+    raw = raw.slice(colon + 1).trim()
+  }
+  // 套餐/状态文案不是账号名（豆包底部的“体验套餐”曾被当成名字）
+  if (/^(免费版|体验套餐|体验版|套餐|会员|升级套餐|升级|Pro|Plus|Free|Team|Enterprise)$/i.test(raw.trim())) {
+    return ''
+  }
+  let name = raw.split(/[\n|]/)[0]?.trim() ?? ''
+  name = name.replace(/(免费版|Plus|Pro|Team|Enterprise|Free|升级|套餐|会员)$/i, '').trim()
+  if (!name || name.length > 60) return ''
+  if (
+    /^(设置|帮助|登录|注册|新聊天|新对话|搜索|探索|账户|账号|个人|菜单|更多|头像|切换账号|退出登录|升级|免费版|套餐)$/.test(
+      name
+    )
+  ) {
+    return ''
+  }
+  return name
+}
+
+/** 网页侧账号显示名：适配器选择器优先，退化为左下角侧栏底部的账号按钮 */
+function detectProfileName(): string {
+  if (!adapter) return ''
+  for (const sel of adapter.profileName ?? []) {
+    try {
+      const list = [...document.querySelectorAll<HTMLElement>(sel)].filter(visible)
+      // 文档顺序优先：页面通常把用户名放在套餐/状态文案前面（豆包实测）
+      for (const el of list) {
+        const name = extractProfileName(el)
+        if (name) return name
+      }
+    } catch {
+      /* 无效选择器跳过 */
+    }
+  }
+  const bottom: { name: string; y: number; avatar: boolean }[] = []
+  const consider = (el: HTMLElement): void => {
+    if (!visible(el)) return
+    if (el.closest('#lidow-ball, #lidow-menu, #lidow-first-run, #lidow-first-run-banner, #lidow-project-folders')) {
+      return
+    }
+    const r = el.getBoundingClientRect()
+    // 必须在可视区左下角：会话列表很长时 getBoundingClientRect 会给出
+    // 几千像素的 y，之前会把看不见的历史会话标题当成账号名（DeepSeek 实测）。
+    if (
+      r.left > 340 ||
+      r.top >= innerHeight ||
+      r.bottom <= 0 ||
+      r.bottom < innerHeight - 220 ||
+      r.width < 20 ||
+      r.height < 10
+    ) {
+      return
+    }
+    const name = extractProfileName(el)
+    if (!name) return
+    // 名字本身是叶子文本，头像在父容器上（DeepSeek 实测：名字 div 没有 img，
+    // 上两级才是头像）。向上找 4 层，把「带头像的账号区」和会话标题/置顶头区分开。
+    let avatar = false
+    let p: HTMLElement | null = el
+    for (let i = 0; i < 5 && p; i++) {
+      if (p.querySelector('img, [class*="avatar" i], [data-testid*="avatar" i]')) {
+        avatar = true
+        break
+      }
+      p = p.parentElement
+    }
+    bottom.push({ name, y: r.bottom, avatar })
+  }
+  for (const el of document.querySelectorAll<HTMLElement>('button, a, [role="button"]')) {
+    consider(el)
+  }
+  // DeepSeek 的账号名是 div/span（不是按钮），补一层叶子文本扫描
+  for (const el of document.querySelectorAll<HTMLElement>('div, span')) {
+    if (el.children.length === 0) consider(el)
+  }
+  const pool = bottom.some((x) => x.avatar) ? bottom.filter((x) => x.avatar) : bottom
+  pool.sort((a, b) => b.y - a.y)
+  return pool[0]?.name ?? ''
+}
+
+function reportProfileName(): void {
+  if (!adapter || !loggedIn) return
+  const name = detectProfileName()
+  if (!name || name === lastProfileName) return
+  lastProfileName = name
+  send({ type: 'profile-name', name })
 }
 
 setInterval(() => {
@@ -1633,7 +1751,11 @@ setInterval(() => {
   evaluateLoginNow()
   // 状态快照：登录态误判时能直接看出是选择器问题还是页面结构变了
   exposeState({ loggedIn, projectKnown, projectRoot })
-  send({ type: 'login-state', loggedIn })
+  if (lastLoginSent !== loggedIn) {
+    lastLoginSent = loggedIn
+    send({ type: 'login-state', loggedIn })
+  }
+  reportProfileName()
   // 开关状态跟平台实际按钮保持同步（用户也可能在网页里自己点）
   reportToggleStates()
 }, 1000)
@@ -1770,6 +1892,10 @@ let firstRunDismissed = false
 let firstRunCollapsed = false
 /** 登录态（由轮询更新）：引导必须等登录完成后才出现 */
 let loggedIn = false
+/** 登录态只在变化时上报：此前每秒都发，主进程每秒重发 set-project，会把初始化引导压掉 */
+let lastLoginSent: boolean | null = null
+/** 上一次上报的网页账号名 */
+let lastProfileName = ''
 /** 是否已收到过主进程的明确 projectRoot 下发（区分"还没收到"与"确实没有项目"） */
 let projectKnown = false
 /** 主进程告知：当前会话/项目已有对话记录（已初始化，重载后不再弹引导） */
@@ -2419,6 +2545,141 @@ function setupToolMask(): { show: (text: string) => void; hide: () => void } {
 
 let toolMaskCtl: { show: (text: string) => void; hide: () => void } | null = null
 
+// ---------- 模型选择器（网页菜单 → 纯净模式下拉） ----------
+
+const pause = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+function modelButtonLabel(btn: Element): string {
+  const text = ((btn as HTMLElement).innerText || btn.textContent || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const first = text.split(/[\n|]/)[0]?.trim() ?? ''
+  if (first) return first
+  const aria = btn.getAttribute('aria-label') || ''
+  const quoted = /[“"]([^”"]+)[”"]/.exec(aria)
+  return quoted?.[1]?.trim() || aria
+}
+
+/** 菜单项名称：优先取 .model-name（Kimi 这类名称内部有 <span>，innerText 会被拆成多行） */
+function modelItemLabel(el: HTMLElement): string {
+  const nameEl = el.querySelector<HTMLElement>('.model-name')
+  const raw = nameEl
+    ? (nameEl.innerText || nameEl.textContent || '').replace(/\s+/g, ' ')
+    : (el.innerText || el.textContent || '').split(/\r?\n/)[0] || ''
+  return raw.trim()
+}
+
+function modelMenuItems(): { btn: Element; items: HTMLElement[] } | null {
+  if (!adapter?.model) return null
+  const btn = findFirst(adapter.model.button)
+  if (!btn) return null
+  const items = [...document.querySelectorAll<HTMLElement>(adapter.model.items.join(','))].filter(
+    visible
+  )
+  return { btn, items }
+}
+
+async function openModelMenu(): Promise<{ btn: Element; items: HTMLElement[] } | null> {
+  if (!adapter?.model) return null
+  const btn = findFirst(adapter.model.button)
+  if (!btn) return null
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const already = modelMenuItems()
+    if (already && already.items.length > 0) return already
+    if (btn.getAttribute('aria-expanded') === 'true') {
+      document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await pause(150)
+    }
+    click(btn)
+    await pause(450)
+    const opened = modelMenuItems()
+    if (opened && opened.items.length > 0) return opened
+  }
+  return { btn, items: [] }
+}
+
+/** Escape 关不掉的自定义弹层（通义/智谱）：再点一次触发器收起 */
+async function closeModelMenu(): Promise<void> {
+  document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  await pause(120)
+  const still = modelMenuItems()
+  if (still && still.items.length > 0) {
+    click(still.btn)
+    await pause(150)
+  }
+}
+
+async function reportModelOptions(): Promise<void> {
+  if (!adapter?.model) {
+    send({ type: 'model-options', current: '', options: [] })
+    return
+  }
+  const btn = findFirst(adapter.model.button)
+  if (!btn) {
+    send({ type: 'model-options', current: '', options: [] })
+    return
+  }
+  const current = modelButtonLabel(btn)
+  const opened = await openModelMenu()
+  const items = opened?.items ?? []
+  const options: { label: string; desc?: string; selected?: boolean }[] = []
+  for (const el of items) {
+    if (el.getBoundingClientRect().height < 20) continue
+    const label = modelItemLabel(el)
+    if (!label || /^思考(等级|强度)$|thinking level/i.test(label)) continue
+    if (options.some((o) => o.label === label)) continue
+    const full = ((el.innerText || el.textContent || '') as string).replace(/\s+/g, ' ').trim()
+    const desc = (full.startsWith(label) ? full.slice(label.length) : '').trim()
+    options.push({
+      label,
+      desc: desc || undefined,
+      selected:
+        /(^|\s)selected(\s|$)/.test((el.className || '').toString()) ||
+        el.getAttribute('aria-checked') === 'true'
+    })
+  }
+  // 有些平台（豆包/通义）菜单项不带选中属性，用当前按钮文案兜底匹配
+  if (!options.some((o) => o.selected)) {
+    const exact = options.find((o) => o.label === current)
+    const prefix = exact
+      ? undefined
+      : [...options]
+          .sort((a, b) => b.label.length - a.label.length)
+          .find((o) => current.startsWith(o.label + ' '))
+    if (exact) exact.selected = true
+    else if (prefix) prefix.selected = true
+  }
+  await closeModelMenu()
+  send({ type: 'model-options', current, options })
+}
+
+async function selectModel(label: string): Promise<void> {
+  if (!adapter?.model || !label) {
+    send({ type: 'model-selected', ok: false, error: '该平台没有模型选择器' })
+    return
+  }
+  const opened = await openModelMenu()
+  if (!opened || opened.items.length === 0) {
+    await closeModelMenu()
+    send({ type: 'model-selected', ok: false, error: '没有打开模型菜单' })
+    return
+  }
+  const target = opened.items.find((el) => {
+    const first = modelItemLabel(el)
+    return first === label || first.endsWith(label) || label.endsWith(first)
+  })
+  if (!target) {
+    await closeModelMenu()
+    send({ type: 'model-selected', ok: false, error: '菜单中没有该模型' })
+    return
+  }
+  click(target)
+  await pause(500)
+  const newLabel = modelButtonLabel(opened.btn)
+  await closeModelMenu()
+  send({ type: 'model-selected', ok: true, label: newLabel || label })
+}
+
 // ---------- 命令接收 ----------
 
 ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
@@ -2427,6 +2688,8 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       if (cmd.adapter) {
         adapter = cmd.adapter
         overlayConfigured = true
+        lastProfileName = ''
+        lastLoginSent = null
         if (readyTimer) {
           clearInterval(readyTimer)
           readyTimer = null
@@ -2488,6 +2751,12 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       // 不是用户要重新初始化项目：不能重置引导状态。
       // 用户自己点平台「新对话」按钮的场景由 watchNativeNewChat 负责。
       doNewChat()
+      break
+    case 'get-models':
+      void reportModelOptions()
+      break
+    case 'select-model':
+      void selectModel(cmd.modelLabel ?? '')
       break
     case 'toggle-think':
     case 'toggle-search': {

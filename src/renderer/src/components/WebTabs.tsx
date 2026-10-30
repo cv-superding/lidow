@@ -1,8 +1,38 @@
 import { useEffect, useRef, useState } from 'react'
+import type { ProviderDescriptor } from '@shared/types'
 import { DEFAULT_ACCOUNT_ID, accountKeyOf, useStore } from '../store'
 import { api } from '../api'
 import { registerWebview } from '../webviews'
-import { IconPlus, IconClose, IconFolder, IconChevronLeft, IconChevronRight } from './icons'
+import {
+  IconPlus,
+  IconClose,
+  IconFolder,
+  IconChevronLeft,
+  IconChevronRight,
+  IconStar
+} from './icons'
+
+/** 平台卡片状态：优先显示已登录账号的名字，而不是「账号 N / 选择或登录账号」 */
+function providerStatus(p: ProviderDescriptor): { label: string; loggedIn: boolean } {
+  // 用户选定的默认账号优先展示
+  const def = p.defaultAccountId
+    ? p.accounts.find((a) => a.id === p.defaultAccountId)
+    : undefined
+  if (def) {
+    return { label: def.label || '默认账号', loggedIn: def.loggedIn === true }
+  }
+  if (p.accounts.length > 0) {
+    const first = p.accounts.find((a) => a.loggedIn) ?? p.accounts[0]!
+    return {
+      label: p.accounts.length === 1 ? first.label || '账号 1' : `${p.accounts.length} 个账号`,
+      loggedIn: Boolean(p.defaultLoggedIn) || p.accounts.some((a) => a.loggedIn === true)
+    }
+  }
+  return {
+    label: p.defaultAccountLabel || (p.defaultLoggedIn ? '已登录' : '选择或登录账号'),
+    loggedIn: Boolean(p.defaultLoggedIn) || Boolean(p.defaultAccountLabel)
+  }
+}
 
 /** 选目录并打开项目；入口在网页浮窗，这里只作为工作台空态的手动入口 */
 async function pickAndOpen(): Promise<void> {
@@ -520,14 +550,57 @@ function HomeEmpty(): React.JSX.Element {
   }
   // ---- 已有项目：选择平台 ----
   if (picked) {
+    const defaultLogin =
+      picked.defaultLoggedIn !== false &&
+      (picked.defaultLoggedIn === true || Boolean(picked.defaultAccountLabel))
+    const implicitDefault = !picked.defaultAccountId
+    // 已经显式选了默认账号时不再显示隐式默认分区，避免同一个登录出现两行；
+    // 需要切回隐式分区时去设置 → 平台与账号点隐式默认分区的星标。
     const accountRows = [
-      { id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态，未登录会打开平台登录页' },
-      ...picked.accounts.map((a) => ({
-        id: a.id,
-        label: a.label,
-        hint: a.id === picked.activeAccountId ? '当前账号' : '独立登录态'
-      }))
+      ...(implicitDefault
+        ? [
+            {
+              id: DEFAULT_ACCOUNT_ID,
+              label: picked.defaultAccountLabel || '默认账号',
+              hint: defaultLogin ? '默认账号 · 已登录' : '默认账号 · 打开后登录',
+              loggedIn: defaultLogin,
+              isDefault: true
+            }
+          ]
+        : []),
+      ...picked.accounts.map((a) => {
+        const isDefault = a.id === picked.defaultAccountId
+        return {
+          id: a.id,
+          label: a.label,
+          hint: isDefault
+            ? `默认账号${
+                a.loggedIn === false ? ' · 未登录' : a.loggedIn === true ? ' · 已登录' : ''
+              }`
+            : a.loggedIn === false
+              ? '未登录 · 打开后登录'
+              : a.loggedIn === true
+                ? a.id === picked.activeAccountId
+                  ? '当前账号 · 已登录'
+                  : '已登录 · 独立登录态'
+                : a.id === picked.activeAccountId
+                  ? '当前账号'
+                  : '独立登录态',
+          loggedIn: a.loggedIn === true,
+          isDefault
+        }
+      })
     ]
+    // 默认账号置顶
+    accountRows.sort((a, b) => (b.isDefault ? 1 : 0) - (a.isDefault ? 1 : 0))
+    const setDefaultFromPicker = (accountId: string | null): void => {
+      if (!activeProjectId) return
+      void api.setDefaultAccount(activeProjectId, picked.id, accountId).then(() => {
+        void api
+          .listProviders(activeProjectId)
+          .then((p) => useStore.setState({ providers: p }))
+      })
+    }
     return (
       <div
         className="flex h-full items-center justify-center px-6"
@@ -535,11 +608,10 @@ function HomeEmpty(): React.JSX.Element {
       >
         <div className="w-full max-w-[440px]">
           <button
-            className="mb-5 flex items-center gap-1 rounded-[var(--r-sm)] px-1 py-0.5 text-[12px] transition-colors duration-[130ms] hover:text-[var(--text)]"
-            style={{ color: 'var(--text-dim)' }}
+            className="btn btn-sm btn-outline mb-5 gap-1.5"
             onClick={() => setPickId(null)}
           >
-            <IconChevronLeft size={12} /> 所有平台
+            <IconChevronLeft size={13} /> 返回所有平台
           </button>
           <h1 className="text-[19px] font-semibold tracking-tight">{picked.name}</h1>
           <p className="mt-1.5 text-[12.5px]" style={{ color: 'var(--text-hint)' }}>
@@ -548,22 +620,45 @@ function HomeEmpty(): React.JSX.Element {
 
           <div className="mt-5 flex flex-col gap-2">
             {accountRows.map((row) => (
-              <button
-                key={row.id}
-                className="card card-interactive flex items-center gap-3 p-3 text-left disabled:opacity-60"
-                disabled={busy}
-                onClick={() => void createSession(picked.id, row.id)}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12.5px] font-medium">{row.label}</span>
-                  <span className="block text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-                    {row.hint}
+              <div key={row.id} className="flex items-center gap-1.5">
+                <button
+                  className="card card-interactive flex min-w-0 flex-1 items-center gap-3 p-3 text-left disabled:opacity-60"
+                  disabled={busy}
+                  onClick={() => void createSession(picked.id, row.id)}
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5">
+                      {row.loggedIn && (
+                        <span
+                          className="h-1.5 w-1.5 shrink-0 rounded-full"
+                          style={{ background: 'var(--success)' }}
+                        />
+                      )}
+                      <span className="truncate text-[12.5px] font-medium">{row.label}</span>
+                    </span>
+                    <span className="block text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+                      {row.hint}
+                    </span>
                   </span>
-                </span>
-                <span style={{ color: 'var(--text-hint)' }}>
-                  <IconChevronRight size={13} />
-                </span>
-              </button>
+                  <span style={{ color: 'var(--text-hint)' }}>
+                    <IconChevronRight size={13} />
+                  </span>
+                </button>
+                <button
+                  className="btn btn-ghost btn-icon btn-sm shrink-0"
+                  title={row.isDefault ? '当前默认账号' : '设为默认账号'}
+                  disabled={busy}
+                  style={{
+                    color: row.isDefault ? 'var(--accent)' : 'var(--text-hint)',
+                    background: row.isDefault ? 'var(--accent-soft)' : undefined
+                  }}
+                  onClick={() =>
+                    setDefaultFromPicker(row.id === DEFAULT_ACCOUNT_ID ? null : row.id)
+                  }
+                >
+                  <IconStar size={13} filled={row.isDefault} />
+                </button>
+              </div>
             ))}
             <button
               className="flex items-center gap-2 rounded-[var(--r-xl)] p-3 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)] disabled:opacity-60"
@@ -595,27 +690,30 @@ function HomeEmpty(): React.JSX.Element {
         </p>
 
         <div className="mt-6 grid w-full grid-cols-3 gap-2.5">
-          {providers.map((p) => (
-            <button
-              key={p.id}
-              className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
-              onClick={() => setPickId(p.id)}
-            >
-              <span className="text-[12.5px] font-medium">{p.name}</span>
-              <span
-                className="flex items-center gap-1.5 text-[10.5px]"
-                style={{ color: 'var(--text-hint)' }}
+          {providers.map((p) => {
+            const status = providerStatus(p)
+            return (
+              <button
+                key={p.id}
+                className="card card-interactive flex flex-col items-start gap-1 p-3 text-left"
+                onClick={() => setPickId(p.id)}
               >
+                <span className="text-[12.5px] font-medium">{p.name}</span>
                 <span
-                  className="h-1.5 w-1.5 rounded-full"
-                  style={{
-                    background: p.accounts.length > 0 ? 'var(--success)' : 'var(--border-strong)'
-                  }}
-                />
-                {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '选择或登录账号'}
-              </span>
-            </button>
-          ))}
+                  className="flex min-w-0 items-center gap-1.5 text-[10.5px]"
+                  style={{ color: 'var(--text-hint)' }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full"
+                    style={{
+                      background: status.loggedIn ? 'var(--success)' : 'var(--border-strong)'
+                    }}
+                  />
+                  <span className="truncate">{status.label}</span>
+                </span>
+              </button>
+            )
+          })}
           <button
             className="flex flex-col items-start gap-1 rounded-[var(--r-xl)] p-3 text-left transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
             style={{ border: '1px dashed var(--border-strong)' }}

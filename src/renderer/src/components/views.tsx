@@ -22,7 +22,8 @@ import {
   IconHand,
   IconGlobe,
   IconCopy,
-  IconSpark
+  IconSpark,
+  IconStar
 } from './icons'
 
 /** 统一页面骨架：标题区 + 滚动内容
@@ -2448,6 +2449,15 @@ export function SettingsView(): React.JSX.Element {
       await refreshProviders()
     })
   }
+  const setDefaultAccount = (providerId: string, accountId: string | null): void => {
+    if (!project) return
+    void api.setDefaultAccount(project.id, providerId, accountId).then(() => {
+      refreshProviders()
+      useStore
+        .getState()
+        .notice(accountId ? '已设为默认账号' : '已恢复隐式默认账号')
+    })
+  }
   const removeProvider = (providerId: string, name: string): void => {
     if (!project) return
     if (!window.confirm(`移除自定义平台「${name}」？已登录的分区会保留，不会删除账号数据。`))
@@ -2954,6 +2964,42 @@ export function SettingsView(): React.JSX.Element {
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
+                      <span
+                        className="inline-flex items-center overflow-hidden rounded-[var(--r-sm)]"
+                        style={{
+                          background: 'var(--surface)',
+                          border: '1px solid var(--border)'
+                        }}
+                        title="隐式默认分区（未显式建账号时使用）"
+                      >
+                        <button
+                          className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+                          title={
+                            p.defaultAccountId
+                              ? '设为默认账号（隐式默认分区）'
+                              : '当前默认账号（隐式默认分区）'
+                          }
+                          style={{
+                            color: p.defaultAccountId ? 'var(--text-hint)' : 'var(--accent)'
+                          }}
+                          onClick={() => setDefaultAccount(p.id, null)}
+                        >
+                          <IconStar size={11} filled={!p.defaultAccountId} />
+                        </button>
+                        <span
+                          className="flex items-center gap-1.5 px-1.5 py-1 text-[11.5px]"
+                          style={{ color: 'var(--text-body)' }}
+                        >
+                          {p.defaultLoggedIn && (
+                            <span
+                              className="h-1.5 w-1.5 rounded-full"
+                              style={{ background: 'var(--success)' }}
+                            />
+                          )}
+                          {p.defaultAccountLabel ||
+                            (p.defaultLoggedIn ? '默认登录态' : '默认分区')}
+                        </span>
+                      </span>
                       {p.accounts.map((a) => {
                         const active = p.activeAccountId === a.id
                         return (
@@ -2976,7 +3022,37 @@ export function SettingsView(): React.JSX.Element {
                                   .then(refreshProviders)
                               }
                             >
-                              {a.label || '默认账号'}
+                              <span className="flex items-center gap-1.5">
+                                {a.loggedIn && (
+                                  <span
+                                    className="h-1.5 w-1.5 rounded-full"
+                                    style={{
+                                      background: active ? 'var(--on-accent)' : 'var(--success)'
+                                    }}
+                                  />
+                                )}
+                                {a.label || '默认账号'}
+                              </span>
+                            </button>
+                            <button
+                              className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+                              title={
+                                p.defaultAccountId === a.id ? '当前默认账号' : '设为默认账号'
+                              }
+                              style={{
+                                background: active ? 'var(--accent)' : 'var(--surface)',
+                                color:
+                                  p.defaultAccountId === a.id
+                                    ? active
+                                      ? 'var(--on-accent)'
+                                      : 'var(--accent)'
+                                    : active
+                                      ? 'rgba(255,255,255,.62)'
+                                      : 'var(--text-hint)'
+                              }}
+                              onClick={() => setDefaultAccount(p.id, a.id)}
+                            >
+                              <IconStar size={11} filled={p.defaultAccountId === a.id} />
                             </button>
                             <span
                               aria-hidden

@@ -1,5 +1,5 @@
 import { ipcMain, webContents, type WebContents } from 'electron'
-import type { OverlayCommand, OverlayEvent } from '@shared/types'
+import type { ModelPickerInfo, OverlayCommand, OverlayEvent } from '@shared/types'
 import { Logger } from '@main/infra/log'
 import { quietWindow, remainingSendDelay } from '@main/bridge/sendTiming'
 
@@ -83,6 +83,10 @@ export class OverlayManager {
    * 用于在「登录完成」这个时机把项目状态推给网页 —— 首次引导必须等登录后才出现。
    */
   onLogin?: (webContentsId: number) => void
+  /** 登录态变化（用于把“已登录/未登录”同步到平台账号列表） */
+  onLoginState?: (webContentsId: number, loggedIn: boolean) => void
+  /** 网页侧账号显示名（用于自动命名账号） */
+  onProfileName?: (webContentsId: number, name: string) => void
   /** 服务端权威 token 消耗（每轮差值）——供主进程累计持久化 */
   onTokenUsage?: (sessionId: string, deltaTokens: number) => void
   /** 网页内「初始化项目」点击（按 webContentsId，不依赖会话绑定） */
@@ -494,7 +498,29 @@ export class OverlayManager {
         // 登录成功的那一刻 = 该弹初始化引导的时候。
         // 这里把「有没有工作目录」重新推一次：overlay 会据此在页面里显示引导，
         // 登录页没有输入框，那时弹引导既看不懂也用不上。
+        this.onLoginState?.(sender.id, Boolean(payload.loggedIn))
         if (payload.loggedIn) this.onLogin?.(sender.id)
+        break
+      }
+      case 'profile-name': {
+        const name = String(payload.name || '').trim()
+        if (name) this.onProfileName?.(sender.id, name)
+        break
+      }
+      case 'model-options': {
+        const waiter = this.modelInfoWaiters.get(sender.id)
+        if (waiter) {
+          this.modelInfoWaiters.delete(sender.id)
+          waiter({ current: payload.current, options: payload.options })
+        }
+        break
+      }
+      case 'model-selected': {
+        const waiter = this.modelSelectWaiters.get(sender.id)
+        if (waiter) {
+          this.modelSelectWaiters.delete(sender.id)
+          waiter({ ok: payload.ok, label: payload.label, error: payload.error })
+        }
         break
       }
       case 'ready': {
@@ -587,6 +613,58 @@ export class OverlayManager {
     if (!target || target.isDestroyed()) return false
     target.send('lidow:overlay-cmd', cmd)
     return true
+  }
+
+  private modelInfoWaiters = new Map<number, (info: ModelPickerInfo) => void>()
+  private modelSelectWaiters = new Map<number, (r: { ok: boolean; label?: string; error?: string }) => void>()
+
+  /** 读取网页模型菜单（打开→读→关闭），返回当前模型与可选项 */
+  async getModels(sessionId: string): Promise<ModelPickerInfo> {
+    const ch = await this.waitForChannel(sessionId)
+    if (!ch) return { current: '', options: [] }
+    const wcId = ch.webContentsId
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.modelInfoWaiters.delete(wcId)
+        resolve({ current: '', options: [] })
+      }, 8000)
+      this.modelInfoWaiters.set(wcId, (info) => {
+        clearTimeout(timer)
+        this.modelInfoWaiters.delete(wcId)
+        resolve(info)
+      })
+      if (!this.sendCmd(sessionId, { kind: 'get-models' })) {
+        clearTimeout(timer)
+        this.modelInfoWaiters.delete(wcId)
+        resolve({ current: '', options: [] })
+      }
+    })
+  }
+
+  /** 在网页模型菜单里选择指定模型 */
+  async selectModel(
+    sessionId: string,
+    label: string
+  ): Promise<{ ok: boolean; label?: string; error?: string }> {
+    const ch = await this.waitForChannel(sessionId)
+    if (!ch) return { ok: false, error: '网页未连接' }
+    const wcId = ch.webContentsId
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.modelSelectWaiters.delete(wcId)
+        resolve({ ok: false, error: '切换模型超时' })
+      }, 8000)
+      this.modelSelectWaiters.set(wcId, (r) => {
+        clearTimeout(timer)
+        this.modelSelectWaiters.delete(wcId)
+        resolve(r)
+      })
+      if (!this.sendCmd(sessionId, { kind: 'select-model', modelLabel: label })) {
+        clearTimeout(timer)
+        this.modelSelectWaiters.delete(wcId)
+        resolve({ ok: false, error: '网页未连接' })
+      }
+    })
   }
 
   /** 下发发送指令并等待 overlay 确认已注入页面；同一网页按设置的最小间隔串行发送 */

@@ -12,7 +12,7 @@ import { stripCitationMarkers, stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
 import { PureToolbar } from './TitleBar'
-import type { ChatTurn, SkillMeta, ToolResult } from '@shared/types'
+import type { ChatTurn, ModelPickerInfo, SkillMeta, ToolResult } from '@shared/types'
 import {
   IconArrowUp,
   IconStop,
@@ -693,39 +693,12 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const plan = useStore((s) => s.plan)
   const sessions = useStore((s) => s.sessions)
   const quickCmds = useStore((s) => s.quickCmds)
-  const toggleState = useStore((s) => s.toggleState)
-  // 不能写成 useStore((s) => s.currentComposerActions())：
-  // 该方法每次调用都返回新数组，zustand 比较引用 → 无限重渲染（实测白屏报
-  // Maximum update depth exceeded）。订阅稳定的原始字段，再用 useMemo 派生。
-  const activeSessionId = activeSession?.providerId ?? ''
-  const tabsForComposer = useStore((s) => s.tabs)
-  const providersForComposer = useStore((s) => s.providers)
-  const composerActions = useMemo(() => {
-    const pid = activeSessionId
-    if (!pid) return []
-    const tabAdapter = tabsForComposer.find((t) => t.providerId === pid)?.adapter
-    const base = tabAdapter?.composerActions?.length
-      ? tabAdapter.composerActions
-      : (providersForComposer.find((x) => x.id === pid)?.adapter?.composerActions ?? [])
-    const actions = [...base]
-    // 其它平台只要网页里有对应开关，也自动补 chip（不用为每家写死清单）
-    const hasThink = actions.some((a) => a.keywords.some((k) => /思考|think/i.test(k)))
-    if (toggleState.thinkAvailable && !hasThink) {
-      actions.push({ label: '思考', keywords: ['思考', 'Thinking'] })
-    }
-    const hasSearch = actions.some((a) => a.keywords.some((k) => /搜索|search/i.test(k)))
-    if (toggleState.searchAvailable && !hasSearch) {
-      actions.push({ label: '搜索', keywords: ['搜索', 'Search'] })
-    }
-    return actions
-  }, [
-    activeSessionId,
-    tabsForComposer,
-    providersForComposer,
-    toggleState.thinkAvailable,
-    toggleState.searchAvailable
-  ])
   const [input, setInput] = useState('')
+  const [models, setModels] = useState<ModelPickerInfo | null>(null)
+  const [modelOpen, setModelOpen] = useState(false)
+  const [modelMenuPos, setModelMenuPos] = useState<{ bottom: number; right: number } | null>(null)
+  const modelRef = useRef<HTMLDivElement | null>(null)
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null)
   const [earlyExpanded, setEarlyExpanded] = useState(false)
   const [composerHeight, setComposerHeight] = useState(0)
@@ -785,6 +758,81 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       if (e.type === 'ui-input') setInput(e.text)
     })
   }, [])
+
+  // 读取当前网页的模型菜单（Gemini/Claude 等）；页面还在加载时重试几次
+  useEffect(() => {
+    setModels(null)
+    setModelOpen(false)
+    const sid = activeSession?.id
+    if (!sid || mode !== 'pure') return
+    let alive = true
+    let attempts = 0
+    const load = (): void => {
+      void api
+        .getModels(sid)
+        .then((info) => {
+          if (!alive) return
+          if (info.options.length > 0) {
+            setModels(info)
+            return
+          }
+          attempts += 1
+          if (attempts < 4) window.setTimeout(load, 1500)
+        })
+        .catch(() => undefined)
+    }
+    load()
+    return () => {
+      alive = false
+    }
+  }, [activeSession?.id, mode])
+
+  useEffect(() => {
+    if (!modelOpen) return
+    const onDown = (e: MouseEvent): void => {
+      const target = e.target as Node
+      if (modelRef.current?.contains(target)) return
+      if (modelMenuRef.current?.contains(target)) return
+      setModelOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [modelOpen])
+
+  const openModelMenu = (): void => {
+    const rect = modelRef.current?.getBoundingClientRect()
+    if (rect) {
+      // 桌宠是 z-70 且盖在纯模式面板之上，模型菜单必须用 fixed + 更高层级
+      // （或 portal）才不会被鲸鱼娘挡住；这里用 body portal + z-100。
+      setModelMenuPos({ bottom: window.innerHeight - rect.top + 8, right: window.innerWidth - rect.right })
+    }
+    setModelOpen((v) => !v)
+  }
+
+  const chooseModel = async (label: string): Promise<void> => {
+    if (!activeSession) return
+    setModelOpen(false)
+    const r = await api.selectModel(activeSession.id, label)
+    if (!r.ok) {
+      useStore.getState().notice(`切换模型失败：${r.error ?? '未知错误'}`, 'warn')
+      return
+    }
+    const info = await api.getModels(activeSession.id).catch(() => null)
+    if (info && info.options.length > 0) {
+      setModels(info)
+      return
+    }
+    const nextLabel = r.label ?? label
+    setModels((m) =>
+      m
+        ? {
+            ...m,
+            current: nextLabel,
+            options: m.options.map((o) => ({ ...o, selected: o.label === nextLabel }))
+          }
+        : m
+    )
+  }
 
   const allTurns = useMemo(() => activeSession?.turns ?? [], [activeSession])
   // workbench 模式只显示发生过工具调用的轮次——网页里已有完整对话，这里不重复
@@ -1096,9 +1144,9 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
       {/* 消息区 */}
       <div ref={scrollRef} className="stable-gutter flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-[780px] flex-col gap-5 px-6 py-7">
+        <div className="mx-auto flex min-h-full max-w-[780px] flex-col gap-5 px-6 py-7">
           {empty && (
-            <div className="flex min-h-[420px] flex-col items-center justify-center gap-6 text-center">
+            <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center">
               <div className="flex flex-col items-center gap-3">
                 <span
                   className="flex h-12 w-12 items-center justify-center rounded-[14px] text-[19px] font-bold"
@@ -1622,36 +1670,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             }}
           />
           <div className="flex items-center gap-1.5 px-3 pb-2.5 pt-1">
-            {/* 网页交互开关：深度思考 / 智能搜索 / 上传（点击转发给平台页面） */}
-            {/* 平台自带功能：每个平台不同（DeepSeek=深度思考/智能搜索，豆包=对话/项目/技能/快速）。
-                按当前会话平台的 adapter.composerActions 渲染，不写死。 */}
-            {composerActions.map((a) => {
-              // 平台自带开关的真实状态由 overlay 每秒上报：开启的 chip 高亮
-              const kw = a.keywords.join(' ')
-              const active =
-                (toggleState.think && /思考|think/i.test(kw)) ||
-                (toggleState.search && /搜索|search/i.test(kw))
-              return (
-                <button
-                  key={a.label}
-                  className="composer-chip"
-                  title={`切换${a.label}`}
-                  style={
-                    active
-                      ? {
-                          color: 'var(--accent)',
-                          borderColor: 'color-mix(in srgb, var(--accent) 45%, transparent)'
-                        }
-                      : undefined
-                  }
-                  onClick={() =>
-                    activeSession && void api.overlayAction(activeSession.id, a.keywords)
-                  }
-                >
-                  <IconSpark size={12} /> {a.label}
-                </button>
-              )
-            })}
             <button
               className="btn btn-ghost btn-icon btn-sm"
               title="上传文件/图片（附加到网页输入区）"
@@ -1682,6 +1700,71 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             </button>
             <PermissionPicker />
             <span className="flex-1" />
+            {models && models.options.length > 0 && (
+              <div className="relative" ref={modelRef}>
+                <button
+                  className="composer-chip max-w-[150px] disabled:opacity-40"
+                  title="选择模型"
+                  disabled={running}
+                  onClick={openModelMenu}
+                >
+                  <span className="max-w-[110px] truncate">{models.current || '模型'}</span>
+                  <IconChevronDown
+                    size={11}
+                    className={`transition-transform duration-[130ms] ${
+                      modelOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                </button>
+                {modelOpen &&
+                  modelMenuPos &&
+                  createPortal(
+                    <div
+                      ref={modelMenuRef}
+                      className="fixed z-[100] w-[240px] overflow-hidden rounded-[var(--r-lg)] p-1"
+                      style={{
+                        right: modelMenuPos.right,
+                        bottom: modelMenuPos.bottom,
+                        background: 'var(--surface-raised)',
+                        border: '1px solid var(--border)',
+                        boxShadow: 'var(--shadow-lg)'
+                      }}
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      {models.options.map((o) => (
+                        <button
+                          key={o.label}
+                          className="flex w-full items-start gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                          onClick={() => void chooseModel(o.label)}
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-[12px] font-medium">
+                              {o.label}
+                            </span>
+                            {o.desc && (
+                              <span
+                                className="block text-[10.5px]"
+                                style={{ color: 'var(--text-hint)' }}
+                              >
+                                {o.desc}
+                              </span>
+                            )}
+                          </span>
+                          {o.selected && (
+                            <span
+                              className="mt-0.5 shrink-0"
+                              style={{ color: 'var(--accent)' }}
+                            >
+                              <IconCheck size={12} />
+                            </span>
+                          )}
+                        </button>
+                      ))}
+                    </div>,
+                    document.body
+                  )}
+              </div>
+            )}
             {running ? (
               <button
                 className="btn btn-sm btn-danger"

@@ -304,7 +304,7 @@ export function registerHandlers(
   R('windowIsMaximized', () => BrowserWindow.getFocusedWindow()?.isMaximized() ?? false)
 
   // ---------- Provider / 账号 ----------
-  R('listProviders', (projectId: string) => {
+  R('listProviders', async (projectId: string) => {
     // 没有项目时返回内置平台表：用户需要能先进 AI 页面，引导才会出现在网页里。
     // 这些描述是只读副本，不带持久化账号（账号属于具体项目）。
     // 项目目录被删除后也走这条：不能为缺失目录构造 Registry（写 providers.json
@@ -313,7 +313,8 @@ export function registerHandlers(
     if (!pid || pid === 'undefined' || !ctx.projectAvailable(pid)) {
       return BUILT_IN_PROVIDERS.filter((p) => p.enabled).map((p) => ({ ...p, accounts: [] }))
     }
-    return ctx.providerRegistryOf(pid).list()
+    // Cookie 校正登录态：ChatGPT/Gemini 无需打开网页就能显示“已登录”
+    return ctx.listProvidersWithLogin(pid)
   })
   R('addProvider', (...args: unknown[]) => {
     const [projectId, desc] = args as [
@@ -325,6 +326,11 @@ export function registerHandlers(
   R('removeProvider', (projectId: string, providerId: string) =>
     ctx.providerRegistryOf(String(projectId)).remove(String(providerId))
   )
+  R('setDefaultAccount', (projectId: string, providerId: string, accountId: string | null) => {
+    const reg = ctx.providerRegistryOf(String(projectId))
+    reg.setDefaultAccount(String(providerId), accountId ? String(accountId) : null)
+    return reg.get(String(providerId))
+  })
   R('addAccount', (projectId: string, providerId: string, label: string) => {
     const reg = ctx.providerRegistryOf(String(projectId))
     reg.addAccount(String(providerId), String(label ?? ''))
@@ -1051,6 +1057,10 @@ export function registerHandlers(
       keywords: keywords ?? []
     })
   })
+  R('getModels', (sessionId: string) => ctx.getModels(String(sessionId)))
+  R('selectModel', (sessionId: string, label: string) =>
+    ctx.selectModel(String(sessionId), String(label ?? ''))
+  )
   R('setPureMode', (on: boolean) => {
     ctx.settings.set({ pureMode: Boolean(on) })
     // 退出纯净模式后重新评估首次引导：纯净模式下网页被对话面板遮住，

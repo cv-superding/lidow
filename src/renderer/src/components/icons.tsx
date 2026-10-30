@@ -477,3 +477,16 @@ export function IconShare({ size, className }: P): React.JSX.Element {
     </svg>
   )
 }
+
+/** 星标 / 默认账号 */
+export function IconStar({
+  size,
+  className,
+  filled = false
+}: P & { filled?: boolean }): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className} fill={filled ? 'currentColor' : 'none'}>
+      <path d="M8 1.8l1.9 3.9 4.3.6-3.1 3 .7 4.2L8 11.5l-3.8 2 .7-4.2-3.1-3 4.3-.6L8 1.8Z" />
+    </svg>
+  )
+}
