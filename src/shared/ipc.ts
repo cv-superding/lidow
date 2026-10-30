@@ -356,7 +356,13 @@ export type LidowEvent =
   | { type: 'ui-toggle-pure' }
   /** 全局热键：新建会话（渲染层按当前平台建会话） */
   | { type: 'ui-new-session' }
-  | { type: 'toggle-state'; think: boolean; search: boolean }
+  | {
+      type: 'toggle-state'
+      think: boolean
+      search: boolean
+      thinkAvailable?: boolean
+      searchAvailable?: boolean
+    }
   /** 项目列表变化（网页内首次引导完成初始化后需要刷新下拉与目录状态） */
   | { type: 'projects-changed'; sessionId: string }
 

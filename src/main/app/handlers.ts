@@ -525,7 +525,11 @@ export function registerHandlers(
   R('renameSession', (sessionId: string, title: string) => {
     const sid = String(sessionId)
     const project = findProjectOfSession(ctx, sid)
-    if (project) ctx.sessionStoreOf(project).rename(sid, String(title))
+    if (project) {
+      ctx.sessionStoreOf(project).rename(sid, String(title))
+      // 同步所有 Lidow 窗口（桌面纯净模式 / Web 版）的会话列表与当前标题
+      ctx.emit({ type: 'session-updated', sessionId: sid })
+    }
     const wcId = ctx.overlay.wcIdOfSession(sid)
     if (wcId !== undefined) ctx.syncProjectFoldersToWebview(wcId)
   })

@@ -13,7 +13,10 @@ let adapter: DomAdapter | null = null
 // 补全嵌入式 webview 缺失的浏览器特征，缓解平台"使用环境异常"误判
 try {
   Object.defineProperty(Navigator.prototype, 'webdriver', { get: () => false, configurable: true })
-  Object.defineProperty(Navigator.prototype, 'languages', { get: () => ['zh-CN', 'zh', 'en'], configurable: true })
+  Object.defineProperty(Navigator.prototype, 'languages', {
+    get: () => ['zh-CN', 'zh', 'en'],
+    configurable: true
+  })
   Object.defineProperty(Navigator.prototype, 'plugins', {
     get: () => [{ name: 'Chrome PDF Viewer' }, { name: 'Chromium PDF Viewer' }],
     configurable: true
@@ -21,7 +24,8 @@ try {
   type ChromeStub = { runtime?: { connect?: () => void; sendMessage?: () => void } }
   const w = window as unknown as { chrome?: ChromeStub }
   if (!w.chrome) w.chrome = {}
-  if (!w.chrome.runtime) w.chrome.runtime = { connect: () => undefined, sendMessage: () => undefined }
+  if (!w.chrome.runtime)
+    w.chrome.runtime = { connect: () => undefined, sendMessage: () => undefined }
 } catch {
   /* 页面环境差异忽略 */
 }
@@ -46,11 +50,20 @@ function visible(el: Element | null | undefined): el is Element {
 
 /** 拼 innerHTML 前的转义（项目目录来自用户磁盘，不能直接插入标签） */
 function escapeHtml(s: string): string {
-  const map: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
+  const map: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }
   return s.replace(/[&<>"']/g, (c) => map[c] ?? c)
 }
 
-function findFirst(selectors: string[], filter?: (el: Element, index: number) => boolean): Element | null {
+function findFirst(
+  selectors: string[],
+  filter?: (el: Element, index: number) => boolean
+): Element | null {
   if (!selectors) return null
   let seen = 0
   for (const sel of selectors) {
@@ -71,7 +84,8 @@ function findFirst(selectors: string[], filter?: (el: Element, index: number) =>
 
 /** React 受控输入需要 native setter 才能生效 */
 function setNativeValue(el: HTMLTextAreaElement | HTMLInputElement, value: string): void {
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+  const proto =
+    el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
   Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(el, value)
   el.dispatchEvent(new Event('input', { bubbles: true }))
 }
@@ -122,8 +136,13 @@ function fillVerified(el: Element, text: string): boolean {
 function pressEnter(el: Element): void {
   ;(el as HTMLElement).focus?.()
   const opts: KeyboardEventInit = {
-    key: 'Enter', code: 'Enter', keyCode: 13, which: 13,
-    bubbles: true, cancelable: true, isComposing: false
+    key: 'Enter',
+    code: 'Enter',
+    keyCode: 13,
+    which: 13,
+    bubbles: true,
+    cancelable: true,
+    isComposing: false
   }
   el.dispatchEvent(new KeyboardEvent('keydown', opts))
   el.dispatchEvent(new KeyboardEvent('keypress', opts))
@@ -139,7 +158,13 @@ function click(el: Element): void {
   const rect = el.getBoundingClientRect()
   const x = rect.left + rect.width / 2
   const y = rect.top + rect.height / 2
-  const base: MouseEventInit = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }
+  const base: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    clientX: x,
+    clientY: y,
+    button: 0
+  }
   const target = el as HTMLElement
   target.focus?.()
   el.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerId: 1, isPrimary: true }))
@@ -162,6 +187,10 @@ let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
 /** 最近一次经 lidow 发出去的文本：部分平台把用户消息也匹配进 bubble，不能当回复 */
 let lastSentText = ''
+/** 本轮是否真的出现过新的回复文本：只有流式标志、文本还停在上一轮时不能结束 */
+let sawReplyText = false
+/** 发送前的回复条数：新回复文字可能与上一轮完全相同，只能按条数判断 */
+let baselineReplyCount = 0
 /**
  * 即将/刚刚由 lidow 发进网页的文本：主世界的网络 hook 用它区分
  * 「用户亲手在网页里发的」与「lidow 自己发的（工具观察/重试/初始化）」，
@@ -208,13 +237,15 @@ function cleanRenderedText(el: HTMLElement): string {
     const t = (n.textContent ?? '').trim()
     if (t.length <= 32 && /^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(t)) n.remove()
   })
-  clone.querySelectorAll('pre, code[class*="language"], [class*="code-block"]').forEach((codeEl) => {
-    const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
-    const text = codeEl.textContent ?? ''
-    const wrap = document.createElement('div')
-    wrap.textContent = '\n```' + lang + '\n' + text + '\n```\n'
-    codeEl.replaceWith(wrap)
-  })
+  clone
+    .querySelectorAll('pre, code[class*="language"], [class*="code-block"]')
+    .forEach((codeEl) => {
+      const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
+      const text = codeEl.textContent ?? ''
+      const wrap = document.createElement('div')
+      wrap.textContent = '\n```' + lang + '\n' + text + '\n```\n'
+      codeEl.replaceWith(wrap)
+    })
   // 移除 UI 按钮文字污染（复制/下载等）
   clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
   let text = clone.innerText ?? ''
@@ -226,10 +257,55 @@ function cleanRenderedText(el: HTMLElement): string {
   return text
 }
 
+function isChatGptPage(): boolean {
+  return /(^|.)chatgpt.com$/i.test(location.hostname)
+}
+
+/** ChatGPT 分享页/新版 UI 的兜底：按「ChatGPT 说：」标记截取最后一条回答 */
+function chatGptReplyFromText(): string {
+  const root = (document.querySelector('main') as HTMLElement | null) ?? document.body
+  const text = root?.innerText ?? ''
+  const marker = 'ChatGPT 说：'
+  const idx = text.lastIndexOf(marker)
+  if (idx < 0) return ''
+  let tail = text.slice(idx + marker.length)
+  for (const cut of ['你说：', 'ChatGPT 可能会出错', '最新一条回复', '分享', '免费版']) {
+    const i = tail.indexOf(cut)
+    if (i >= 0) tail = tail.slice(0, i)
+  }
+  return tail.trim()
+}
+
+function countChatGptReplies(): number {
+  if (!isChatGptPage()) return 0
+  const text = (document.querySelector('main') as HTMLElement | null)?.innerText ?? ''
+  const markers = (text.match(/ChatGPT 说：/g) ?? []).length
+  const roles = document.querySelectorAll('[data-message-author-role="assistant"]').length
+  const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(visible)
+  const outer = marks.filter(
+    (el) => !marks.some((other) => other !== el && other.contains(el))
+  ).length
+  return Math.max(markers, roles, outer)
+}
+
 function lastBubbleText(): string {
   const container = findFirst(adapter?.messages ?? [])
   // 优先取最后一个气泡（AI 回复在文档流末尾）；退化到整个容器
   const bubble = findLast(adapter?.bubble ?? [])
+  if (isChatGptPage()) {
+    // 分享页整页 innerText 含大量「你说/ChatGPT 说」；先按标记截最后一条回答
+    const fromText = chatGptReplyFromText()
+    if (fromText) return fromText
+    // 新版 Workspace：优先整条 turn，其次最外层 markdown 容器；
+    // 不能用 findLast 直接取 [class*=markdown]（会命中回答里的代码块等嵌套节点）
+    const turn = findLast(['article', '[data-testid*="conversation-turn"]'])
+    if (turn) return cleanRenderedText(turn as HTMLElement)
+    const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(
+      visible
+    )
+    const outer = marks.filter((el) => !marks.some((other) => other !== el && other.contains(el)))
+    if (outer.length > 0) return cleanRenderedText(outer[outer.length - 1]!)
+  }
   if (!bubble) {
     if (!container) return ''
     return (container as HTMLElement).innerText ?? ''
@@ -243,8 +319,11 @@ function lastBubbleText(): string {
  * 否则重启恢复时只能补上最后一小段。
  */
 function lastMessageText(): string {
+  if (isChatGptPage()) return lastBubbleText().trim()
   const msgs = [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
-  const blocks = [...document.querySelectorAll<HTMLElement>('div.ds-markdown--block')].filter(visible)
+  const blocks = [...document.querySelectorAll<HTMLElement>('div.ds-markdown--block')].filter(
+    visible
+  )
   const candidates = msgs.length > 0 ? msgs : blocks
   const hasMarkdown = (el: HTMLElement): boolean =>
     Boolean(el.querySelector('div.ds-markdown--block, div.ds-markdown, div[class*="ds-markdown"]'))
@@ -277,12 +356,16 @@ function lastThinkText(): string {
   const scopes = msgs.length > 0 ? [msgs[msgs.length - 1]!] : [document.body]
   let best = ''
   for (const scope of scopes) {
-    const blocks = [...scope.querySelectorAll<HTMLElement>('[class*="think" i], [class*="reasoning" i], [data-testid*="think" i]')].filter(
-      visible
-    )
+    const blocks = [
+      ...scope.querySelectorAll<HTMLElement>(
+        '[class*="think" i], [class*="reasoning" i], [data-testid*="think" i]'
+      )
+    ].filter(visible)
     for (const el of blocks) {
       const clone = el.cloneNode(true) as HTMLElement
-      clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
+      clone
+        .querySelectorAll('button, [class*="copy"], [class*="download"]')
+        .forEach((b) => b.remove())
       const text = (clone.innerText || '').trim()
       if (!text) continue
       if (/^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(text)) continue
@@ -305,10 +388,16 @@ function scheduleChunk(): void {
 }
 
 function finishStream(): void {
+  // 只有流式标志消失、文本仍是上一轮回答：不能把旧回答当成本轮回复（会重复落盘）
+  if (!sawReplyText) {
+    streaming = false
+    return
+  }
   streaming = false
   const finalText = lastBubbleText()
   lastText = finalText
   lastSentText = ''
+  sawReplyText = false
   send({ type: 'stream-end', text: finalText })
 }
 
@@ -326,10 +415,31 @@ function watchMessages(): void {
       return
     }
 
-    if (flag) {
+    // ChatGPT 新 UI：回复条数增加才算新回复（两次回答文字相同也能识别）
+    if (isChatGptPage() && text && countChatGptReplies() > baselineReplyCount) {
+      if (!streaming) {
+        streaming = true
+        lastPageSnapshot = ''
+        send({ type: 'stream-start' })
+      }
+      sawReplyText = true
+      if (text !== lastText) {
+        lastText = text
+        scheduleChunk()
+      }
+      if (endTimer) clearTimeout(endTimer)
+      endTimer = setTimeout(() => {
+        if (lastBubbleText() === lastText) finishStream()
+      }, 1500)
+      return
+    }
+
+    // 只看流式标志不够：思考阶段可能短暂出现停止按钮，文本仍是上一轮回答
+    if (flag && text && text !== lastText) {
       everFlag = true
       if (!streaming) {
         streaming = true
+        sawReplyText = true
         lastPageSnapshot = ''
         send({ type: 'stream-start' })
       }
@@ -339,6 +449,7 @@ function watchMessages(): void {
       // 流式中：上报增量；停止标志消失且文本不再变化 → 延迟确认结束
       if (text && text !== lastText) {
         lastText = text
+        sawReplyText = true
         scheduleChunk()
       }
       if (endTimer) clearTimeout(endTimer)
@@ -354,6 +465,7 @@ function watchMessages(): void {
     // 文本一旦出现就当作回复开始，并以"文本静默 1.5s"作为结束判据。
     if (text && text !== lastText) {
       lastText = text
+      sawReplyText = true
       if (!everFlag) {
         streaming = true
         lastPageSnapshot = ''
@@ -428,6 +540,8 @@ async function doSend(text: string): Promise<void> {
     streaming = false
     everFlag = false
     lastSentText = text
+    sawReplyText = false
+    baselineReplyCount = countChatGptReplies()
     // 旧回复还在页面上：把它当基线，只有文本真的变化才视为新一轮回复。
     // 此前重置成空串会让旧气泡被当成新回复，触发伪 stream-start/end。
     lastText = baseline
@@ -678,6 +792,88 @@ function isDeepSeekPage(): boolean {
   return /(^|\.)deepseek\.com$/i.test(location.hostname)
 }
 
+// ---------- 长会话自动折叠（参考 Voyager collapse-long-messages） ----------
+const FOLD_MIN_TOTAL = 6_000
+const FOLD_MIN_HEIGHT = 360
+const FOLD_MIN_TEXT = 400
+let foldExpanded = false
+let foldHref = ''
+let foldBarEl: HTMLButtonElement | null = null
+
+function ensureFoldStyles(): void {
+  if (document.getElementById('lidow-fold-styles')) return
+  const style = document.createElement('style')
+  style.id = 'lidow-fold-styles'
+  style.textContent = `
+#lidow-fold-bar{position:fixed;right:24px;bottom:112px;z-index:2147483000;display:none;align-items:center;gap:6px;max-width:340px;padding:8px 14px;border-radius:999px;font:500 12px/1.2 system-ui,-apple-system,"Segoe UI",sans-serif;cursor:pointer;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#0f1115);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));box-shadow:0 8px 24px rgba(0,0,0,.12)}
+#lidow-fold-bar:hover{filter:brightness(.98)}
+.lpf-msg-fold{max-height:340px!important;overflow:hidden!important;-webkit-mask-image:linear-gradient(to bottom,#000 calc(100% - 48px),transparent);mask-image:linear-gradient(to bottom,#000 calc(100% - 48px),transparent)}
+`
+  document.head.appendChild(style)
+}
+
+function ensureFoldBar(): HTMLButtonElement {
+  if (foldBarEl && foldBarEl.isConnected) return foldBarEl
+  const btn = document.createElement('button')
+  btn.id = 'lidow-fold-bar'
+  btn.type = 'button'
+  btn.addEventListener('click', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    foldExpanded = !foldExpanded
+    scanMessageFold()
+  })
+  document.body.appendChild(btn)
+  foldBarEl = btn
+  return btn
+}
+
+/**
+ * 上下文变长后，把较早的长消息折叠到 340px（保留最新一条不折）。
+ * 纯展示折叠，不修改平台真正发给模型的上下文；用户可一键展开。
+ */
+function scanMessageFold(): void {
+  if (!isDeepSeekPage()) return
+  ensureFoldStyles()
+  const list = document.querySelector<HTMLElement>('.ds-virtual-list-visible-items')
+  if (!list) {
+    foldBarEl?.remove()
+    foldBarEl = null
+    return
+  }
+  if (location.href !== foldHref) {
+    foldHref = location.href
+    foldExpanded = false
+  }
+  const items = [...list.children].filter((el): el is HTMLElement => el instanceof HTMLElement)
+  if (items.length === 0) {
+    foldBarEl?.remove()
+    foldBarEl = null
+    return
+  }
+  const total = items.reduce((n, el) => n + (el.innerText || '').length, 0)
+  const older = items.slice(0, -1)
+  const long = older.filter(
+    (el) =>
+      (el.innerText || '').length >= FOLD_MIN_TEXT &&
+      el.getBoundingClientRect().height > FOLD_MIN_HEIGHT
+  )
+  const active = total >= FOLD_MIN_TOTAL && long.length > 0
+  if (!active) {
+    for (const el of items) el.classList.remove('lpf-msg-fold')
+    foldBarEl?.remove()
+    foldBarEl = null
+    return
+  }
+  const longSet = new Set(long)
+  for (const el of items) el.classList.toggle('lpf-msg-fold', !foldExpanded && longSet.has(el))
+  const bar = ensureFoldBar()
+  bar.textContent = foldExpanded
+    ? `已展开 ${long.length} 条长消息 · 收起`
+    : `已折叠 ${long.length} 条长消息 · 展开`
+  bar.style.display = 'flex'
+}
+
 function ensureDeepSeekStyles(): void {
   if (document.getElementById('lidow-deepseek-style')) return
   const style = document.createElement('style')
@@ -782,16 +978,22 @@ function ensureDeepSeekStyles(): void {
 }
 
 function findProjectFolderMount(): HTMLElement | null {
-  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(visible)
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(
+    visible
+  )
   if (links.length === 0) return null
   const scroll = links[0]!.closest('.ds-scroll-area')
   if (!scroll) return null
-  const candidate = [...scroll.children].find((child) => child.querySelector('a[href*="/a/chat/s/"]'))
+  const candidate = [...scroll.children].find((child) =>
+    child.querySelector('a[href*="/a/chat/s/"]')
+  )
   return (candidate as HTMLElement | undefined) ?? null
 }
 
 function projectFolderChats(): { chat: { url: string }; project: string }[] {
-  return (projectFolders?.projects ?? []).flatMap((p) => p.chats.map((chat) => ({ chat, project: p.id })))
+  return (projectFolders?.projects ?? []).flatMap((p) =>
+    p.chats.map((chat) => ({ chat, project: p.id }))
+  )
 }
 
 /** 结构签名：数据 + 折叠/展开/显示全部，状态没变时轮询不重建 DOM（否则展开动画会被打断） */
@@ -835,7 +1037,9 @@ function paintProjectFolderActive(): void {
   if (!projectFolders) return
   const activeProject = pendingFolderProject || projectFolders.activeProjectId || ''
   const activeUrl = pendingFolderUrl || chatUrlKey(location.href)
-  for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-project-head')) {
+  for (const el of document.querySelectorAll<HTMLElement>(
+    '#lidow-project-folders .lpf-project-head'
+  )) {
     el.classList.toggle('active', el.dataset.id === activeProject)
   }
   for (const el of document.querySelectorAll<HTMLElement>('#lidow-project-folders .lpf-chat')) {
@@ -854,7 +1058,9 @@ function openChatInPage(url: string): boolean {
   const path = target.pathname.replace(/\/+$/, '')
   const id = path.split('/').filter(Boolean).pop() ?? ''
   if (!id) return false
-  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(visible)
+  const links = [...document.querySelectorAll<HTMLAnchorElement>('a[href*="/a/chat/s/"]')].filter(
+    visible
+  )
   const match =
     links.find((a) => {
       try {
@@ -886,12 +1092,16 @@ function renderProjectFolders(): void {
     projectFoldersSeeded = true
     projectFoldersActiveSeen = projectFolders.activeProjectId ?? ''
     if (projectFoldersActiveSeen) projectFoldersExpanded.add(projectFoldersActiveSeen)
-  } else if (projectFolders.activeProjectId && projectFoldersActiveSeen !== projectFolders.activeProjectId) {
+  } else if (
+    projectFolders.activeProjectId &&
+    projectFoldersActiveSeen !== projectFolders.activeProjectId
+  ) {
     projectFoldersActiveSeen = projectFolders.activeProjectId
     projectFoldersExpanded.add(projectFoldersActiveSeen)
   }
   // 主进程/网页导航确认后清掉乐观高亮
-  if (pendingFolderProject && projectFolders.activeProjectId === pendingFolderProject) pendingFolderProject = ''
+  if (pendingFolderProject && projectFolders.activeProjectId === pendingFolderProject)
+    pendingFolderProject = ''
   if (pendingFolderUrl && chatUrlKey(location.href) === pendingFolderUrl) pendingFolderUrl = ''
   if (!pendingFolderProject && !pendingFolderUrl && pendingFolderTimer !== undefined) {
     window.clearTimeout(pendingFolderTimer)
@@ -950,7 +1160,8 @@ function renderProjectFolders(): void {
         `<span class="lpf-chev${open ? ' open' : ''}">›</span>` +
         `<span class="lpf-folder">${folderClosedSvg}${folderOpenSvg}</span>` +
         `<span class="lpf-name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>` +
-        `<span class="lpf-count">${project.chats.length}</span>` +
+        // 0 条会话不显示计数药丸，否则空文件夹右侧会多出一列灰色空块
+        (project.chats.length > 0 ? `<span class="lpf-count">${project.chats.length}</span>` : '') +
         `</div>` +
         `<div class="lpf-collapse${open ? ' open' : ''}"><div><div class="lpf-chats">${chats}</div></div></div>` +
         `</div>`
@@ -975,8 +1186,12 @@ function renderProjectFolders(): void {
       if (action === 'toggle') {
         projectFoldersCollapsed = !projectFoldersCollapsed
         const panelEl = document.getElementById('lidow-project-folders')
-        panelEl?.querySelector('.lpf-head .lpf-chevron')?.classList.toggle('open', !projectFoldersCollapsed)
-        panelEl?.querySelector(':scope > .lpf-collapse')?.classList.toggle('open', !projectFoldersCollapsed)
+        panelEl
+          ?.querySelector('.lpf-head .lpf-chevron')
+          ?.classList.toggle('open', !projectFoldersCollapsed)
+        panelEl
+          ?.querySelector(':scope > .lpf-collapse')
+          ?.classList.toggle('open', !projectFoldersCollapsed)
         projectFoldersSig = folderSig()
       } else if (action === 'project') {
         const id = target.dataset.id ?? ''
@@ -987,7 +1202,9 @@ function renderProjectFolders(): void {
         const head = target.closest<HTMLElement>('.lpf-project-head')
         head?.classList.toggle('open', openNow)
         head?.querySelector('.lpf-chev')?.classList.toggle('open', openNow)
-        head?.parentElement?.querySelector<HTMLElement>(':scope > .lpf-collapse')?.classList.toggle('open', openNow)
+        head?.parentElement
+          ?.querySelector<HTMLElement>(':scope > .lpf-collapse')
+          ?.classList.toggle('open', openNow)
         projectFoldersSig = folderSig()
       } else if (action === 'more') {
         const id = target.dataset.id ?? ''
@@ -1037,7 +1254,11 @@ function setupProjectFolderClicks(): void {
       if (!isDeepSeekPage() || !projectFolders) return
       if (ev.button !== 0) return
       const target = ev.target as HTMLElement | null
-      if (!target || target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')) return
+      if (
+        !target ||
+        target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')
+      )
+        return
       const link = target.closest<HTMLAnchorElement>('a[href*="/a/chat/s/"]')
       if (!link) return
       // 程序化 SPA 切换自己点的那一条：不要再当成用户切项目
@@ -1180,7 +1401,8 @@ function watchChatDeletion(): void {
 function evaluateLoginNow(): void {
   if (!adapter) return
   const url = String(location.href)
-  const onLoginPage = /\/sign_?in\b|\/login\b|\/auth\b|accounts\.google\.com|\/i\/flow\/login/i.test(url)
+  const onLoginPage =
+    /\/sign_?in\b|\/login\b|\/auth\b|accounts\.google\.com|\/i\/flow\/login/i.test(url)
   // 登录判据（按可靠性排序）：
   //  1) URL 在登录页 → 未登录
   //  2) 聊天输入框存在 → 已登录。这是最稳的信号：各平台登录后必然出现输入框，
@@ -1191,7 +1413,9 @@ function evaluateLoginNow(): void {
   // 这条优先于输入框判断：豆包等平台的登录页也有 textarea（搜索框），
   // 只看输入框会误判成已登录，于是在没登录的平台上弹初始化（实测踩中）。
   const LOGIN_BTN_KWS = ['登录', '立即登录', '注册', 'Log in', 'Sign in', 'Sign up']
-  const loginBtn = [...document.querySelectorAll<HTMLElement>('button, div[role="button"], a')].find((el) => {
+  const loginBtn = [
+    ...document.querySelectorAll<HTMLElement>('button, div[role="button"], a')
+  ].find((el) => {
     const t = (el.textContent ?? '').trim()
     if (!t || t.length > 8) return false
     if (el.closest('#lidow-first-run, #lidow-first-run-banner')) return false
@@ -1261,7 +1485,9 @@ function dismissEnvWarnings(): void {
       if (!text.includes('使用环境异常') || text.length > 220) continue
       if (dismissedDialogs.has(el)) continue
       // 最内层命中容器
-      const inner = Array.from(el.querySelectorAll<HTMLElement>('div')).find((d) => d.textContent?.includes('使用环境异常'))
+      const inner = Array.from(el.querySelectorAll<HTMLElement>('div')).find((d) =>
+        d.textContent?.includes('使用环境异常')
+      )
       const dialog = inner && inner.textContent!.length <= text.length ? inner : el
       if (dismissedDialogs.has(dialog)) continue
       dismissedDialogs.add(dialog)
@@ -1284,6 +1510,7 @@ function dismissEnvWarnings(): void {
 }
 
 setInterval(dismissEnvWarnings, 1500)
+window.setInterval(scanMessageFold, 1600)
 
 // 平台还在生成、但暂时没有新文本（长思考/停顿）时发心跳：
 // 主进程据此重置看门狗与截断宽限，不能把“AI 正在想”误判成卡死并插话。
@@ -1325,7 +1552,12 @@ function installNetBridge(): void {
               finished: Boolean(detail.finished)
             })
           } else if (kind === 'response') {
-            const st = detail.status === 'stopped' ? 'stopped' : detail.status === 'finished' ? 'finished' : 'error'
+            const st =
+              detail.status === 'stopped'
+                ? 'stopped'
+                : detail.status === 'finished'
+                  ? 'finished'
+                  : 'error'
             const tu = detail.tokenUsage as { accumulatedTokens?: number } | null | undefined
             send({
               type: 'net-response',
@@ -1335,7 +1567,11 @@ function installNetBridge(): void {
               tokens: typeof tu?.accumulatedTokens === 'number' ? tu.accumulatedTokens : undefined
             })
           } else if (kind === 'error') {
-            send({ type: 'net-error', text: String(detail.text ?? ''), reason: String(detail.reason ?? 'unknown') })
+            send({
+              type: 'net-error',
+              text: String(detail.text ?? ''),
+              reason: String(detail.reason ?? 'unknown')
+            })
           } else if (kind === 'prompt') {
             // 用户在网页输入框里亲手发送的消息：同步回纯净模式会话
             send({ type: 'user-message', text: String(detail.text ?? '') })
@@ -1488,7 +1724,12 @@ function renderFirstRun(): void {
   const nativeNewChat = isNativeNewChatPending()
   // 平台自己的「新对话」不受 projectInitialized 压制：旧会话还有历史，
   // 但这条新对话尚未绑定任何 Lidow 会话，必须先提供初始化入口。
-  const shouldShow = loggedIn && projectKnown && !firstRunDismissed && !persisted && (nativeNewChat || !projectInitialized)
+  const shouldShow =
+    loggedIn &&
+    projectKnown &&
+    !firstRunDismissed &&
+    !persisted &&
+    (nativeNewChat || !projectInitialized)
   exposeState({
     loggedIn,
     projectKnown,
@@ -1740,7 +1981,8 @@ function renderGoogleLoginNotice(): void {
   const onGoogle = /(^|\.)accounts\.google\./i.test(location.hostname)
   const pageText = (document.body?.innerText ?? '').slice(0, 5000)
   // 报错页可能被平台承载在 chatgpt.com 等域名下，不能只依赖 hostname
-  const blockedText = /此浏览器或应用可能不安全|browser or app may not be secure|disallowed_useragent/i.test(pageText)
+  const blockedText =
+    /此浏览器或应用可能不安全|browser or app may not be secure|disallowed_useragent/i.test(pageText)
   const blocked = blockedText || (onGoogle && /无法登录|sign in|登录/i.test(pageText))
   if (!blocked) {
     existing?.remove()
@@ -1817,11 +2059,15 @@ function renderGoogleLoginNotice(): void {
  * 平台可能用 button、div[role=button]，文案也可能带括号后缀。
  */
 function findToggleButton(keywords: string[]): HTMLElement | null {
-  const candidates = document.querySelectorAll<HTMLElement>('button, div[role="button"], [class*="button"]')
+  const candidates = document.querySelectorAll<HTMLElement>(
+    'button, div[role="button"], [class*="button"]'
+  )
   for (const kw of keywords) {
     for (const el of candidates) {
-      const t = (el.textContent ?? '').trim()
-      if (t === kw || t.startsWith(kw)) return el
+      const t = [el.textContent ?? '', el.getAttribute('aria-label') ?? '', el.title ?? '']
+        .join(' ')
+        .trim()
+      if (t === kw || t.startsWith(kw) || t.includes(kw)) return el
     }
   }
   return null
@@ -1841,9 +2087,16 @@ function isToggleActive(el: HTMLElement | null): boolean {
 /** 上报两个开关的真实状态（渲染层据此给 chip 上色） */
 function reportToggleStates(): void {
   try {
-    const think = isToggleActive(findToggleButton(['深度思考', '深度思考（R1）']))
-    const search = isToggleActive(findToggleButton(['智能搜索', '联网搜索']))
-    send({ type: 'toggle-state', think, search })
+    const thinkBtn = findToggleButton(['深度思考', '深度思考（R1）', '思考', 'Thinking'])
+    const searchBtn = findToggleButton(['智能搜索', '联网搜索', '搜索', 'Search'])
+    send({
+      type: 'toggle-state',
+      think: isToggleActive(thinkBtn),
+      search: isToggleActive(searchBtn),
+      // 页面上是否存在对应开关：纯净模式据此决定要不要显示 chip（适配所有平台）
+      thinkAvailable: Boolean(thinkBtn),
+      searchAvailable: Boolean(searchBtn)
+    })
   } catch {
     /* ignore */
   }
@@ -1917,7 +2170,11 @@ function watchNativeNewChat(): void {
 
 function setupToolMask(): { show: (text: string) => void; hide: () => void } {
   const existing = document.getElementById('lidow-tool-mask')
-  if (existing) return { show: () => existing.classList.remove('lidow-hidden'), hide: () => existing.classList.add('lidow-hidden') }
+  if (existing)
+    return {
+      show: () => existing.classList.remove('lidow-hidden'),
+      hide: () => existing.classList.add('lidow-hidden')
+    }
 
   const style = new CSSStyleSheet()
   style.replaceSync(`
@@ -1941,7 +2198,8 @@ function setupToolMask(): { show: (text: string) => void; hide: () => void } {
   const box = document.createElement('div')
   box.id = 'lidow-tool-mask'
   box.className = 'lidow-hidden'
-  box.innerHTML = '<span class="tm-spin"></span><span id="lidow-tool-mask-text">工具执行中…</span><button class="tm-stop">停止</button>'
+  box.innerHTML =
+    '<span class="tm-spin"></span><span id="lidow-tool-mask-text">工具执行中…</span><button class="tm-stop">停止</button>'
   box.querySelector<HTMLButtonElement>('.tm-stop')?.addEventListener('click', (e) => {
     e.stopPropagation()
     send({ type: 'float-menu-action', action: 'stop-loop' })

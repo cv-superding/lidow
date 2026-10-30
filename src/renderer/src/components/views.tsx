@@ -905,6 +905,7 @@ export function TasksView(): React.JSX.Element {
         <>
           <button
             className="btn btn-sm btn-outline"
+            disabled={doneCount === 0}
             onClick={() => {
               if (window.confirm('清理所有已完成任务？')) void api.clearDoneTodos().then(refresh)
             }}
@@ -1027,7 +1028,11 @@ export function PluginsView(): React.JSX.Element {
   const [tab, setTab] = useState<'installed' | 'builtin' | 'market'>('installed')
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
-  const [coverage, setCoverage] = useState<{ total: number; implemented: string[] } | null>(null)
+  const [coverage, setCoverage] = useState<{
+    total: number
+    implemented: string[]
+    missing: string[]
+  } | null>(null)
   const refresh = (): void => {
     void api.listInstalledPlugins().then((p) => useStore.setState({ installedPlugins: p }))
     void api.listBuiltinPlugins().then((p) => useStore.setState({ builtinPlugins: p }))
@@ -1101,7 +1106,7 @@ export function PluginsView(): React.JSX.Element {
       title="插件与扩展"
       subtitle={
         coverage
-          ? `DSH 兼容 ${coverage.implemented.length} / ${coverage.total} · 安装后立即加载生效`
+          ? `DSH 兼容 ${coverage.total - coverage.missing.length} / ${coverage.total} · 安装后立即加载生效`
           : '技能、网页脚本与 DSH 服务'
       }
       actions={

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
@@ -27,7 +28,14 @@ import {
   IconClose,
   IconDiff,
   IconFolder,
-  IconFile
+  IconFile,
+  IconCopy,
+  IconEdit,
+  IconRefresh,
+  IconThumbUp,
+  IconThumbDown,
+  IconVolume,
+  IconShare
 } from './icons'
 
 const SLASH_COMMANDS = [
@@ -362,9 +370,139 @@ function PendingIndicator({ since }: { since: number }): React.JSX.Element {
   )
 }
 
-function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
+/** 旧数据/旧捕获通道可能把同一回答写入多轮：仅显示层去重，保留更完整的一条 */
+function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
+  const norm = (text: string): string =>
+    text
+      .replace(/\s+/g, '')
+      .replace(/[*_`#>~|:：\-—，。；、,.;!?！？"'“”‘’（）()【】<>《》]/g, '')
+  const out: ChatTurn[] = []
+  let groupStart = 0
+  for (const turn of list) {
+    if (turn.role !== 'assistant') {
+      out.push(turn)
+      groupStart = out.length
+      continue
+    }
+    if ((turn.toolResults?.length ?? 0) > 0 || /```lidow/i.test(turn.text)) {
+      out.push(turn)
+      continue
+    }
+    const key = norm(turn.text)
+    if (!key) {
+      out.push(turn)
+      continue
+    }
+    let duplicateOf = -1
+    for (let j = out.length - 1; j >= groupStart; j--) {
+      const prev = out[j]
+      if (!prev || prev.role !== 'assistant') continue
+      if ((prev.toolResults?.length ?? 0) > 0 || /```lidow/i.test(prev.text)) continue
+      const prevKey = norm(prev.text)
+      if (!prevKey) continue
+      const related =
+        prevKey === key ||
+        (key.length >= 30 &&
+          prevKey.length >= 30 &&
+          (prevKey.includes(key) || key.includes(prevKey)))
+      if (related) {
+        duplicateOf = j
+        break
+      }
+    }
+    if (duplicateOf < 0) {
+      out.push(turn)
+      continue
+    }
+    const prev = out[duplicateOf]!
+    if (key.length > norm(prev.text).length) {
+      out[duplicateOf] = { ...turn, think: turn.think || prev.think }
+    }
+  }
+  return out
+}
+
+function ActionButton({
+  title,
+  onClick,
+  active,
+  children
+}: {
+  title: string
+  onClick: () => void
+  active?: boolean
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={onClick}
+      className="flex h-6 w-6 items-center justify-center rounded-[var(--r-sm)] transition-colors duration-[120ms] hover:bg-[var(--bg-hover)]"
+      style={{ color: active ? 'var(--accent)' : 'var(--text-hint)' }}
+    >
+      {children}
+    </button>
+  )
+}
+
+function TurnItem({
+  turn,
+  sessionId,
+  showActions,
+  onEditUser
+}: {
+  turn: ChatTurn
+  sessionId?: string
+  showActions?: boolean
+  onEditUser?: (text: string) => void
+}): React.JSX.Element {
   const isUser = turn.role === 'user'
   const isSystem = turn.role === 'system'
+  const [copied, setCopied] = useState(false)
+  const [vote, setVote] = useState<'up' | 'down' | null>(null)
+  const [speaking, setSpeaking] = useState(false)
+
+  const copy = (): void => {
+    void navigator.clipboard.writeText(turn.text).then(() => {
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1200)
+    })
+  }
+  const speak = (): void => {
+    const synth = window.speechSynthesis
+    if (!synth) return
+    if (speaking) {
+      synth.cancel()
+      setSpeaking(false)
+      return
+    }
+    const u = new SpeechSynthesisUtterance(turn.text.replace(/```[\s\S]*?```/g, ' ').slice(0, 6000))
+    u.lang = /[一-龥]/.test(turn.text) ? 'zh-CN' : 'en-US'
+    u.onend = () => setSpeaking(false)
+    u.onerror = () => setSpeaking(false)
+    synth.cancel()
+    synth.speak(u)
+    setSpeaking(true)
+  }
+  const share = (): void => {
+    const nav = navigator as Navigator & {
+      share?: (data: { title?: string; text?: string }) => Promise<void>
+    }
+    if (typeof nav.share === 'function') {
+      void nav.share({ title: 'Lidow', text: turn.text }).catch(() => undefined)
+      return
+    }
+    void navigator.clipboard.writeText(turn.text).then(() => {
+      useStore.getState().notice('已复制内容，可粘贴分享')
+    })
+  }
+  const regenerate = (): void => {
+    if (!sessionId) return
+    void api.overlayAction(sessionId, ['重新生成', '重新回答', 'Regenerate'])
+    useStore.getState().notice('已请求网页端重新生成')
+  }
+
   if (isSystem) {
     return (
       <div className="flex justify-center">
@@ -374,18 +512,32 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
       </div>
     )
   }
+
   if (isUser) {
     return (
-      <div className="flex justify-end">
+      <div className="group flex flex-col items-end">
         <div
           className="max-w-[78%] rounded-[var(--r-xl)] rounded-br-[6px] px-3.5 py-2.5 text-[13px] leading-[1.62]"
           style={{ background: 'var(--bubble-user-bg)', color: 'var(--text)' }}
         >
           <div className="whitespace-pre-wrap">{turn.text}</div>
         </div>
+        {showActions && (
+          <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
+            <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
+              {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+            </ActionButton>
+            {onEditUser && (
+              <ActionButton title="修改并重新发送" onClick={() => onEditUser(turn.text)}>
+                <IconEdit size={13} />
+              </ActionButton>
+            )}
+          </div>
+        )}
       </div>
     )
   }
+
   // status=streaming 且已有工具 = 工具批次正在执行（转圈 + 计时）
   const toolRunning = turn.status === 'streaming' && (turn.toolResults?.length ?? 0) > 0
   return (
@@ -401,6 +553,38 @@ function TurnItem({ turn }: { turn: ChatTurn }): React.JSX.Element {
       )}
       {turn.toolResults && turn.toolResults.length > 0 && (
         <ToolGroup results={turn.toolResults} running={toolRunning} startedAt={turn.ts} />
+      )}
+      {showActions && turn.text && (
+        <div className="mt-0.5 flex flex-wrap items-center gap-0.5">
+          <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
+            {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
+          </ActionButton>
+          {sessionId && (
+            <ActionButton title="在网页端重新生成" onClick={regenerate}>
+              <IconRefresh size={13} />
+            </ActionButton>
+          )}
+          <ActionButton
+            title="有帮助"
+            active={vote === 'up'}
+            onClick={() => setVote(vote === 'up' ? null : 'up')}
+          >
+            <IconThumbUp size={13} />
+          </ActionButton>
+          <ActionButton
+            title="没帮助"
+            active={vote === 'down'}
+            onClick={() => setVote(vote === 'down' ? null : 'down')}
+          >
+            <IconThumbDown size={13} />
+          </ActionButton>
+          <ActionButton title={speaking ? '停止朗读' : '朗读'} active={speaking} onClick={speak}>
+            <IconVolume size={13} />
+          </ActionButton>
+          <ActionButton title="分享" onClick={share}>
+            <IconShare size={13} />
+          </ActionButton>
+        </div>
       )}
     </div>
   )
@@ -520,10 +704,33 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     const pid = activeSessionId
     if (!pid) return []
     const tabAdapter = tabsForComposer.find((t) => t.providerId === pid)?.adapter
-    if (tabAdapter?.composerActions?.length) return tabAdapter.composerActions
-    return providersForComposer.find((x) => x.id === pid)?.adapter?.composerActions ?? []
-  }, [activeSessionId, tabsForComposer, providersForComposer])
+    const base = tabAdapter?.composerActions?.length
+      ? tabAdapter.composerActions
+      : (providersForComposer.find((x) => x.id === pid)?.adapter?.composerActions ?? [])
+    const actions = [...base]
+    // 其它平台只要网页里有对应开关，也自动补 chip（不用为每家写死清单）
+    const hasThink = actions.some((a) => a.keywords.some((k) => /思考|think/i.test(k)))
+    if (toggleState.thinkAvailable && !hasThink) {
+      actions.push({ label: '思考', keywords: ['思考', 'Thinking'] })
+    }
+    const hasSearch = actions.some((a) => a.keywords.some((k) => /搜索|search/i.test(k)))
+    if (toggleState.searchAvailable && !hasSearch) {
+      actions.push({ label: '搜索', keywords: ['搜索', 'Search'] })
+    }
+    return actions
+  }, [
+    activeSessionId,
+    tabsForComposer,
+    providersForComposer,
+    toggleState.thinkAvailable,
+    toggleState.searchAvailable
+  ])
   const [input, setInput] = useState('')
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null)
+  const [earlyExpanded, setEarlyExpanded] = useState(false)
+  const [composerHeight, setComposerHeight] = useState(0)
+  const resizeStart = useRef<{ y: number; h: number } | null>(null)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<
     Record<string, { key: string; name: string; preview?: string }[]>
   >({})
@@ -581,11 +788,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
   const allTurns = useMemo(() => activeSession?.turns ?? [], [activeSession])
   // workbench 模式只显示发生过工具调用的轮次——网页里已有完整对话，这里不重复
-  const turns = useMemo(
-    () =>
-      mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns,
-    [allTurns, mode]
-  )
+  const turns = useMemo(() => {
+    const base =
+      mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns
+    return dedupeAssistantTurns(base)
+  }, [allTurns, mode])
   // 当前任务（最后一条用户消息之后）的全部工具结果：文件变更汇总用
   const taskChangeResults = useMemo(() => {
     for (let i = turns.length - 1; i >= 0; i--) {
@@ -717,6 +924,45 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     }
   }
 
+  const startComposerResize = (e: React.PointerEvent<HTMLDivElement>): void => {
+    e.preventDefault()
+    e.currentTarget.setPointerCapture(e.pointerId)
+    resizeStart.current = {
+      y: e.clientY,
+      h: inputRef.current?.getBoundingClientRect().height ?? 46
+    }
+  }
+  const moveComposerResize = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const start = resizeStart.current
+    if (!start) return
+    const max = Math.max(160, Math.round(window.innerHeight * 0.5))
+    setComposerHeight(Math.min(max, Math.max(46, start.h + (start.y - e.clientY))))
+  }
+  const endComposerResize = (e: React.PointerEvent<HTMLDivElement>): void => {
+    resizeStart.current = null
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const startEdit = (text: string, turnId: string): void => {
+    setInput(text)
+    setEditingTurnId(turnId)
+    requestAnimationFrame(() => {
+      const el = inputRef.current
+      if (!el) return
+      el.focus()
+      el.setSelectionRange(text.length, text.length)
+    })
+  }
+
+  useEffect(() => {
+    setEditingTurnId(null)
+    setEarlyExpanded(false)
+  }, [activeSession?.id])
+
   const submit = async (): Promise<void> => {
     const text = input.trim()
     if (!text) return
@@ -726,6 +972,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       return
     }
     setInput('')
+    setEditingTurnId(null)
     setSlashOpen(false)
     const session = activeSession
     if (text === '/new') {
@@ -813,6 +1060,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     if (slashOpen) slashSelectedRef.current?.scrollIntoView({ block: 'nearest' })
   }, [slashOpen, slashIndex, slashFiltered.length])
 
+  const totalTextLen = useMemo(() => turns.reduce((n, t) => n + t.text.length, 0), [turns])
+  // 上下文变长后默认折叠较早轮次，只保留最近 6 条，避免纯净模式无限拉长
+  const shouldFoldEarly = turns.length > 8 || totalTextLen > 8_000
+  const keepRecent = 6
+  const visibleTurns = shouldFoldEarly && !earlyExpanded ? turns.slice(-keepRecent) : turns
   const empty = turns.length === 0 && !streamingText
 
   return (
@@ -956,8 +1208,34 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             </div>
           )}
 
-          {turns.map((t) => (
-            <TurnItem key={t.id} turn={t} />
+          {shouldFoldEarly && turns.length > keepRecent && (
+            <div className="flex justify-center">
+              <button
+                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+                style={{
+                  background: 'var(--surface-sunken)',
+                  color: 'var(--text-dim)',
+                  border: '1px solid var(--border)'
+                }}
+                onClick={() => setEarlyExpanded((v) => !v)}
+              >
+                <IconChevronDown
+                  size={12}
+                  className={`transition-transform duration-[150ms] ${earlyExpanded ? 'rotate-180' : ''}`}
+                />
+                {earlyExpanded ? '收起较早消息' : `展开之前 ${turns.length - keepRecent} 条消息`}
+                <span style={{ color: 'var(--text-hint)' }}>· 上下文较长</span>
+              </button>
+            </div>
+          )}
+          {visibleTurns.map((t) => (
+            <TurnItem
+              key={t.id}
+              turn={t}
+              sessionId={activeSession?.id}
+              showActions={mode === 'pure'}
+              onEditUser={(text) => startEdit(text, t.id)}
+            />
           ))}
           {waiting && <PendingIndicator since={pendingSince} />}
           {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
@@ -1086,6 +1364,57 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
       {/* 输入区 */}
       <div className="relative shrink-0 px-6 pb-4 pt-1">
+        {shouldFoldEarly && turns.length > keepRecent && (
+          <div className="mx-auto mb-2 flex max-w-[780px] justify-center">
+            <button
+              className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+              style={{
+                background: 'var(--surface-sunken)',
+                color: 'var(--text-dim)',
+                border: '1px solid var(--border)'
+              }}
+              onClick={() => setEarlyExpanded((v) => !v)}
+            >
+              <IconChevronDown
+                size={12}
+                className={`transition-transform duration-[150ms] ${earlyExpanded ? 'rotate-180' : ''}`}
+              />
+              {earlyExpanded ? '收起较早消息' : `已折叠之前 ${turns.length - keepRecent} 条消息`}
+              <span style={{ color: 'var(--text-hint)' }}>· 上下文较长</span>
+            </button>
+          </div>
+        )}
+        {attachments.length > 0 && (
+          <div className="mx-auto flex w-full max-w-[780px] flex-wrap items-center gap-2 px-1 pb-2">
+            {attachments.map((a) =>
+              a.preview ? (
+                <div
+                  key={a.key}
+                  className="h-12 w-12 overflow-hidden rounded-[10px]"
+                  style={{ border: '1px solid var(--border-strong)', background: 'var(--bg)' }}
+                  title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
+                >
+                  <img src={a.preview} alt={a.name} className="h-full w-full object-cover" />
+                </div>
+              ) : (
+                <div
+                  key={a.key}
+                  className="flex h-12 max-w-[220px] items-center gap-1.5 rounded-[10px] px-2.5"
+                  style={{
+                    border: '1px solid var(--border)',
+                    background: 'var(--surface-sunken)'
+                  }}
+                  title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
+                >
+                  <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
+                    <IconFile size={13} />
+                  </span>
+                  <span className="truncate text-[11px]">{a.name}</span>
+                </div>
+              )
+            )}
+          </div>
+        )}
         <div
           data-composer="true"
           className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[160ms]"
@@ -1158,41 +1487,46 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               </div>
             </div>
           )}
-          {attachments.length > 0 && (
-            <div className="flex flex-wrap items-center gap-2 px-4 pt-2.5">
-              {attachments.map((a) =>
-                a.preview ? (
-                  <div
-                    key={a.key}
-                    className="h-12 w-12 overflow-hidden rounded-[10px]"
-                    style={{ border: '1px solid var(--border-strong)', background: 'var(--bg)' }}
-                    title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
-                  >
-                    <img src={a.preview} alt={a.name} className="h-full w-full object-cover" />
-                  </div>
-                ) : (
-                  <div
-                    key={a.key}
-                    className="flex h-12 max-w-[220px] items-center gap-1.5 rounded-[10px] px-2.5"
-                    style={{
-                      border: '1px solid var(--border)',
-                      background: 'var(--surface-sunken)'
-                    }}
-                    title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
-                  >
-                    <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
-                      <IconFile size={13} />
-                    </span>
-                    <span className="truncate text-[11px]">{a.name}</span>
-                  </div>
-                )
-              )}
+          <div
+            className="group flex h-[10px] shrink-0 cursor-row-resize items-center justify-center"
+            title="拖动调整输入框高度，双击恢复默认"
+            onPointerDown={startComposerResize}
+            onPointerMove={moveComposerResize}
+            onPointerUp={endComposerResize}
+            onPointerCancel={endComposerResize}
+            onDoubleClick={() => setComposerHeight(0)}
+          >
+            <span
+              className="h-[3px] w-8 rounded-full opacity-0 transition-opacity duration-150 group-hover:opacity-100"
+              style={{ background: 'var(--border-strong)' }}
+            />
+          </div>
+          {editingTurnId && (
+            <div
+              className="flex items-center gap-2 px-4 pt-3 text-[11px]"
+              style={{ color: 'var(--text-hint)' }}
+            >
+              <IconEdit size={12} />
+              <span>正在编辑消息 · 发送后将作为新消息重新提问</span>
+              <button
+                className="ml-auto rounded-[var(--r-sm)] px-1.5 py-0.5 transition-colors duration-[120ms] hover:bg-[var(--bg-hover)]"
+                onClick={() => {
+                  setEditingTurnId(null)
+                  setInput('')
+                }}
+              >
+                取消
+              </button>
             </div>
           )}
           <textarea
+            ref={inputRef}
             className="max-h-44 min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 text-[13.5px] leading-[1.6] outline-none"
-            style={{ color: 'var(--text)' }}
-            placeholder="交给 Lidow 一个任务…"
+            style={{
+              color: 'var(--text)',
+              ...(composerHeight ? { height: composerHeight, maxHeight: 'none' } : {})
+            }}
+            placeholder={editingTurnId ? '修改后按 Enter 重新发送…' : '交给 Lidow 一个任务…'}
             value={input}
             onChange={(e) => {
               setInput(e.target.value)
@@ -1293,9 +1627,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 按当前会话平台的 adapter.composerActions 渲染，不写死。 */}
             {composerActions.map((a) => {
               // 平台自带开关的真实状态由 overlay 每秒上报：开启的 chip 高亮
+              const kw = a.keywords.join(' ')
               const active =
-                (toggleState.think && a.keywords.some((k) => k.includes('深度思考'))) ||
-                (toggleState.search && a.keywords.some((k) => k.includes('搜索')))
+                (toggleState.think && /思考|think/i.test(kw)) ||
+                (toggleState.search && /搜索|search/i.test(kw))
               return (
                 <button
                   key={a.label}
@@ -1370,109 +1705,111 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       </div>
 
       {/* 初始化项目弹窗：选择/更换工作目录，确认后回到对话输入 */}
-      {initOpen && (
-        <div
-          className="fixed inset-0 z-[76] flex items-center justify-center px-6"
-          style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget && !initPicking) setInitOpen(false)
-          }}
-        >
+      {initOpen &&
+        createPortal(
           <div
-            className="anim-pop w-full max-w-[460px] overflow-hidden rounded-[18px]"
-            style={{
-              background: 'var(--surface-raised)',
-              border: '1px solid var(--border-strong)',
-              boxShadow: '0 24px 64px rgba(0,0,0,.28)'
+            className="fixed inset-0 z-[76] flex items-center justify-center px-6"
+            style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !initPicking) setInitOpen(false)
             }}
           >
             <div
-              className="flex items-center gap-2.5 border-b px-5 py-4"
-              style={{ borderColor: 'var(--border-soft)' }}
+              className="anim-pop w-full max-w-[460px] overflow-hidden rounded-[18px]"
+              style={{
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border-strong)',
+                boxShadow: '0 24px 64px rgba(0,0,0,.28)'
+              }}
             >
-              <span
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
-                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+              <div
+                className="flex items-center gap-2.5 border-b px-5 py-4"
+                style={{ borderColor: 'var(--border-soft)' }}
               >
-                <IconFolder size={16} />
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="text-[14px] font-semibold">第一步：初始化项目</div>
-                <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
-                  AI 需要一个工作目录才能读写你的文件
+                <span
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px]"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                >
+                  <IconFolder size={16} />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[14px] font-semibold">第一步：初始化项目</div>
+                  <div className="mt-0.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
+                    AI 需要一个工作目录才能读写你的文件
+                  </div>
                 </div>
+                <button
+                  className="btn btn-sm btn-ghost btn-icon"
+                  title="关闭"
+                  disabled={initPicking}
+                  onClick={() => setInitOpen(false)}
+                >
+                  <IconClose size={12} />
+                </button>
               </div>
-              <button
-                className="btn btn-sm btn-ghost btn-icon"
-                title="关闭"
-                disabled={initPicking}
-                onClick={() => setInitOpen(false)}
-              >
-                <IconClose size={12} />
-              </button>
-            </div>
-            <div className="space-y-3 px-5 py-4">
-              <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
-                选定目录后再开始对话；之后也可以在左侧项目菜单中切换。
+              <div className="space-y-3 px-5 py-4">
+                <div className="text-[11.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+                  选定目录后再开始对话；之后也可以在左侧项目菜单中切换。
+                </div>
+                <div
+                  className="rounded-[var(--r-md)] border px-3 py-2.5 font-mono text-[11.5px] break-all"
+                  style={{
+                    borderColor: 'var(--border-soft)',
+                    background: 'var(--surface-sunken)',
+                    color: project ? 'var(--text)' : 'var(--warning)'
+                  }}
+                >
+                  {project?.root ?? '尚未选择目录'}
+                </div>
+                <label className="block">
+                  <span className="mb-1 block text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+                    会话名称（可选）
+                  </span>
+                  <input
+                    className="field h-9"
+                    maxLength={40}
+                    placeholder="例如：修复登录问题；留空则自动命名"
+                    value={initName}
+                    onChange={(e) => setInitName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void finishInit()
+                      }
+                    }}
+                  />
+                </label>
               </div>
               <div
-                className="rounded-[var(--r-md)] border px-3 py-2.5 font-mono text-[11.5px] break-all"
-                style={{
-                  borderColor: 'var(--border-soft)',
-                  background: 'var(--surface-sunken)',
-                  color: project ? 'var(--text)' : 'var(--warning)'
-                }}
+                className="flex items-center justify-end gap-2 border-t px-5 py-3"
+                style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
               >
-                {project?.root ?? '尚未选择目录'}
+                <button
+                  className="btn btn-sm btn-ghost"
+                  disabled={initPicking}
+                  onClick={() => setInitOpen(false)}
+                >
+                  取消
+                </button>
+                <button
+                  className="btn btn-sm btn-outline"
+                  disabled={initPicking}
+                  onClick={() => void pickProjectDir()}
+                >
+                  {initPicking ? '选择中…' : project ? '更换目录' : '选择目录'}
+                </button>
+                <button
+                  className="btn btn-sm btn-primary"
+                  disabled={!project || initPicking || initStarting}
+                  onClick={() => void finishInit()}
+                >
+                  {initStarting ? '初始化中…' : '开始对话'}
+                </button>
               </div>
-              <label className="block">
-                <span className="mb-1 block text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
-                  会话名称（可选）
-                </span>
-                <input
-                  className="field h-9"
-                  maxLength={40}
-                  placeholder="例如：修复登录问题；留空则自动命名"
-                  value={initName}
-                  onChange={(e) => setInitName(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault()
-                      void finishInit()
-                    }
-                  }}
-                />
-              </label>
             </div>
-            <div
-              className="flex items-center justify-end gap-2 border-t px-5 py-3"
-              style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
-            >
-              <button
-                className="btn btn-sm btn-ghost"
-                disabled={initPicking}
-                onClick={() => setInitOpen(false)}
-              >
-                取消
-              </button>
-              <button
-                className="btn btn-sm btn-outline"
-                disabled={initPicking}
-                onClick={() => void pickProjectDir()}
-              >
-                {initPicking ? '选择中…' : project ? '更换目录' : '选择目录'}
-              </button>
-              <button
-                className="btn btn-sm btn-primary"
-                disabled={!project || initPicking || initStarting}
-                onClick={() => void finishInit()}
-              >
-                {initStarting ? '初始化中…' : '开始对话'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   )
 }

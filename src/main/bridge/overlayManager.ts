@@ -93,8 +93,13 @@ export class OverlayManager {
   /** overlay 就绪（无论是否已绑定会话）：用于下发网页会话删除监听列表 */
   onAnyReady?: (webContentsId: number) => void
 
-  /** 网页开关状态（深度思考 / 智能搜索）上报 */
-  onToggleState?: (think: boolean, search: boolean) => void
+  /** 网页开关状态（思考 / 搜索）上报 + 页面上是否存在对应按钮 */
+  onToggleState?: (
+    think: boolean,
+    search: boolean,
+    thinkAvailable?: boolean,
+    searchAvailable?: boolean
+  ) => void
 
   /** 会话当前绑定的 webContents id（未绑定为 undefined） */
   wcIdOfSession(sessionId: string): number | undefined {
@@ -106,7 +111,14 @@ export class OverlayManager {
     return [...this.bindings.keys()]
   }
 
-  setToggleStateHandler(fn: (think: boolean, search: boolean) => void): void {
+  setToggleStateHandler(
+    fn: (
+      think: boolean,
+      search: boolean,
+      thinkAvailable?: boolean,
+      searchAvailable?: boolean
+    ) => void
+  ): void {
     this.onToggleState = fn
   }
 
@@ -258,7 +270,15 @@ export class OverlayManager {
         ch.lastActivityAt = Date.now()
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
-        if (ch.replyResolvers.size === 0) break
+        if (ch.replyResolvers.size === 0) {
+          // 没有等待方：网页侧自己发的消息，或网络 hook 失败后的 DOM 兜底
+          if (payload.text.trim() && payload.text !== ch.lastResolvedText) {
+            ch.lastResolvedText = payload.text
+            const sid = this.sessionOfWebContents(sender.id)
+            if (sid) this.onPageReply?.(sid, payload.text)
+          }
+          break
+        }
         if (ch.domFallbackTimer) clearTimeout(ch.domFallbackTimer)
         ch.domFallbackTimer = setTimeout(() => {
           ch.domFallbackTimer = undefined
@@ -417,7 +437,12 @@ export class OverlayManager {
       }
       case 'toggle-state': {
         // 网页里平台自带开关的真实状态：转发给渲染层给 chip 上色
-        this.onToggleState?.(payload.think, payload.search)
+        this.onToggleState?.(
+          payload.think,
+          payload.search,
+          payload.thinkAvailable,
+          payload.searchAvailable
+        )
         break
       }
       case 'nav': {

@@ -379,6 +379,7 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
       src={tab.home}
       partition={tab.partition}
       preload={`file://${tab.overlayPath.replace(/\\/g, '/')}`}
+      webpreferences="backgroundThrottling=false"
       className="h-full w-full"
     />
   )

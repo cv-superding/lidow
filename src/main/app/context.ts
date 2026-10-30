@@ -435,8 +435,15 @@ export class AppContext {
       if (think) this.thinkBuffers.set(sessionId, think.slice(0, 20_000))
       this.emit({ type: 'think-chunk', sessionId, think })
     })
-    this.overlay.setToggleStateHandler((think, search) => {
-      this.emit({ type: 'toggle-state', sessionId: '', think, search })
+    this.overlay.setToggleStateHandler((think, search, thinkAvailable, searchAvailable) => {
+      this.emit({
+        type: 'toggle-state',
+        sessionId: '',
+        think,
+        search,
+        thinkAvailable,
+        searchAvailable
+      })
     })
     // 用户在网页输入框里自己发消息时，回复没有经过 lidow 的 send/await 通道。
     // 常驻接管：回复里若带工具块就执行，否则提示用户改用原生输入框。

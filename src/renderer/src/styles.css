@@ -85,7 +85,7 @@
 
   --state-hover: var(--bg-hover);
   --state-active: var(--bg-active);
-  --bubble-user-bg: var(--surface-sunken);
+  --bubble-user-bg: #e8f0ff;
   --bubble-user-border: transparent;
 }
 
@@ -197,15 +197,8 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI Variable Text',
-    'Segoe UI',
-    'PingFang SC',
-    'Hiragino Sans GB',
-    'Microsoft YaHei UI',
-    'Microsoft YaHei',
-    sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
   font-size: 13px;
   font-feature-settings: 'cv02', 'cv03', 'cv04', 'tnum';
   -webkit-font-smoothing: antialiased;
@@ -367,29 +360,29 @@ body {
 
 /* ---- 输入 ---- */
 .field {
-    width: 100%;
-    height: 30px;
-    padding: 0 9px;
-    border-radius: var(--r-md);
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 12px;
-    outline: none;
-    transition:
-      border-color var(--dur-fast) var(--ease),
-      box-shadow var(--dur-fast) var(--ease);
-  }
-  .field::placeholder {
-    color: var(--text-hint);
-  }
-  .field:hover {
-    border-color: var(--border-strong);
-  }
-  .field:focus {
-    border-color: var(--accent-ring);
-    box-shadow: 0 0 0 3px var(--accent-soft);
-  }
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  outline: none;
+  transition:
+    border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+.field::placeholder {
+  color: var(--text-hint);
+}
+.field:hover {
+  border-color: var(--border-strong);
+}
+.field:focus {
+  border-color: var(--accent-ring);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 textarea.field {
   height: auto;
   padding: 8px 10px;
@@ -972,18 +965,18 @@ body:has(.fixed.inset-0) [data-pet-menu] {
   pointer-events: none !important;
 }
 
-
 /* 输入区聚焦：只加一层柔和的品牌色光环 */
 [data-composer='true']:focus-within {
   border-color: var(--accent-ring);
-  box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft);
+  box-shadow:
+    var(--shadow),
+    0 0 0 3px var(--accent-soft);
 }
 
 /* 命令面板输入框：焦点由面板自身表达，不再叠加全局轮廓 */
 .cmd-input:focus-visible {
   outline: none;
 }
-
 
 /* 图标栏滚动区域：隐藏滚动条轨道，避免展开时右侧出现一条白色竖带 */
 .rail-scroll {
@@ -994,7 +987,6 @@ body:has(.fixed.inset-0) [data-pet-menu] {
   width: 0;
   height: 0;
 }
-
 
 /* 窄窗口：右栏改为覆盖层，保留对话宽度；桌宠在窄窗口隐藏，避免压住内容 */
 @media (max-width: 1220px) {

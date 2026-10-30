@@ -497,7 +497,13 @@ export type OverlayEvent =
   | { type: 'send-result'; ok: boolean; error?: string }
   | { type: 'float-menu-action'; action: string; url?: string }
   /** 网页开关状态（深度思考 / 智能搜索）——chip 高亮用 */
-  | { type: 'toggle-state'; think: boolean; search: boolean }
+  | {
+      type: 'toggle-state'
+      think: boolean
+      search: boolean
+      thinkAvailable?: boolean
+      searchAvailable?: boolean
+    }
   /** 网络层 hook：流式增量（token 级，来自 SSE 原始帧） */
   | { type: 'net-stream'; text: string; think?: string; finished: boolean }
   /** 网络层 hook：一轮回复完整结束（status 区分 stopped/error/finished） */

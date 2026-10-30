@@ -9,11 +9,27 @@ import type { DomAdapter, ProviderAccount, ProviderDescriptor } from '@shared/ty
  */
 
 const GENERIC_ADAPTER: DomAdapter = {
-  input: ['textarea[placeholder*="输入"]', 'textarea[placeholder*="message" i]', 'textarea', 'div[contenteditable="true"]', '[role="textbox"]'],
-  send: ['button[type="submit"]', 'button[aria-label*="send" i]', 'button[aria-label*="发送"]', '[data-testid="send-button"]', 'button:has(svg[data-icon="send"])'],
+  input: [
+    'textarea[placeholder*="输入"]',
+    'textarea[placeholder*="message" i]',
+    'textarea',
+    'div[contenteditable="true"]',
+    '[role="textbox"]'
+  ],
+  send: [
+    'button[type="submit"]',
+    'button[aria-label*="send" i]',
+    'button[aria-label*="发送"]',
+    '[data-testid="send-button"]',
+    'button:has(svg[data-icon="send"])'
+  ],
   messages: ['[class*="message-list"]', '[class*="chat-list"]', 'main'],
   bubble: ['[class*="message"]', '[class*="bubble"]', '[data-message]'],
-  streamingFlag: ['button[aria-label*="停止" i]', 'button[aria-label*="stop" i]', '[class*="stop-button"]'],
+  streamingFlag: [
+    'button[aria-label*="停止" i]',
+    'button[aria-label*="stop" i]',
+    '[class*="stop-button"]'
+  ],
   newChat: ['a[href*="/chat/new"]', 'button[aria-label*="新" i]', '[class*="new-chat"]'],
   loginFlag: ['[class*="user-avatar"]', 'img[class*="avatar"]']
 }
@@ -64,7 +80,11 @@ const DEEPSEEK: ProviderDescriptor = {
       'button[aria-label*="停止"]',
       'button[aria-label*="stop" i]'
     ],
-    newChat: ['a[class*="new-chat"]', 'button[aria-label*="开始新对话"]', 'a[href="https://chat.deepseek.com/"]'],
+    newChat: [
+      'a[class*="new-chat"]',
+      'button[aria-label*="开始新对话"]',
+      'a[href="https://chat.deepseek.com/"]'
+    ],
     composerActions: [
       { label: '深度思考', keywords: ['深度思考', '深度思考（R1）'] },
       { label: '智能搜索', keywords: ['智能搜索', '联网搜索'] }
@@ -84,8 +104,19 @@ const CLAUDE: ProviderDescriptor = {
   enabled: true,
   accounts: [],
   adapter: {
-    input: ['div[role="textbox"].tiptap', 'div[role="textbox"]', 'div.ProseMirror', 'div[contenteditable="true"]', 'textarea'],
-    send: ['button[aria-label="Send message"]', '[data-testid="chat-input-send"]', 'button[aria-label*="send" i]', 'button[aria-label*="Send"]'],
+    input: [
+      'div[role="textbox"].tiptap',
+      'div[role="textbox"]',
+      'div.ProseMirror',
+      'div[contenteditable="true"]',
+      'textarea'
+    ],
+    send: [
+      'button[aria-label="Send message"]',
+      '[data-testid="chat-input-send"]',
+      'button[aria-label*="send" i]',
+      'button[aria-label*="Send"]'
+    ],
     messages: ['[data-testid="chat-messages"]', 'main'],
     bubble: ['[data-testid="user-message"]', 'div.font-claude-message', '[data-is-streaming]'],
     streamingFlag: ['button[aria-label*="Stop"]', '[data-is-streaming="true"]'],
@@ -102,11 +133,33 @@ const CHATGPT: ProviderDescriptor = {
   enabled: true,
   accounts: [],
   adapter: {
-    input: ['div[contenteditable="true"].ProseMirror', 'div[role="textbox"]', 'div.ProseMirror', 'div[contenteditable="true"]', 'textarea'],
-    send: ['button[data-testid="send-button"]', 'button[aria-label*="发送"]', 'button[aria-label*="Send"]'],
+    input: [
+      'div[contenteditable="true"].ProseMirror',
+      'div[role="textbox"]',
+      'div.ProseMirror',
+      'div[contenteditable="true"]',
+      'textarea'
+    ],
+    send: [
+      'button[data-testid="send-button"]',
+      'button[aria-label*="发送"]',
+      'button[aria-label*="Send"]'
+    ],
     messages: ['main [class*="react-scroll-to-bottom"]', 'main'],
-    bubble: ['[data-message-author-role]', 'div[class*="agent-turn"]'],
-    streamingFlag: ['button[data-testid="stop-button"]', 'button[aria-label*="停止"]', 'button[aria-label*="Stop"]'],
+    bubble: [
+      '[data-message-author-role]',
+      'div[class*="agent-turn"]',
+      // 新版 Workspace / 分享页不再用 data-message-author-role，回复正文在 markdown 容器里
+      '[class*="markdown" i]',
+      '[data-testid*="conversation-turn"]',
+      'article'
+    ],
+    streamingFlag: [
+      'button[data-testid="stop-button"]',
+      'button[aria-label*="停止"]',
+      'button[aria-label*="Stop"]'
+    ],
+    composerActions: [{ label: '思考', keywords: ['思考', 'Thinking'] }],
     newChat: ['a[href="/"]', 'button[aria-label*="New chat" i]'],
     loginFlag: ['img[alt*="Profile"]', '[data-testid="profile-button"]']
   }
@@ -135,9 +188,17 @@ const GEMINI: ProviderDescriptor = {
     ],
     messages: ['chat-window', 'infinite-scroller', 'main'],
     bubble: ['model-response', 'user-query', 'message-content', '[class*="markdown"]'],
-    streamingFlag: ['button[aria-label*="Stop"]', 'button[aria-label*="停止"]', 'mat-icon[fonticon="stop"]'],
+    streamingFlag: [
+      'button[aria-label*="Stop"]',
+      'button[aria-label*="停止"]',
+      'mat-icon[fonticon="stop"]'
+    ],
     newChat: ['button[aria-label*="New chat"]', 'button[aria-label*="新对话"]', 'a[href="/app"]'],
-    loginFlag: ['img[alt*="个人资料"]', 'a[href*="accounts.google.com"]', 'button[aria-label*="Google Account"]']
+    loginFlag: [
+      'img[alt*="个人资料"]',
+      'a[href*="accounts.google.com"]',
+      'button[aria-label*="Google Account"]'
+    ]
   }
 }
 
@@ -149,8 +210,18 @@ const DOUBAO: ProviderDescriptor = {
   enabled: true,
   accounts: [],
   adapter: {
-    input: ['textarea[placeholder*="输入"]', 'textarea[data-testid="chat_input_input"]', 'textarea', 'div[contenteditable="true"]', '[role="textbox"]'],
-    send: ['button[data-testid="chat_input_send_button"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
+    input: [
+      'textarea[placeholder*="输入"]',
+      'textarea[data-testid="chat_input_input"]',
+      'textarea',
+      'div[contenteditable="true"]',
+      '[role="textbox"]'
+    ],
+    send: [
+      'button[data-testid="chat_input_send_button"]',
+      'button[aria-label*="发送"]',
+      'button[type="submit"]'
+    ],
     messages: ['[data-testid="conversation_container"]', 'main'],
     bubble: ['[data-testid="receive_message"]', '[data-testid="message_item_content"]'],
     streamingFlag: ['button[data-testid="chat_input_stop_button"]', 'button[aria-label*="停止"]'],
@@ -173,7 +244,12 @@ const QWEN: ProviderDescriptor = {
   enabled: true,
   accounts: [],
   adapter: {
-    input: ['textarea[placeholder*="问题"]', 'textarea[placeholder*="输入"]', 'textarea', 'div[contenteditable="true"]'],
+    input: [
+      'textarea[placeholder*="问题"]',
+      'textarea[placeholder*="输入"]',
+      'textarea',
+      'div[contenteditable="true"]'
+    ],
     send: ['button[class*="send"]', 'button[aria-label*="发送"]', 'button[type="submit"]'],
     messages: ['[class*="answerContainer"]', '[class*="chat-window"]', 'main'],
     bubble: ['[class*="answerItem"]', '[class*="tongyi-markdown"]'],
@@ -191,7 +267,12 @@ const ERNIE: ProviderDescriptor = {
   enabled: true,
   accounts: [],
   adapter: {
-    input: ['textarea[placeholder*="和文心"]', 'textarea[placeholder*="输入"]', 'textarea', 'div[contenteditable="true"]'],
+    input: [
+      'textarea[placeholder*="和文心"]',
+      'textarea[placeholder*="输入"]',
+      'textarea',
+      'div[contenteditable="true"]'
+    ],
     send: ['button[class*="send-btn"]', 'button[aria-label*="发送"]', '#sendBtn'],
     messages: ['[class*="answer-item"]', '#app'],
     bubble: ['[class*="answer-item"]', '[class*="markdown-body"]'],
@@ -238,7 +319,17 @@ const GLM: ProviderDescriptor = {
 }
 
 /** 内置平台表：无项目时也要能打开 AI 页面（首次引导注入在里面） */
-export const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [DEEPSEEK, CLAUDE, CHATGPT, GEMINI, DOUBAO, QWEN, ERNIE, KIMI, GLM]
+export const BUILT_IN_PROVIDERS: ProviderDescriptor[] = [
+  DEEPSEEK,
+  CLAUDE,
+  CHATGPT,
+  GEMINI,
+  DOUBAO,
+  QWEN,
+  ERNIE,
+  KIMI,
+  GLM
+]
 
 interface ProviderStoreData {
   providers: ProviderDescriptor[]
@@ -273,7 +364,12 @@ export class ProviderRegistry {
     return this.list().find((p) => p.id === id)
   }
 
-  add(desc: { id: string; name: string; home: string; adapter?: Partial<DomAdapter> }): ProviderDescriptor {
+  add(desc: {
+    id: string
+    name: string
+    home: string
+    adapter?: Partial<DomAdapter>
+  }): ProviderDescriptor {
     if (this.get(desc.id)) throw new Error(`Provider 已存在: ${desc.id}`)
     const provider: ProviderDescriptor = {
       id: desc.id,
@@ -294,7 +390,9 @@ export class ProviderRegistry {
 
   update(id: string, patch: Partial<ProviderDescriptor>): ProviderDescriptor {
     this.store.update((d) => ({
-      providers: d.providers.map((p) => (p.id === id ? { ...p, ...patch, id: p.id, builtIn: p.builtIn } : p))
+      providers: d.providers.map((p) =>
+        p.id === id ? { ...p, ...patch, id: p.id, builtIn: p.builtIn } : p
+      )
     }))
     const p = this.get(id)
     if (!p) throw new Error(`Provider 不存在: ${id}`)

@@ -45,10 +45,7 @@ export function IconFolderColor({ size = 16, className }: P): React.JSX.Element 
         fill="#E9A514"
         d="M1.5 4.2c0-.8.6-1.4 1.4-1.4h2.9l1.3 1.5h6c.8 0 1.4.6 1.4 1.4v6.2c0 .8-.6 1.4-1.4 1.4H2.9c-.8 0-1.4-.6-1.4-1.4V4.2Z"
       />
-      <path
-        fill="#FFC83D"
-        d="M1.5 6.2h13v5.7c0 .8-.6 1.4-1.4 1.4H2.9c-.8 0-1.4-.6-1.4-1.4V6.2Z"
-      />
+      <path fill="#FFC83D" d="M1.5 6.2h13v5.7c0 .8-.6 1.4-1.4 1.4H2.9c-.8 0-1.4-.6-1.4-1.4V6.2Z" />
       <rect x="4" y="8.2" width="7" height="3.8" rx=".8" fill="#2F6BDE" />
       <rect x="4.8" y="7.5" width="5.4" height="1.2" rx=".6" fill="#7FA8FF" />
     </svg>
@@ -438,3 +435,45 @@ export const RAIL_ICONS = {
   audit: IconHistory,
   settings: IconSettings
 } as const
+
+/** 点赞 */
+export function IconThumbUp({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M5 13.5V7l2.4-4.3a1 1 0 0 1 1.8.5V6h3a1 1 0 0 1 1 1.2l-.7 5a1 1 0 0 1-1 1.3H5Z" />
+      <path d="M5 7H3.5A1.5 1.5 0 0 0 2 8.5v3.5a1.5 1.5 0 0 0 1.5 1.5H5" />
+    </svg>
+  )
+}
+
+/** 点踩 */
+export function IconThumbDown({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M11 2.5V9l-2.4 4.3a1 1 0 0 1-1.8-.5V10h-3a1 1 0 0 1-1-1.2l.7-5a1 1 0 0 1 1-1.3H11Z" />
+      <path d="M11 9h1.5A1.5 1.5 0 0 0 14 7.5V4a1.5 1.5 0 0 0-1.5-1.5H11" />
+    </svg>
+  )
+}
+
+/** 朗读 */
+export function IconVolume({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M3 6.2h2.1L8 3.8v8.4L5.1 9.8H3a1 1 0 0 1-1-1V7.2a1 1 0 0 1 1-1Z" />
+      <path d="M10.3 5.7a3.3 3.3 0 0 1 0 4.6" />
+      <path d="M12.2 4.2a5.7 5.7 0 0 1 0 7.6" />
+    </svg>
+  )
+}
+
+/** 分享 */
+export function IconShare({ size, className }: P): React.JSX.Element {
+  return (
+    <svg {...base(size)} className={className}>
+      <path d="M9.5 2H14v4.5" />
+      <path d="M13.8 2.2 8.2 7.8" />
+      <path d="M11.5 9.2V13a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5.5a1 1 0 0 1 1-1h3.8" />
+    </svg>
+  )
+}

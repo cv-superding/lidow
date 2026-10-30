@@ -162,7 +162,12 @@ interface LidowState {
   mcpTools: McpToolInfo[]
   installedPlugins: InstalledPlugin[]
   /** 网页开关状态（深度思考 / 智能搜索），由 overlay 轮询上报 */
-  toggleState: { think: boolean; search: boolean }
+  toggleState: {
+    think: boolean
+    search: boolean
+    thinkAvailable: boolean
+    searchAvailable: boolean
+  }
   marketResults: MarketPlugin[]
   /** 市场搜索失败原因（网络不通等），空态时必须可见而不是无声无息 */
   marketWarning: string
@@ -305,7 +310,7 @@ export const useStore = create<LidowState>((set, get) => ({
   mcpServers: [],
   mcpTools: [],
   installedPlugins: [],
-  toggleState: { think: false, search: false },
+  toggleState: { think: false, search: false, thinkAvailable: false, searchAvailable: false },
   marketResults: [],
   marketWarning: '',
   builtinPlugins: [],
@@ -328,7 +333,13 @@ export const useStore = create<LidowState>((set, get) => ({
         booted: true,
         version: state.version,
         settings: state.settings,
-        pureMode: state.settings.pureMode,
+        // 启动默认回工作台平台选择页，不自动继承上次的纯净模式/管理页
+        pureMode: false,
+        pureView: 'home',
+        view: 'home',
+        tabs: [],
+        activeTabId: null,
+        activeSession: null,
         projects: state.projects,
         activeProjectId: state.activeProjectId
       })
@@ -1198,7 +1209,14 @@ export const useStore = create<LidowState>((set, get) => ({
         break
       }
       case 'toggle-state':
-        set({ toggleState: { think: e.think, search: e.search } })
+        set({
+          toggleState: {
+            think: e.think,
+            search: e.search,
+            thinkAvailable: Boolean(e.thinkAvailable),
+            searchAvailable: Boolean(e.searchAvailable)
+          }
+        })
         break
       case 'ui-toggle-pure': {
         // 复用 setPure 的完整进入逻辑（pureView 归位、绑定/加载当前会话），

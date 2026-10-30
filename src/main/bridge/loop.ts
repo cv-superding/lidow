@@ -53,14 +53,22 @@ export interface LoopDeps {
   /** 工具执行上下文基座：按「当前会话」取，切项目后不能串根目录 */
   toolCtxBase: (sessionId: string) => Omit<ToolContext, 'confirm'>
   /** 在指定项目里新建会话（自动续接用；routed 门面没有 create） */
-  createSession: (projectId: string, providerId: string, parentSessionId: string, accountId?: string) => Session
+  createSession: (
+    projectId: string,
+    providerId: string,
+    parentSessionId: string,
+    accountId?: string
+  ) => Session
   confirm: (sessionId: string, reason: string) => Promise<boolean>
   /** 把消息送进网页（overlay 注入发送），resolve 于发送成功 */
   sendToPage: (sessionId: string, text: string) => Promise<void>
   /** 发送前等网页停止生成（网络层静默）；超时抛错让上层稍后重试 */
   waitPageIdle?: (sessionId: string) => Promise<void>
   /** 等待网页上的 AI 回复完成，返回完整回复文本 */
-  awaitReply: (sessionId: string, onChunk: (partial: string, tps: number) => void) => Promise<string>
+  awaitReply: (
+    sessionId: string,
+    onChunk: (partial: string, tps: number) => void
+  ) => Promise<string>
   /** 中断网页侧生成 */
   interruptPage: (sessionId: string) => void
   /** 放弃当前等待（看门狗判死/超时后清理，避免下一轮报「已有等待中的回复请求」） */
@@ -236,7 +244,12 @@ export class AgentLoop {
     // 压缩通常几秒完成；极端情况下（摘要请求卡住）最多等 90 秒，
     // 之后仍继续启动，交给 collectReply 的等待队列兜底。
     if (this.compacting.has(sessionId)) {
-      this.deps.emit({ type: 'notice', sessionId, level: 'info', message: '上下文压缩中，任务将在压缩完成后自动开始' })
+      this.deps.emit({
+        type: 'notice',
+        sessionId,
+        level: 'info',
+        message: '上下文压缩中，任务将在压缩完成后自动开始'
+      })
     }
     for (let i = 0; i < 450 && this.compacting.has(sessionId); i++) {
       await this.sleep(200)
@@ -245,14 +258,24 @@ export class AgentLoop {
 
   async run(sessionId: string, userText: string): Promise<void> {
     if (this.running.has(sessionId)) {
-      this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '当前会话已有任务在执行，已忽略' })
+      this.deps.emit({
+        type: 'notice',
+        sessionId,
+        level: 'warn',
+        message: '当前会话已有任务在执行，已忽略'
+      })
       return
     }
     // 自动压缩也是一轮网页对话：等它结束再发新一轮，否则两个 awaitReply
     // 抢同一个网页（表现为「已有等待中的回复请求」或把摘要当成任务回复）
     await this.waitWhileCompacting(sessionId)
     if (this.running.has(sessionId)) {
-      this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '当前会话已有任务在执行，已忽略' })
+      this.deps.emit({
+        type: 'notice',
+        sessionId,
+        level: 'warn',
+        message: '当前会话已有任务在执行，已忽略'
+      })
       return
     }
     const state: RunningLoop = { sessionId, stopped: new Set() }
@@ -381,7 +404,10 @@ export class AgentLoop {
         if (!clean) return
         // 深度思考/搜索阶段的第一段有时只回传思考摘要，不能当成最终答复落盘
         const thinkText = think.trim()
-        if (thinkText && (clean === thinkText || (clean.length < thinkText.length && thinkText.includes(clean)))) {
+        if (
+          thinkText &&
+          (clean === thinkText || (clean.length < thinkText.length && thinkText.includes(clean)))
+        ) {
           Logger.info('loop', `忽略被当成回复的思考片段 session=${sessionId}`)
           return
         }
@@ -395,13 +421,22 @@ export class AgentLoop {
           return
         }
         // 上一轮只落了思考片段/前半段：最终回答到了就替换，而不是再插一条
-        if (lastAssistant && !lastAssistant.toolResults?.length && Date.now() - lastAssistant.ts < 5 * 60_000) {
+        if (
+          lastAssistant &&
+          !lastAssistant.toolResults?.length &&
+          Date.now() - lastAssistant.ts < 5 * 60_000
+        ) {
           const lastText = lastAssistant.text.trim()
           const lastThink = (lastAssistant.think || '').trim()
           const lastIsThinking = Boolean(
-            lastText && lastThink && (lastText === lastThink || (lastText.length < lastThink.length && lastThink.includes(lastText)))
+            lastText &&
+            lastThink &&
+            (lastText === lastThink ||
+              (lastText.length < lastThink.length && lastThink.includes(lastText)))
           )
-          const extendsLast = Boolean(lastText && clean.startsWith(lastText) && clean.length > lastText.length)
+          const extendsLast = Boolean(
+            lastText && clean.startsWith(lastText) && clean.length > lastText.length
+          )
           if (lastIsThinking || extendsLast) {
             this.deps.store.patchTurn(sessionId, lastAssistant.id, {
               text: clean,
@@ -467,7 +502,9 @@ export class AgentLoop {
       await this.toolLoop(
         sessionId,
         state,
-        formatObservations(results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error })))
+        formatObservations(
+          results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error }))
+        )
       )
     } catch (err) {
       this.handleLoopError(state.sessionId, err)
@@ -519,7 +556,10 @@ export class AgentLoop {
       if (lt === text) return
       // 上一轮只落了思考片段（text 是 think 的前缀）：优先用最终回答修正
       const think = (last.think || '').trim()
-      if (think && (lt === think || (lt.length > 0 && lt.length < think.length && think.includes(lt)))) {
+      if (
+        think &&
+        (lt === think || (lt.length > 0 && lt.length < think.length && think.includes(lt)))
+      ) {
         store.patchTurn(sessionId, last.id, { text, ts: Date.now(), status: 'done' })
         this.deps.emit({ type: 'session-updated', sessionId })
         Logger.info('loop', `用页面最终回答修正思考片段 session=${sessionId}`)
@@ -541,7 +581,13 @@ export class AgentLoop {
       const textNorm = normalizeExternalText(text)
       if (ltNorm.length >= 80 && (textNorm.includes(ltNorm) || ltNorm.includes(textNorm))) return
       // 同一回答已经在更早的轮次里出现过
-      if (turns.some((t) => t.role === 'assistant' && t.text.includes(text) && t.text.trim().length >= text.length)) return
+      if (
+        turns.some(
+          (t) =>
+            t.role === 'assistant' && t.text.includes(text) && t.text.trim().length >= text.length
+        )
+      )
+        return
     }
     store.appendTurn(sessionId, {
       id: `turn_${nanoid(8)}`,
@@ -586,14 +632,21 @@ export class AgentLoop {
       this.deps.emit({ type: 'session-updated', sessionId })
     } catch (e) {
       // 会话可能已被用户删除：错误轮次写不进去不能再抛（否则变成未处理 rejection）
-      Logger.warn('loop', `无法记录错误轮次（会话可能已删除）：${e instanceof Error ? e.message : String(e)}`)
+      Logger.warn(
+        'loop',
+        `无法记录错误轮次（会话可能已删除）：${e instanceof Error ? e.message : String(e)}`
+      )
     }
   }
 
   /**
    * 工具循环主体（发送 → 收集 → 解析 → 执行 → 回传）。
    */
-  private async toolLoop(sessionId: string, state: RunningLoop, initialPrompt: string): Promise<void> {
+  private async toolLoop(
+    sessionId: string,
+    state: RunningLoop,
+    initialPrompt: string
+  ): Promise<void> {
     const store = this.deps.store
     let prompt = initialPrompt
     let wildHintCount = 0
@@ -624,12 +677,22 @@ export class AgentLoop {
         const mod = this.deps.securityMod()
         const outcome = await attemptRewrite(
           reply,
-          { mode: mod.mode, ctfInject: mod.ctfInject, maxRewrites: mod.maxRewrites, rewriteApi: mod.rewriteApi },
+          {
+            mode: mod.mode,
+            ctfInject: mod.ctfInject,
+            maxRewrites: mod.maxRewrites,
+            rewriteApi: mod.rewriteApi
+          },
           rewriteCount
         )
         if (!outcome.followUp) {
           if (outcome.exhausted) {
-            this.deps.emit({ type: 'notice', sessionId: activeSid, level: 'warn', message: '拒绝改写已达上限，按原回复继续' })
+            this.deps.emit({
+              type: 'notice',
+              sessionId: activeSid,
+              level: 'warn',
+              message: '拒绝改写已达上限，按原回复继续'
+            })
           }
           break
         }
@@ -693,15 +756,22 @@ export class AgentLoop {
           if (wildHintCount++ >= MAX_WILD_HINTS) {
             Logger.warn('loop', `格式纠偏已达上限 ${MAX_WILD_HINTS} 次，放弃`)
             this.deps.emit({
-              type: 'notice', sessionId: activeSid, level: 'warn',
+              type: 'notice',
+              sessionId: activeSid,
+              level: 'warn',
               message: 'AI 多次使用了不支持的调用格式，已停止自动纠正，请换个说法重新提问'
             })
             end = 'format-limit'
             break
           }
-          Logger.info('loop', `回复含野生工具格式，发纠偏提示（${wildHintCount}/${MAX_WILD_HINTS}）`)
+          Logger.info(
+            'loop',
+            `回复含野生工具格式，发纠偏提示（${wildHintCount}/${MAX_WILD_HINTS}）`
+          )
           this.deps.emit({
-            type: 'notice', sessionId: activeSid, level: 'info',
+            type: 'notice',
+            sessionId: activeSid,
+            level: 'info',
             message: 'AI 用了不支持的调用格式，已自动纠正并重试'
           })
           prompt = FORMAT_FIX_PROMPT + this.lastUserTextOf(activeSid)
@@ -778,7 +848,11 @@ export class AgentLoop {
       }
 
       // 3. 执行工具（带确认门 + 网页内执行遮罩 + 可中止）
-      this.deps.toolMask?.(activeSid, true, `工具执行中（${parsed.calls.length} 个，第 ${round + 1} 轮）…`)
+      this.deps.toolMask?.(
+        activeSid,
+        true,
+        `工具执行中（${parsed.calls.length} 个，第 ${round + 1} 轮）…`
+      )
       const abort = new AbortController()
       state.abort = abort
       const results: ToolResult[] = []
@@ -1002,7 +1076,9 @@ export class AgentLoop {
           // 新会话是新的网页对话，必须带上系统提示词，否则续接后的首轮
           // 没有工具协议/工作目录，AI 会答“我没有文件访问权限”。
           const sys = this.deps.systemPromptFor(next)
-          cur = [sys, summary, handoff, this.lastUserTextOf(prev)].filter(Boolean).join('\n\n---\n\n')
+          cur = [sys, summary, handoff, this.lastUserTextOf(prev)]
+            .filter(Boolean)
+            .join('\n\n---\n\n')
           if (sys) this.deps.store.update(next, (s) => ({ ...s, systemPromptSent: true }))
           // 交接提示成了这一轮的「任务原文」：后续发送类失败要重发的是它
           originalPrompt = cur
@@ -1026,7 +1102,10 @@ export class AgentLoop {
         }
         // 指数退避：delayMin * 2^(n-1)，封顶 delayMax；429 用专用长等待
         const raw = backoffDelay(used, retryCfg, is429)
-        Logger.info('loop', `${is429 ? '429 限流' : '失败'}，第 ${used}/${max} 次重试，等待 ${Math.round(raw / 1000)}s：${msg}`)
+        Logger.info(
+          'loop',
+          `${is429 ? '429 限流' : '失败'}，第 ${used}/${max} 次重试，等待 ${Math.round(raw / 1000)}s：${msg}`
+        )
         this.deps.emit({
           type: 'notice',
           sessionId: sid,
@@ -1064,7 +1143,13 @@ export class AgentLoop {
     let latestTps = 0
     const flushChunk = (): void => {
       pendingFlush = null
-      this.deps.emit({ type: 'turn-chunk', sessionId, turnId: 'streaming', text: latestPartial, tps: latestTps })
+      this.deps.emit({
+        type: 'turn-chunk',
+        sessionId,
+        turnId: 'streaming',
+        text: latestPartial,
+        tps: latestTps
+      })
     }
 
     // 看门狗需要能主动判死本轮：自己造一个 reject 句柄，与等待回复的 promise 竞速。
@@ -1096,7 +1181,10 @@ export class AgentLoop {
           return
         }
         nudges++
-        Logger.info('loop', `看门狗：静默 ${wd.idleMs}ms，发「${wd.prompt}」催继续（第 ${nudges} 次）`)
+        Logger.info(
+          'loop',
+          `看门狗：静默 ${wd.idleMs}ms，发「${wd.prompt}」催继续（第 ${nudges} 次）`
+        )
         this.deps.emit({
           type: 'notice',
           sessionId,
@@ -1176,8 +1264,16 @@ export class AgentLoop {
       if (!session) return null
       const summary = this.lastSummaryOf(sessionId)
 
-      const next = this.deps.createSession(session.projectId, session.providerId, session.id, session.accountId)
-      this.deps.store.update(next.id, (s) => ({ ...s, title: `${session.title}（续）`.slice(0, 40) }))
+      const next = this.deps.createSession(
+        session.projectId,
+        session.providerId,
+        session.id,
+        session.accountId
+      )
+      this.deps.store.update(next.id, (s) => ({
+        ...s,
+        title: `${session.title}（续）`.slice(0, 40)
+      }))
       // 摘要必须落进新会话：调用方用 lastSummaryOf(next) 组装续接 prompt，
       // 不落盘的话新会话的第一句话会丢掉全部压缩上下文。
       if (summary) {
@@ -1220,7 +1316,11 @@ export class AgentLoop {
     return ''
   }
 
-  private async executeCall(sessionId: string, call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
+  private async executeCall(
+    sessionId: string,
+    call: ToolCall,
+    signal?: AbortSignal
+  ): Promise<ToolResult> {
     const started = Date.now()
     const summary = toolSummary(call)
     const def = this.deps.tools.get(call.name)
@@ -1307,7 +1407,12 @@ export class AgentLoop {
   async compactNow(sessionId: string, auto = false, force = false): Promise<void> {
     // 任务执行中手动压缩会与循环的 awaitReply 抢同一网页，直接拒绝
     if (!force && this.running.has(sessionId)) {
-      this.deps.emit({ type: 'notice', sessionId, level: 'warn', message: '任务执行中，暂时不能压缩上下文' })
+      this.deps.emit({
+        type: 'notice',
+        sessionId,
+        level: 'warn',
+        message: '任务执行中，暂时不能压缩上下文'
+      })
       return
     }
     const inflight = this.compactRuns.get(sessionId)
@@ -1357,9 +1462,14 @@ export class AgentLoop {
     // 让 AI 写摘要；失败则回退本地摘要（保证压缩这件事一定完成，不卡住用户）
     let summary = ''
     try {
-      summary = (await this.collectReply(sessionId, COMPACT_INSTRUCTION + '\n\n' + transcript)).text.trim()
+      summary = (
+        await this.collectReply(sessionId, COMPACT_INSTRUCTION + '\n\n' + transcript)
+      ).text.trim()
     } catch (e) {
-      Logger.warn('loop', `AI 摘要失败，回退本地摘要：${e instanceof Error ? e.message : String(e)}`)
+      Logger.warn(
+        'loop',
+        `AI 摘要失败，回退本地摘要：${e instanceof Error ? e.message : String(e)}`
+      )
     }
     if (!summary) summary = this.buildFallbackSummary(oldTurns)
 
@@ -1381,7 +1491,10 @@ ${summary}`,
         ...s.turns.slice(-keep)
       ]
     }))
-    Logger.info('loop', `已压缩会话 ${sessionId}：折叠 ${oldTurns.length} 轮（摘要 ${summary.length} 字）`)
+    Logger.info(
+      'loop',
+      `已压缩会话 ${sessionId}：折叠 ${oldTurns.length} 轮（摘要 ${summary.length} 字）`
+    )
     this.deps.emit({
       type: 'notice',
       sessionId,

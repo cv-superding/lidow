@@ -14,9 +14,10 @@ import {
   IconHistory,
   IconFile,
   IconChevronDown,
-  IconFolder
+  IconFolder,
+  IconEdit,
+  IconTrash
 } from './icons'
-
 
 /** 相对时间：刚刚 / N 分 / N 小时 / 昨天 / N 天 / 日期 */
 function relTime(ts: number): string {
@@ -72,7 +73,10 @@ function ProjectMenu(): React.JSX.Element {
           <span className="block truncate text-[12.5px] font-semibold leading-[1.25]">
             {active?.name ?? '未打开项目'}
           </span>
-          <span className="block truncate text-[10.5px] leading-[1.2]" style={{ color: 'var(--text-hint)' }}>
+          <span
+            className="block truncate text-[10.5px] leading-[1.2]"
+            style={{ color: 'var(--text-hint)' }}
+          >
             {active?.root ?? '选择一个工作目录'}
           </span>
         </span>
@@ -84,7 +88,11 @@ function ProjectMenu(): React.JSX.Element {
       {open && (
         <div
           className="anim-pop absolute left-0 top-full z-[70] mt-1 w-[268px] overflow-hidden rounded-[var(--r-lg)] p-1"
-          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-menu)' }}
+          style={{
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-menu)'
+          }}
         >
           <div className="text-label px-2 py-1.5">已打开项目</div>
           {projects.length === 0 && (
@@ -111,7 +119,10 @@ function ProjectMenu(): React.JSX.Element {
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[12px] font-medium">{p.name}</span>
-                  <span className="block truncate font-mono text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                  <span
+                    className="block truncate font-mono text-[10px]"
+                    style={{ color: 'var(--text-hint)' }}
+                  >
                     {p.root}
                   </span>
                 </span>
@@ -161,6 +172,35 @@ export function PureModeShell({
   const sidebarWidth = useStore((s) => s.sidebarWidth)
   const setSidebarWidth = useStore((s) => s.setSidebarWidth)
   const requestSessionDelete = useStore((s) => s.requestSessionDelete)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameText, setRenameText] = useState('')
+  const renameCancelled = useRef(false)
+  const beginRename = (s: { id: string; title: string }): void => {
+    renameCancelled.current = false
+    setRenamingId(s.id)
+    setRenameText(s.title)
+  }
+  const commitRename = async (s: { id: string; title: string }): Promise<void> => {
+    if (renameCancelled.current) {
+      setRenamingId(null)
+      return
+    }
+    const title = renameText.trim()
+    setRenamingId(null)
+    if (!title || title === s.title) return
+    try {
+      await api.renameSession(s.id, title)
+      await useStore.getState().refreshSessions()
+      const active = useStore.getState().activeSession
+      if (active?.id === s.id) {
+        useStore.setState({ activeSession: { ...active, title, titleLocked: true } })
+      }
+    } catch (e) {
+      useStore
+        .getState()
+        .notice(`重命名失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    }
+  }
   const activeTab = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId))
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
@@ -194,7 +234,8 @@ export function PureModeShell({
   const switchSession = async (id: string): Promise<void> => {
     await useStore.getState().openSession(id)
     const session = useStore.getState().activeSession
-    if (session) await useStore.getState().openProviderTab(session.providerId, session.id, session.accountId)
+    if (session)
+      await useStore.getState().openProviderTab(session.providerId, session.id, session.accountId)
   }
 
   const newSession = async (): Promise<void> => {
@@ -206,7 +247,8 @@ export function PureModeShell({
     setPureView('home')
     await useStore.getState().createSession(pid)
     const created = useStore.getState().activeSession
-    if (created) await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
+    if (created)
+      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
   }
 
   if (!sidebarOpen) {
@@ -214,7 +256,11 @@ export function PureModeShell({
       <button
         title="展开侧栏"
         className="flex w-9 shrink-0 items-center justify-center border-r transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-        style={{ borderColor: 'var(--border)', background: 'var(--sidebar)', color: 'var(--text-hint)' }}
+        style={{
+          borderColor: 'var(--border)',
+          background: 'var(--sidebar)',
+          color: 'var(--text-hint)'
+        }}
         onClick={() => setSidebarOpen(true)}
       >
         <IconChevronRight size={14} />
@@ -228,7 +274,12 @@ export function PureModeShell({
   return (
     <div
       className="anim-fade relative flex shrink-0 flex-col border-r"
-      style={{ width: sidebarWidth, borderColor: 'var(--border)', background: 'var(--sidebar)', zIndex: 40 }}
+      style={{
+        width: sidebarWidth,
+        borderColor: 'var(--border)',
+        background: 'var(--sidebar)',
+        zIndex: 40
+      }}
     >
       <ResizeHandle width={sidebarWidth} onResize={setSidebarWidth} />
       {/* ① 项目头 */}
@@ -244,25 +295,26 @@ export function PureModeShell({
       </div>
 
       <div className="px-2 pb-1">
-        {pureView !== 'home' && (
+        {pureView !== 'home' ? (
           <button
-            className={`${navBtn} mb-0.5`}
-            style={{ background: 'var(--bg-hover)', color: 'var(--text)' }}
+            className="btn btn-primary mb-1.5 h-[34px] w-full justify-start gap-2 rounded-[var(--r-md)] px-2.5 text-[12.5px]"
+            style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.16), var(--shadow-sm)' }}
             onClick={() => setPureView('home')}
           >
             <IconChevronLeft size={14} />
             <span className="flex-1 text-left">返回对话</span>
           </button>
+        ) : (
+          <button
+            className="btn btn-primary mb-1.5 h-[34px] w-full justify-start gap-2 rounded-[var(--r-md)] px-2.5 text-[12.5px]"
+            style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.16), var(--shadow-sm)' }}
+            onClick={() => void newSession()}
+          >
+            <IconPlus size={15} />
+            <span className="flex-1 text-left">新建任务</span>
+            <span className="text-[10.5px] font-normal opacity-70">Ctrl N</span>
+          </button>
         )}
-        <button
-          className="btn btn-primary mb-1.5 h-[34px] w-full justify-start gap-2 rounded-[var(--r-md)] px-2.5 text-[12.5px]"
-          style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,.16), var(--shadow-sm)' }}
-          onClick={() => void newSession()}
-        >
-          <IconPlus size={15} />
-          <span className="flex-1 text-left">新建任务</span>
-          <span className="text-[10.5px] font-normal opacity-70">Ctrl N</span>
-        </button>
         {!web && (
           <>
             <button
@@ -316,15 +368,13 @@ export function PureModeShell({
             title="清理空会话（新建后未发送的）"
             onClick={() => {
               if (!project) return
-              void api
-                .cleanupEmptySessions(project.id, activeSession?.id)
-                .then((n) => {
-                  void useStore.getState().refreshSessions()
-                  if (n > 0) useStore.getState().notice(`已清理 ${n} 个空会话`)
-                })
+              void api.cleanupEmptySessions(project.id, activeSession?.id).then((n) => {
+                void useStore.getState().refreshSessions()
+                useStore.getState().notice(n > 0 ? `已清理 ${n} 个空会话` : '没有需要清理的空会话')
+              })
             }}
           >
-            <IconClose size={12} />
+            <IconTrash size={12} />
           </button>
         </div>
       </div>
@@ -372,67 +422,109 @@ export function PureModeShell({
                 </span>
               </div>
               {rows.map((s) => {
-          const active = activeSession?.id === s.id
-          return (
-            <div
-              key={s.id}
-              className="group flex h-[32px] cursor-pointer items-center gap-2 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[110ms]"
-              style={{
-                background: active ? 'var(--surface)' : 'transparent',
-                color: active ? 'var(--text)' : 'var(--text-dim)',
-                fontWeight: active ? 500 : 400,
-                boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
-              }}
-              onMouseEnter={(e) => {
-                if (!active) e.currentTarget.style.background = 'var(--bg-hover)'
-              }}
-              onMouseLeave={(e) => {
-                if (!active) e.currentTarget.style.background = 'transparent'
-              }}
-              onClick={() => void switchSession(s.id)}
-            >
-              {/* 平台首字徽标：扫读时一眼分辨会话归属（设计惯例：列表行 = 标识 + 标题 + 时间） */}
-              <span
-                className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] text-[8.5px] font-bold"
-                style={{
-                  background: active ? 'var(--accent)' : 'var(--accent-soft)',
-                  color: active ? 'var(--on-accent)' : 'var(--accent)'
-                }}
-              >
-                {(providers.find((x) => x.id === s.providerId)?.name ?? '?').slice(0, 1)}
-              </span>
-              <span className="min-w-0 flex-1 truncate">{s.title}</span>
-              {/* 时间与删除按钮占同一格：用透明度切换而不是 display 切换，
+                const active = activeSession?.id === s.id
+                return (
+                  <div
+                    key={s.id}
+                    className="group flex h-[32px] cursor-pointer items-center gap-2 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[110ms]"
+                    style={{
+                      background: active ? 'var(--surface)' : 'transparent',
+                      color: active ? 'var(--text)' : 'var(--text-dim)',
+                      fontWeight: active ? 500 : 400,
+                      boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!active) e.currentTarget.style.background = 'var(--bg-hover)'
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!active) e.currentTarget.style.background = 'transparent'
+                    }}
+                    onClick={() => void switchSession(s.id)}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation()
+                      beginRename(s)
+                    }}
+                  >
+                    {/* 平台首字徽标：扫读时一眼分辨会话归属（设计惯例：列表行 = 标识 + 标题 + 时间） */}
+                    <span
+                      className="flex h-[15px] w-[15px] shrink-0 items-center justify-center rounded-[4px] text-[8.5px] font-bold"
+                      style={{
+                        background: active ? 'var(--accent)' : 'var(--accent-soft)',
+                        color: active ? 'var(--on-accent)' : 'var(--accent)'
+                      }}
+                    >
+                      {(providers.find((x) => x.id === s.providerId)?.name ?? '?').slice(0, 1)}
+                    </span>
+                    {renamingId === s.id ? (
+                      <input
+                        autoFocus
+                        value={renameText}
+                        onChange={(e) => setRenameText(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onDoubleClick={(e) => e.stopPropagation()}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onKeyDown={(e) => {
+                          e.stopPropagation()
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            void commitRename(s)
+                          } else if (e.key === 'Escape') {
+                            renameCancelled.current = true
+                            setRenamingId(null)
+                          }
+                        }}
+                        onBlur={() => void commitRename(s)}
+                        className="min-w-0 flex-1 rounded-[var(--r-sm)] bg-transparent px-1 text-[12px] outline-none"
+                        style={{ border: '1px solid var(--accent-ring)', color: 'var(--text)' }}
+                      />
+                    ) : (
+                      <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                    )}
+                    {/* 时间与删除按钮占同一格：用透明度切换而不是 display 切换，
                   否则 hover 时右侧宽度变化会让标题重新截断（视觉上"整行跳一下"） */}
-              <span className="relative flex h-4 w-[34px] shrink-0 items-center justify-end">
-                <span
-                  className="absolute right-0 text-[10px] tabular-nums transition-opacity duration-[130ms] group-hover:opacity-0"
-                  style={{ color: 'var(--text-hint)' }}
-                >
-                  {relTime(s.updatedAt)}
-                </span>
-                <button
-                  title="删除会话"
-                  className="absolute right-0 flex items-center justify-center rounded p-0.5 opacity-0 transition-opacity duration-[130ms] hover:bg-[var(--bg-active)] group-hover:opacity-100"
-                  style={{ color: 'var(--danger)' }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    requestSessionDelete(s)
-                  }}
-                >
-                  <IconClose size={11} />
-                </button>
-              </span>
-            </div>
-          )
-        })}
+                    <span className="relative flex h-4 w-[52px] shrink-0 items-center justify-end">
+                      <span
+                        className="absolute right-0 text-[10px] tabular-nums transition-opacity duration-[130ms] group-hover:opacity-0"
+                        style={{ color: 'var(--text-hint)' }}
+                      >
+                        {relTime(s.updatedAt)}
+                      </span>
+                      <button
+                        title="重命名会话"
+                        className="absolute right-[18px] flex items-center justify-center rounded p-0.5 opacity-0 transition-opacity duration-[130ms] hover:bg-[var(--bg-active)] group-hover:opacity-100"
+                        style={{ color: 'var(--text-hint)' }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          beginRename(s)
+                        }}
+                      >
+                        <IconEdit size={11} />
+                      </button>
+                      <button
+                        title="删除会话"
+                        className="absolute right-0 flex items-center justify-center rounded p-0.5 opacity-0 transition-opacity duration-[130ms] hover:bg-[var(--bg-active)] group-hover:opacity-100"
+                        style={{ color: 'var(--danger)' }}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          requestSessionDelete(s)
+                        }}
+                      >
+                        <IconClose size={11} />
+                      </button>
+                    </span>
+                  </div>
+                )
+              })}
             </div>
           )
         })}
       </div>
 
       {/* ⑤ 底部用户区 */}
-      <div className="flex items-center gap-1.5 border-t px-2 py-2" style={{ borderColor: 'var(--border)' }}>
+      <div
+        className="flex items-center gap-1.5 border-t px-2 py-2"
+        style={{ borderColor: 'var(--border)' }}
+      >
         <span
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10.5px] font-semibold"
           style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
@@ -441,7 +533,10 @@ export function PureModeShell({
         </span>
         {web ? (
           <>
-            <span className="min-w-0 flex-1 truncate px-1.5 text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
+            <span
+              className="min-w-0 flex-1 truncate px-1.5 text-[11.5px]"
+              style={{ color: 'var(--text-dim)' }}
+            >
               Lidow Web
             </span>
             <button className="btn btn-sm btn-outline" onClick={onLogin}>
@@ -458,7 +553,11 @@ export function PureModeShell({
             >
               退出纯净模式
             </button>
-            <button className="btn btn-ghost btn-icon btn-sm" title="设置" onClick={() => setPureView('settings')}>
+            <button
+              className="btn btn-ghost btn-icon btn-sm"
+              title="设置"
+              onClick={() => setPureView('settings')}
+            >
               <IconSettings size={14} />
             </button>
             <button

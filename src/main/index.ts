@@ -45,10 +45,10 @@ app.setPath(
 app.commandLine.appendSwitch('disable-features', 'UserAgentClientHint')
 
 const APP_ID = 'ai.lidow.app'
-// 开发模式必须用独立 AUMID：与正式版共用时，开发窗口一旦被固定到开始菜单/任务栏，
-// 资源管理器会把 ai.lidow.app 解析到 electron.exe，正式版任务栏就永远是 Electron 原子图标。
-const RUN_APP_ID = app.isPackaged ? APP_ID : `${APP_ID}.dev`
-if (process.platform === 'win32') app.setAppUserModelId(RUN_APP_ID)
+// 开发模式不设 AUMID：未注册的 AUMID 会让 Win11 任务栏回落到 electron.exe 的原子图标；
+// 不设时任务栏才会用窗口自己的 WM_SETICON 图标。正式版由 NSIS 快捷方式注册 ai.lidow.app。
+const RUN_APP_ID = APP_ID
+if (process.platform === 'win32' && app.isPackaged) app.setAppUserModelId(RUN_APP_ID)
 
 const ctx = new AppContext()
 
@@ -253,18 +253,20 @@ function createWindow(host = false): BrowserWindow {
     }
   })
 
-  // Windows 任务栏不总是跟随 BrowserWindow.icon（开发模式尤其会落到 electron.exe 默认图标）。
-  // 显式 setIcon + setAppDetails：图标路径必须存在且为 Windows 可读的 ico。
+  // 任务栏图标：显式 setIcon 设置窗口图标（WM_SETICON），供未注册 AUMID 的开发模式使用。
+  // setAppDetails 只给正式版：它会把窗口固定到 ai.lidow.app，由 NSIS 快捷方式解析图标。
   if (process.platform === 'win32') {
     const image = nativeImage.createFromPath(icoIconPath)
     if (!image.isEmpty()) win.setIcon(image)
-    win.setAppDetails({
-      appId: RUN_APP_ID,
-      appIconPath: icoIconPath,
-      appIconIndex: 0,
-      relaunchCommand: process.execPath,
-      relaunchDisplayName: 'Lidow'
-    })
+    if (app.isPackaged) {
+      win.setAppDetails({
+        appId: RUN_APP_ID,
+        appIconPath: icoIconPath,
+        appIconIndex: 0,
+        relaunchCommand: process.execPath,
+        relaunchDisplayName: 'Lidow'
+      })
+    }
   }
 
   const devUrl = process.env.ELECTRON_RENDERER_URL

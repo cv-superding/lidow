@@ -10,6 +10,7 @@ declare module 'react' {
         partition?: string
         preload?: string
         allowpopups?: string | boolean
+        webpreferences?: string
         src?: string
       }
     }
