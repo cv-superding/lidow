@@ -28,6 +28,8 @@ export interface ProviderHookSpec {
    * 这样即使用户直接在网页输入框里发送，AI 也能拿到工具协议与工作目录。
    */
   promptField?: string
+  /** 请求体里的对话 id 字段（如 chat_session_id）：用于判断该网页对话是否已注入过系统提示词 */
+  sessionField?: string
 }
 
 /** DeepSeek 补齐帧：p/v 增量补丁 + response/fragments 结构 */
@@ -152,19 +154,29 @@ function deepseekExtract(frame: unknown, ctx: ExtractCtx = { fragmentTypes: [], 
 }
 
 /** 生成注入主世界的自包含 IIFE 源码 */
-export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string {
+export function buildHookSource(spec: ProviderHookSpec, sysPrompt = '', repeatSysPrompt = false): string {
   // 内联进模板前先做一次 JS 字符串字面量转义（含换行/引号/反斜杠）
   const sysLiteral = JSON.stringify(sysPrompt)
   const promptField = spec.promptField ? JSON.stringify(spec.promptField) : 'null'
+  const sessionField = spec.sessionField ? JSON.stringify(spec.sessionField) : 'null'
+  const repeatLiteral = repeatSysPrompt ? 'true' : 'false'
   return String.raw`(() => {
   var MARKER = '__lidowHookInstalled__';
   var SYS_PROMPT = ${sysLiteral};
   var PROMPT_FIELD = ${promptField};
-  // 已装过：只刷新系统提示词（会话切换/项目切换后旧提示词会过期），
-  // 其余 hook 保持不动，避免重复包一层 fetch/XHR。
-  if (window[MARKER]) { window['__lidowSysPrompt__'] = SYS_PROMPT; return; }
+  var SESSION_FIELD = ${sessionField};
+  var REPEAT_SYS_PROMPT = ${repeatLiteral};
+  // 已装过：刷新配置后直接返回，避免重复包一层 fetch/XHR。
+  if (window[MARKER]) {
+    window['__lidowSysPrompt__'] = SYS_PROMPT;
+    window['__lidowRepeatSysPrompt__'] = REPEAT_SYS_PROMPT;
+    window['__lidowSessionField__'] = SESSION_FIELD;
+    return;
+  }
   window[MARKER] = true;
   window['__lidowSysPrompt__'] = SYS_PROMPT;
+  window['__lidowRepeatSysPrompt__'] = REPEAT_SYS_PROMPT;
+  window['__lidowSessionField__'] = SESSION_FIELD;
 
   var isCompletion = ${spec.isCompletion};
   var isStopStream = ${spec.isStopStream ?? 'function () { return false; }'};
@@ -178,10 +190,85 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
   // 已被 lidow 自己注入过的 prompt 打标，避免同一请求重复拼接
   var INJECT_TAG = '__lidow_injected__';
 
+  // 系统提示词注入状态：同一网页对话只注入一次（设置里显式开启“每轮注入”除外）。
+  // 标记按对话 id 存在 sessionStorage，跨页面重载仍有效。
+  var SYS_MARK_PREFIX = 'lidow:sysSent:';
+  var SYS_PENDING_KEY = 'lidow:sysSent:pending';
+  var newChatInjected = false;
+
+  function currentPath() {
+    try { return typeof location !== 'undefined' ? String(location.pathname) : '' } catch (e) { return '' }
+  }
+  function isChatUrl(path) {
+    return /\/chat\/s\/[a-f0-9-]+/i.test(path);
+  }
+  function looksLikeNewChat() {
+    return !isChatUrl(currentPath());
+  }
+  function conversationKey(obj) {
+    var field = window['__lidowSessionField__'];
+    var sid = field && obj ? obj[field] : null;
+    if (sid !== undefined && sid !== null && String(sid)) return 'sid:' + String(sid);
+    var m = /\/chat\/s\/([a-f0-9-]+)/i.exec(currentPath());
+    if (m) return 'sid:' + m[1];
+    return 'new';
+  }
+  function hasSysMark(key) {
+    try { return sessionStorage.getItem(SYS_MARK_PREFIX + key) === '1' } catch (e) { return false }
+  }
+  function setSysMark(key) {
+    try { sessionStorage.setItem(SYS_MARK_PREFIX + key, '1') } catch (e) {}
+  }
+  function hasPending() {
+    try { return sessionStorage.getItem(SYS_PENDING_KEY) === '1' } catch (e) { return false }
+  }
+  function setPending() {
+    try { sessionStorage.setItem(SYS_PENDING_KEY, '1') } catch (e) {}
+  }
+  function clearPending() {
+    try { sessionStorage.removeItem(SYS_PENDING_KEY) } catch (e) {}
+  }
+  /** 记录当前对话已经有系统提示词：已有 chat id 直接记；新对话等拿到 id 后转移 */
+  function markSysSent(obj) {
+    var key = conversationKey(obj);
+    if (key.indexOf('sid:') === 0) {
+      setSysMark(key);
+      newChatInjected = false;
+      return;
+    }
+    newChatInjected = true;
+    setPending();
+  }
+  // 进入新对话入口（URL 不是某个 chat id）时，上一段 pending 不能带到新对话
+  try {
+    if (typeof location !== 'undefined' && looksLikeNewChat()) clearPending();
+    if (typeof setInterval === 'function' && typeof location !== 'undefined') {
+      var lastHookPath = currentPath();
+      setInterval(function () {
+        var p = currentPath();
+        if (p === lastHookPath) return;
+        var wasChat = isChatUrl(lastHookPath);
+        lastHookPath = p;
+        if (!isChatUrl(p)) {
+          clearPending();
+          newChatInjected = false;
+        } else if (!wasChat && newChatInjected) {
+          // 新对话刚拿到 chat id：保留 pending，下一条网页消息转移标记
+        } else {
+          // 从别的聊天/页面进入已有对话：不能把上一段的 pending 记到它头上
+          clearPending();
+          newChatInjected = false;
+        }
+      }, 800);
+    }
+  } catch (e) {}
+
   /**
    * 把系统提示词拼进请求体的用户输入字段。
-   * 目的：用户直接在网页输入框里发消息时，AI 也能拿到工具协议与工作目录，
-   * 而不是回一句「我没有文件系统访问权限」。
+   * 关键规则：
+   *  - Lidow 自己发送的消息由 loop 按设置决定是否带系统提示词，hook 绝不能再补；
+   *    否则工具轮次、后续用户消息都会重复一整段系统提示词（实测）。
+   *  - 用户直接在网页输入框发送时：默认每个对话只注入一次；设置开启“每轮注入”才每次拼。
    *
    * 顺带把「用户在网页里亲手发的消息」上报给 Lidow（纯净模式要同步这条
    * 用户消息）。经 lidow 自己发送的消息由 preload 打了 outgoing 标记，
@@ -202,10 +289,29 @@ export function buildHookSource(spec: ProviderHookSpec, sysPrompt = ''): string 
     var sys = window['__lidowSysPrompt__'] || SYS_PROMPT;
     if (!sys) return body;
     if (cur.indexOf(INJECT_TAG) === 0) return body;
-    // 经 lidow 自己发送的消息已经带了系统提示词（loop 里拼的），别再叠一层。
-    // 用「开头就是该系统提示词」判断：sys 本身可能很长，取前 40 字符会撞车。
-    if (cur.indexOf(sys) === 0) return body;
+    // 本轮已经带系统提示词（loop 首轮或此前注入过）：记下该对话，网页直发时不再重复
+    if (cur.indexOf(sys) === 0) {
+      markSysSent(obj);
+      return body;
+    }
+    if (fromLidow) return body;
+    if (window['__lidowRepeatSysPrompt__']) {
+      obj[PROMPT_FIELD] = sys + '\n\n---\n\n# 用户任务\n\n' + cur;
+      markSysSent(obj);
+      return JSON.stringify(obj);
+    }
+    var key = conversationKey(obj);
+    if (hasSysMark(key)) return body;
+    if (key.indexOf('sid:') === 0 && hasPending()) {
+      // 新对话刚拿到 chat id：第一条已带过系统提示词，这一条只转移标记
+      setSysMark(key);
+      clearPending();
+      newChatInjected = false;
+      return body;
+    }
+    if (key === 'new' && newChatInjected) return body;
     obj[PROMPT_FIELD] = sys + '\n\n---\n\n# 用户任务\n\n' + cur;
+    markSysSent(obj);
     return JSON.stringify(obj);
   }
 
@@ -522,7 +628,8 @@ export const DEEPSEEK_HOOK: ProviderHookSpec = {
   isStopStream: (url, method) => method.toUpperCase() === 'POST' && url.indexOf('/api/v0/chat/stop_stream') !== -1,
   extract: deepseekExtract,
   captureMeta: () => null,
-  promptField: 'prompt'
+  promptField: 'prompt',
+  sessionField: 'chat_session_id'
 }
 
 /** ChatGPT：POST /backend-api/conversation，data: 行内为 JSON 增量（message.content.parts） */

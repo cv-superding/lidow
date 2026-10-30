@@ -214,8 +214,11 @@ describe('网页侧用户消息上报', () => {
 })
 
 describe('请求体系统提示词注入', () => {
-  /** 用假 XHR 跑 hook，返回原始 send 收到的 body */
-  function runXhr(sysPrompt: string, userBody: string): string {
+  /** 安装一次 hook，返回可连续发送请求的函数（模拟同一网页会话内的多轮） */
+  function xhrRunner(
+    sysPrompt: string,
+    opts: { repeat?: boolean; isOutgoing?: (text: string) => boolean } = {}
+  ): (userBody: string) => string {
     let capturedBody = ''
     const proto = {
       open(): void {},
@@ -224,10 +227,20 @@ describe('请求体系统提示词注入', () => {
       },
       addEventListener(): void {}
     }
-    const sandboxWindow = { fetch: () => Promise.resolve({}), __lidowNet: { emit: () => undefined } } as Record<
-      string,
-      unknown
-    >
+    const store = new Map<string, string>()
+    const fakeStorage = {
+      getItem: (k: string): string | null => (store.has(k) ? store.get(k)! : null),
+      setItem: (k: string, v: string): void => {
+        store.set(k, String(v))
+      },
+      removeItem: (k: string): void => {
+        store.delete(k)
+      }
+    }
+    const sandboxWindow = {
+      fetch: () => Promise.resolve({}),
+      __lidowNet: { emit: () => undefined, isOutgoing: opts.isOutgoing }
+    } as Record<string, unknown>
     const fn = new Function(
       'window',
       'XMLHttpRequest',
@@ -236,37 +249,87 @@ describe('请求体系统提示词注入', () => {
       'setInterval',
       'clearInterval',
       'Date',
-      buildHookSource(DEEPSEEK_HOOK, sysPrompt)
+      'sessionStorage',
+      'location',
+      buildHookSource(DEEPSEEK_HOOK, sysPrompt, opts.repeat ?? false)
     )
-    fn(sandboxWindow, { prototype: proto } as unknown, TextDecoder, TextEncoder, () => 0, () => undefined, Date)
-
-    const xhr = Object.create(proto) as { open(m: string, u: string): void; send(b: string): void }
-    xhr.open('POST', '/api/v0/chat/completion')
-    xhr.send(userBody)
-    return capturedBody
+    fn(
+      sandboxWindow,
+      { prototype: proto } as unknown,
+      TextDecoder,
+      TextEncoder,
+      () => 0,
+      () => undefined,
+      Date,
+      fakeStorage,
+      { pathname: '/' }
+    )
+    return (userBody: string): string => {
+      capturedBody = ''
+      const xhr = Object.create(proto) as { open(m: string, u: string): void; send(b: string): void }
+      xhr.open('POST', '/api/v0/chat/completion')
+      xhr.send(userBody)
+      return capturedBody
+    }
   }
 
+  const sys = '# 身份\n你是 Lidow 的 Agent，工作目录是 D:/proj'
+
   it('网页里自己发送时，系统提示词被拼进 prompt 字段', () => {
-    const sys = '# 身份\n你是 Lidow 的 Agent，工作目录是 D:/proj'
-    const out = runXhr(sys, JSON.stringify({ prompt: '建个文件', chat_session_id: 'x' }))
-    const obj = JSON.parse(out) as { prompt: string; chat_session_id: string; parent_message_id?: number }
+    const send = xhrRunner(sys)
+    const out = send(JSON.stringify({ prompt: '建个文件', chat_session_id: 'x' }))
+    const obj = JSON.parse(out) as { prompt: string; chat_session_id: string }
     expect(obj.prompt.startsWith('# 身份')).toBe(true)
     expect(obj.prompt).toContain('建个文件')
-    // 其它字段必须原样保留，否则 DeepSeek 会话会断
     expect(obj.chat_session_id).toBe('x')
   })
 
+  it('默认同一网页对话只注入一次，后续用户消息不再重复', () => {
+    const send = xhrRunner(sys)
+    const first = JSON.parse(send(JSON.stringify({ prompt: '第一条', chat_session_id: 'c1' }))) as { prompt: string }
+    expect(first.prompt.startsWith(sys)).toBe(true)
+    const second = JSON.parse(send(JSON.stringify({ prompt: '第二条', chat_session_id: 'c1' }))) as { prompt: string }
+    expect(second.prompt).toBe('第二条')
+  })
+
+  it('新对话尚未拿到 chat id 时先注入，拿到 id 后转移标记且不重复', () => {
+    const send = xhrRunner(sys)
+    const first = JSON.parse(send(JSON.stringify({ prompt: '新对话第一条' }))) as { prompt: string }
+    expect(first.prompt.startsWith(sys)).toBe(true)
+    const second = JSON.parse(
+      send(JSON.stringify({ prompt: '新对话第二条', chat_session_id: 'brand-new' }))
+    ) as { prompt: string }
+    expect(second.prompt).toBe('新对话第二条')
+  })
+
+  it('Lidow 自己发送的消息绝不由 hook 重复补系统提示词', () => {
+    const send = xhrRunner(sys, { isOutgoing: () => true })
+    const out = JSON.parse(send(JSON.stringify({ prompt: '请继续', chat_session_id: 'c2' }))) as { prompt: string }
+    expect(out.prompt).toBe('请继续')
+  })
+
+  it('显式开启每轮注入时才每条都拼系统提示词', () => {
+    const send = xhrRunner(sys, { repeat: true })
+    const first = JSON.parse(send(JSON.stringify({ prompt: '第一条', chat_session_id: 'c3' }))) as { prompt: string }
+    const second = JSON.parse(send(JSON.stringify({ prompt: '第二条', chat_session_id: 'c3' }))) as { prompt: string }
+    expect(first.prompt.startsWith(sys)).toBe(true)
+    expect(second.prompt.startsWith(sys)).toBe(true)
+  })
+
   it('已经带系统提示词的请求不会被重复注入', () => {
-    const sys = '# 身份\n你是 Lidow 的 Agent，工作目录是 D:/proj'
-    const out = runXhr(sys, JSON.stringify({ prompt: sys + '\n\n---\n\n# 用户任务\n\n建个文件' }))
+    const send = xhrRunner(sys)
+    const out = send(
+      JSON.stringify({ prompt: sys + '\n\n---\n\n# 用户任务\n\n建个文件', chat_session_id: 'c4' })
+    )
     const obj = JSON.parse(out) as { prompt: string }
     expect(obj.prompt.indexOf('# 身份')).toBe(0)
     expect(obj.prompt.match(/# 身份/g)).toHaveLength(1)
   })
 
   it('系统提示词为空时不改动请求体', () => {
+    const send = xhrRunner('')
     const raw = JSON.stringify({ prompt: '建个文件' })
-    expect(runXhr('', raw)).toBe(raw)
+    expect(send(raw)).toBe(raw)
   })
 })
 

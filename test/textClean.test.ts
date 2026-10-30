@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { stripToolArtifacts } from '../src/renderer/src/textClean'
+import { stripCitationMarkers, stripToolArtifacts } from '../src/renderer/src/textClean'
 
 /**
  * 渲染侧清理：用户截图里的"乱码"就是整段 DSML 被当正文渲染。
@@ -53,5 +53,27 @@ describe('stripToolArtifacts', () => {
     const text = '处理：\n<calls><invoke name="read"><parameter name="path">a.txt</parameter></invoke></calls>'
     const out = stripToolArtifacts(text)
     expect(out).toBe('处理：')
+  })
+})
+
+describe('stripCitationMarkers', () => {
+  it('剔除 DeepSeek 搜索引用角标，保留正文', () => {
+    expect(stripCitationMarkers('晴到晴间多云，白天回暖尚可，夜间降温快[reference:0]。')).toBe(
+      '晴到晴间多云，白天回暖尚可，夜间降温快。'
+    )
+    expect(stripCitationMarkers('风力 3~4 级[reference:4]，空气质量良[reference:5]。')).toBe(
+      '风力 3~4 级，空气质量良。'
+    )
+  })
+
+  it('没有角标时保持原样', () => {
+    const text = '这个项目的主入口在 src/main.tsx。'
+    expect(stripCitationMarkers(text)).toBe(text)
+  })
+
+  it('历史轮次正文后又粘进整段已思考快照时，只保留正文', () => {
+    const text =
+      '济南今天晴，11~23℃。\n\n提醒：早晚温差大。\n已思考（用时 10 秒）搜索到 12 个网页济南今天晴，11~23℃。提醒：早晚温差大。'
+    expect(stripCitationMarkers(text)).toBe('济南今天晴，11~23℃。\n\n提醒：早晚温差大。')
   })
 })

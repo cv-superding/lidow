@@ -15,6 +15,26 @@ import { Logger } from '@main/infra/log'
 import { backoffDelay, isContextExhausted } from './resilience'
 
 /**
+ * 网页快照/外部回复的展示清洗：DeepSeek 页面会把「已思考（用时 N 秒）」、
+ * 「搜索到 N 个网页」和 [reference:N] 角标一起抓进正文；这些不是回答内容。
+ */
+function cleanExternalText(text: string): string {
+  return text
+    .replace(/已(?:深度)?思考[（(]用时[^）)]*[）)]/g, '')
+    .replace(/\[reference:\d+\]/gi, '')
+    .replace(/^[^\n]{0,120}?搜索到\s*\d+\s*个网页\s*/, '')
+    .replace(/\r\n/g, '\n')
+    .trim()
+}
+
+/** 去空白和常见标点后比较：纯文本快照与 markdown 正文的细微差异不应导致重复落盘 */
+function normalizeExternalText(text: string): string {
+  return cleanExternalText(text)
+    .replace(/\s+/g, '')
+    .replace(/[，。；：、,.;:!?！？"'“”‘’（）()【】<>《》—]/g, '')
+}
+
+/**
  * 循环实际使用的会话存储能力。
  * 注意：deps.store 是「按会话路由到所属项目」的门面，不是完整 SessionStore，
  * 没有 create/delete。新建会话必须走 createSession 依赖，否则运行期报
@@ -303,6 +323,7 @@ export class AgentLoop {
    * 首轮文本直接用已收到的回复，不再重新发送。
    */
   async adoptExternalReply(sessionId: string, text: string): Promise<void> {
+    text = cleanExternalText(text)
     if (this.running.has(sessionId)) {
       // 多阶段回答的最终一段可能在循环收尾前到达；缓存到循环结束再补
       if (text.trim()) this.pendingExternal.set(sessionId, text)
@@ -466,9 +487,9 @@ export class AgentLoop {
    * 不执行工具 —— 重启会中断在途的流，之后页面上已经生成的最终回答不会再有
    * 网络事件；不补的话纯净模式会永远停在思考片段。
    */
-  syncExternalReply(sessionId: string, rawText: string): void {
+  syncExternalReply(sessionId: string, rawText: string, domThink?: string): void {
     if (this.running.has(sessionId)) return
-    const text = rawText.trim()
+    const text = cleanExternalText(rawText)
     if (!text) return
     const store = this.deps.store
     const session = store.get(sessionId)
@@ -484,6 +505,15 @@ export class AgentLoop {
       }
     }
     const last = lastIdx >= 0 ? turns[lastIdx] : null
+    // 网络思考流常只有前半段；页面快照里的思考块含完整搜索步骤，取更完整的更新
+    const thinkText = domThink
+      ? domThink.replace(/^已(?:深度)?思考[（(]用时[^）)]*[）)]\s*/, '').trim()
+      : ''
+    if (last && thinkText && thinkText.length > (last.think ?? '').trim().length) {
+      store.patchTurn(sessionId, last.id, { think: thinkText })
+      this.deps.emit({ type: 'session-updated', sessionId })
+      last.think = thinkText
+    }
     if (last) {
       const lt = last.text.trim()
       if (lt === text) return
@@ -505,6 +535,11 @@ export class AgentLoop {
       if (lt.length > text.length && lt.includes(text)) return
       // 页面快照包含本地已有回答（搜索 UI 等额外内容），无需重复落盘
       if (!lt.includes(text) && text.includes(lt) && lt.length >= 80) return
+      // 归一化后再判断一次：页面快照会带「已思考/搜索到」前缀并去掉引用角标，
+      // 原始字符串对不上，但内容其实是同一条回答，不能重复追加成第二条。
+      const ltNorm = normalizeExternalText(lt)
+      const textNorm = normalizeExternalText(text)
+      if (ltNorm.length >= 80 && (textNorm.includes(ltNorm) || ltNorm.includes(textNorm))) return
       // 同一回答已经在更早的轮次里出现过
       if (turns.some((t) => t.role === 'assistant' && t.text.includes(text) && t.text.trim().length >= text.length)) return
     }

@@ -178,7 +178,8 @@ function readBody(req: IncomingMessage): Promise<string> {
     let size = 0
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
-      if (size > 4 * 1024 * 1024) {
+      // 剪贴板图片以 data URL 走通用 invoke，base64 会把体积放大约 1/3
+      if (size > 24 * 1024 * 1024) {
         reject(new Error('请求体过大'))
         req.destroy()
         return

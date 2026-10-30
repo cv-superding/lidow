@@ -500,10 +500,12 @@ export type OverlayEvent =
   /** 用户在网页输入框里亲手发送的消息（纯净模式同步用） */
   | { type: 'user-message'; text: string }
   /** 页面重挂载后的最后一条 AI 回答（重启/重载后补齐缺失的最终答复） */
-  | { type: 'page-snapshot'; text: string }
+  | { type: 'page-snapshot'; text: string; think?: string }
   /** 网页侧用户删除了对话：主进程据此同步移除本地会话 */
   | { type: 'chat-deleted'; url: string }
   /** 用户点击网页侧项目对话：主进程切换到对应 Lidow 项目/会话 */
-  | { type: 'activate-chat'; url: string }
+  | { type: 'activate-chat'; url: string; reload?: boolean }
+  /** 用户点了平台自己的「新对话」：解绑旧会话，恢复初始化入口 */
+  | { type: 'native-new-chat' }
   /** 程序化 SPA 切换对话的结果（找不到侧栏链接时主进程回退 loadURL） */
   | { type: 'open-chat-result'; ok: boolean }

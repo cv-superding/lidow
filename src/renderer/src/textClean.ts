@@ -30,3 +30,21 @@ export function stripToolArtifacts(text: string): string {
   }
   return out.replace(/\n{3,}/g, '\n\n').trim()
 }
+
+/**
+ * DeepSeek 搜索引用角标：[reference:0] 这类文本在网页版会渲染成来源卡片，
+ * 纯模式只有正文，直接展示就是明显的噪音。保留正文、去掉角标。
+ * 同时清理旧版本已经落盘的「正文后重复追加的已思考/搜索快照」。
+ */
+export function stripCitationMarkers(text: string): string {
+  let out = text
+  // 历史污染轮次：正文后另起一行再次粘进「已思考（用时…）」，从那里截断
+  const dup = out.search(/\n\s*已(?:深度)?思考[（(]用时[^）)]*[）)]/)
+  if (dup > 0) out = out.slice(0, dup)
+  out = out
+    .replace(/^\s*已(?:深度)?思考[（(]用时[^）)]*[）)]\s*/, '')
+    .replace(/^\s*搜索到\s*\d+\s*个网页\s*/, '')
+    .replace(/\s?\[reference:\d+\]/gi, '')
+    .replace(/[ \t]{2,}/g, ' ')
+  return out.trim()
+}

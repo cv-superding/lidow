@@ -11,6 +11,7 @@ import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
 import { deleteChatsInHiddenPage } from '@main/bridge/webChatDeleteHidden'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
+import { IMAGE_EXTS, savePastedImages } from './pasteImages'
 import { Logger } from '@main/infra/log'
 import { isAbsoluteProjectPath } from '@shared/path'
 import type {
@@ -34,6 +35,75 @@ function applyNativeTheme(theme: unknown): void {
   if (nativeTheme.themeSource !== t) nativeTheme.themeSource = t
 }
 
+/** 平台上传附件/生成缩略图是异步的，注入后留一点时间 */
+const ATTACH_SETTLE_MS = 1800
+
+/**
+ * 把本机文件注入网页的 file input：附件按钮与剪贴板粘贴共用。
+ * 页面里可能有多个 input，按 accept 挑一个匹配的，再用 CDP 写入。
+ */
+async function attachFilesToWebInput(wcId: number, filePaths: string[]): Promise<void> {
+  const wc = webContents.fromId(wcId)
+  if (!wc || wc.isDestroyed()) throw new Error('网页已关闭，请重新打开')
+  const exts = filePaths.map((p) => p.split('.').pop()?.toLowerCase() ?? '')
+  const wantImage = exts.length > 0 && exts.every((e) => IMAGE_EXTS.has(e))
+  const inputCount = (await wc
+    .executeJavaScript(`(() => {
+      const xs = [...document.querySelectorAll('input[type=file]')].filter((el) => !el.disabled)
+      if (!xs.length) return 0
+      document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))
+      const exts = ${JSON.stringify(exts)}
+      const wantImage = ${wantImage ? 'true' : 'false'}
+      const accepts = (el) => {
+        if (!el.accept) return true
+        const a = String(el.accept).toLowerCase()
+        if (a.includes('*') || a.includes('file')) return true
+        if (wantImage && a.includes('image')) return true
+        return exts.some((e) => e && a.includes(e))
+      }
+      const pick = xs.find(accepts) || xs[0]
+      pick.setAttribute('data-lidow-upload-input', '1')
+      return xs.length
+    })()`)
+    .catch(() => 0)) as number
+  if (!inputCount) throw new Error('网页输入区没有文件上传入口，请先在 AI 页面点一次附件按钮')
+  let attached = false
+  try {
+    if (!wc.debugger.isAttached()) {
+      wc.debugger.attach('1.3')
+      attached = true
+    }
+    const doc = (await wc.debugger.sendCommand('DOM.getDocument', { depth: 1 })) as {
+      root?: { nodeId?: number }
+    }
+    const rootId = doc?.root?.nodeId
+    if (!rootId) throw new Error('无法读取网页 DOM')
+    const found = (await wc.debugger.sendCommand('DOM.querySelector', {
+      nodeId: rootId,
+      selector: 'input[data-lidow-upload-input]'
+    })) as { nodeId?: number }
+    if (!found?.nodeId) throw new Error('未找到文件输入框')
+    await wc.debugger.sendCommand('DOM.setFileInputFiles', { files: filePaths, nodeId: found.nodeId })
+  } catch (e) {
+    Logger.warn('session', `附加文件失败: ${e instanceof Error ? e.message : String(e)}`)
+    throw new Error(`附加文件失败：${e instanceof Error ? e.message : String(e)}`, { cause: e })
+  } finally {
+    try {
+      void wc.executeJavaScript(
+        `document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))`
+      )
+    } catch {
+      /* 页面已关闭 */
+    }
+    try {
+      if (attached && wc.debugger.isAttached()) wc.debugger.detach()
+    } catch {
+      /* 已断开 */
+    }
+  }
+  await new Promise((r) => setTimeout(r, ATTACH_SETTLE_MS))
+}
+
 /** 全量 IPC 方法注册：方法名 = LidowApi 契约方法名（renderer Proxy 按 name 调用） */
 export function registerHandlers(
   register: (name: string, fn: IpcHandler) => void,
@@ -54,6 +124,8 @@ export function registerHandlers(
     const next = ctx.settings.set(patch as never)
     ctx.hotkeys.applyAll()
     applyNativeTheme(next.theme)
+    // 每轮注入开关/系统提示词变化后，已经打开的网页 hook 立即生效
+    ctx.refreshProviderHooks()
     return next
   })
   R('pickDirectory', () => showDirectoryPicker(parentWindowFor()))
@@ -800,71 +872,28 @@ export function registerHandlers(
     const parent = parentWindowFor(wcId)
     const res = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options)
     if (res.canceled || res.filePaths.length === 0) return { ok: false, canceled: true }
-    const exts = res.filePaths.map((p) => p.split('.').pop()?.toLowerCase() ?? '')
-    const imageExts = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg'])
-    const wantImage = exts.length > 0 && exts.every((e) => imageExts.has(e))
-    const inputCount = (await wc
-      .executeJavaScript(`(() => {
-        const xs = [...document.querySelectorAll('input[type=file]')].filter((el) => !el.disabled)
-        if (!xs.length) return 0
-        document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))
-        const exts = ${JSON.stringify(exts)}
-        const wantImage = ${wantImage ? 'true' : 'false'}
-        const accepts = (el) => {
-          if (!el.accept) return true
-          const a = String(el.accept).toLowerCase()
-          if (a.includes('*') || a.includes('file')) return true
-          if (wantImage && a.includes('image')) return true
-          return exts.some((e) => e && a.includes(e))
-        }
-        const pick = xs.find(accepts) || xs[0]
-        pick.setAttribute('data-lidow-upload-input', '1')
-        return xs.length
-      })()`)
-      .catch(() => 0)) as number
-    if (!inputCount) {
-      return { ok: false, message: '网页输入区没有文件上传入口，请先在 AI 页面点一次附件按钮' }
-    }
-    let attached = wc.debugger.isAttached()
-    try {
-      if (!attached) {
-        wc.debugger.attach('1.3')
-        attached = true
-      }
-      const doc = (await wc.debugger.sendCommand('DOM.getDocument', { depth: 1 })) as {
-        root?: { nodeId?: number }
-      }
-      const rootId = doc?.root?.nodeId
-      if (!rootId) throw new Error('无法读取网页 DOM')
-      const found = (await wc.debugger.sendCommand('DOM.querySelector', {
-        nodeId: rootId,
-        selector: 'input[data-lidow-upload-input]'
-      })) as { nodeId?: number }
-      if (!found?.nodeId) throw new Error('未找到文件输入框')
-      await wc.debugger.sendCommand('DOM.setFileInputFiles', { files: res.filePaths, nodeId: found.nodeId })
-    } catch (e) {
-      Logger.warn('session', `附加文件失败: ${e instanceof Error ? e.message : String(e)}`)
-      throw new Error(`附加文件失败：${e instanceof Error ? e.message : String(e)}`, { cause: e })
-    } finally {
-      try {
-        void wc.executeJavaScript(
-          `document.querySelectorAll('[data-lidow-upload-input]').forEach((el) => el.removeAttribute('data-lidow-upload-input'))`
-        )
-      } catch {
-        /* 页面已关闭 */
-      }
-      try {
-        if (attached && wc.debugger.isAttached()) wc.debugger.detach()
-      } catch {
-        /* 已断开 */
-      }
-    }
-    // 平台上传/生成附件预览是异步的，留一点时间
-    await new Promise((r) => setTimeout(r, 1800))
+    await attachFilesToWebInput(wcId, res.filePaths)
     return {
       ok: true,
       count: res.filePaths.length,
       message: `已附加 ${res.filePaths.length} 个文件到网页输入框，发送消息即可一起上传`
+    }
+  })
+  /**
+   * 纯模式输入框 Ctrl+V 粘贴图片：渲染层把剪贴板图片读成 data URL 传来，
+   * 落盘后走和附件按钮相同的 CDP 注入，平台才会显示附件预览并随消息上传。
+   */
+  R('pasteWebImages', async (sessionId: string, images: unknown) => {
+    const sid = String(sessionId)
+    const wcId = ctx.overlay.wcIdOfSession(sid)
+    if (wcId === undefined) throw new Error('网页未连接：请先打开该会话的 AI 页面')
+    const files = savePastedImages(images, join(app.getPath('userData'), 'attachments'))
+    if (files.length === 0) return { ok: false, message: '剪贴板里没有可附加的图片' }
+    await attachFilesToWebInput(wcId, files)
+    return {
+      ok: true,
+      count: files.length,
+      message: `已附加 ${files.length} 张图片到网页输入框，发送消息即可一起上传`
     }
   })
   /** 按文案点击平台自带按钮（底部 chip 转发，各平台功能不同） */

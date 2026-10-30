@@ -31,12 +31,18 @@ function registerHandler(name: string, fn: IpcHandler): void {
  * 打包版用 productName "Lidow"，两者数据目录不同 → 登录态互不相通
  * （表现为"刚登录过又要重新登录"）。这里在 app ready 前锁定同名目录。
  */
-app.setPath('userData', join(app.getPath('appData'), 'Lidow'))
+// 开发/测试可用 LIDOW_USER_DATA 指向临时目录，避免碰到真实用户数据
+const userDataOverride = app.isPackaged ? '' : process.env.LIDOW_USER_DATA
+app.setPath('userData', userDataOverride ? join(userDataOverride) : join(app.getPath('appData'), 'Lidow'))
 // 不暴露 Chromium 的 Client Hints 品牌列表（其中包含 Electron），
 // 否则 Google 登录会按“嵌入式应用”直接拒绝。
 app.commandLine.appendSwitch('disable-features', 'UserAgentClientHint')
-// Windows 任务栏分组/通知归属（与 electron-builder appId 一致）
-if (process.platform === 'win32') app.setAppUserModelId('ai.lidow.app')
+
+const APP_ID = 'ai.lidow.app'
+// 开发模式必须用独立 AUMID：与正式版共用时，开发窗口一旦被固定到开始菜单/任务栏，
+// 资源管理器会把 ai.lidow.app 解析到 electron.exe，正式版任务栏就永远是 Electron 原子图标。
+const RUN_APP_ID = app.isPackaged ? APP_ID : `${APP_ID}.dev`
+if (process.platform === 'win32') app.setAppUserModelId(RUN_APP_ID)
 
 const ctx = new AppContext()
 
@@ -44,7 +50,10 @@ let hostWindow: BrowserWindow | null = null
 let webServer: WebServer | null = null
 
 function createWindow(host = false): BrowserWindow {
-  const iconPath = app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png')
+  const pngIconPath = app.isPackaged ? join(process.resourcesPath, 'icon.png') : join(__dirname, '../../build/icon.png')
+  const icoIconPath = app.isPackaged ? join(process.resourcesPath, 'icon.ico') : join(__dirname, '../../build/icon.ico')
+  // 任务栏按 16/24/32px 取图标，Windows 用多尺寸 ICO 才不会拿到模糊或被缩放的位图
+  const iconPath = process.platform === 'win32' ? icoIconPath : pngIconPath
   const win = new BrowserWindow({
     width: 1360,
     height: 860,
@@ -74,12 +83,11 @@ function createWindow(host = false): BrowserWindow {
   // Windows 任务栏不总是跟随 BrowserWindow.icon（开发模式尤其会落到 electron.exe 默认图标）。
   // 显式 setIcon + setAppDetails：图标路径必须存在且为 Windows 可读的 ico。
   if (process.platform === 'win32') {
-    const image = nativeImage.createFromPath(iconPath)
+    const image = nativeImage.createFromPath(icoIconPath)
     if (!image.isEmpty()) win.setIcon(image)
-    const icoPath = app.isPackaged ? join(process.resourcesPath, 'icon.ico') : join(__dirname, '../../build/icon.ico')
     win.setAppDetails({
-      appId: 'ai.lidow.app',
-      appIconPath: icoPath,
+      appId: RUN_APP_ID,
+      appIconPath: icoIconPath,
       appIconIndex: 0,
       relaunchCommand: process.execPath,
       relaunchDisplayName: 'Lidow'

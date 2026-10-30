@@ -202,6 +202,12 @@ function cleanRenderedText(el: HTMLElement): string {
   clone
     .querySelectorAll('[class*="think" i], [class*="reasoning" i], [data-testid*="think" i]')
     .forEach((t) => t.remove())
+  // 「已思考（用时 1 秒）」这类折叠条不在思考内容块里，按文案单独剔除：
+  // 带进快照会让整段回答不以原文本开头，去重/前缀比对失效，回答被重复追加一遍
+  clone.querySelectorAll('div, span, button').forEach((n) => {
+    const t = (n.textContent ?? '').trim()
+    if (t.length <= 32 && /^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(t)) n.remove()
+  })
   clone.querySelectorAll('pre, code[class*="language"], [class*="code-block"]').forEach((codeEl) => {
     const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
     const text = codeEl.textContent ?? ''
@@ -212,6 +218,8 @@ function cleanRenderedText(el: HTMLElement): string {
   // 移除 UI 按钮文字污染（复制/下载等）
   clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
   let text = clone.innerText ?? ''
+  // 兜底：折叠条文字不一定是独立节点，从整段开头再剥一次
+  text = text.replace(/^\s*已(?:深度)?思考[（(]用时[^）)]*[）)]\s*/, '')
   // 补未闭合围栏：奇数个 ``` 说明尾部代码块未渲染完/被截
   const fences = (text.match(/```/g) ?? []).length
   if (fences % 2 === 1) text += '\n```'
@@ -257,6 +265,31 @@ function isStreaming(): boolean {
   if (!adapter) return false
   if (adapter.streamingFlag.length === 0) return false
   return findFirst(adapter.streamingFlag) !== null
+}
+
+/**
+ * 最后一条 AI 消息里最完整的思考内容。
+ * 网络层思考流往往只覆盖前半段；DeepSeek 页面上的思考块（含搜索步骤）才是
+ * 用户在网页版看到的完整过程，快照时一并同步给纯净模式。
+ */
+function lastThinkText(): string {
+  const msgs = [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
+  const scopes = msgs.length > 0 ? [msgs[msgs.length - 1]!] : [document.body]
+  let best = ''
+  for (const scope of scopes) {
+    const blocks = [...scope.querySelectorAll<HTMLElement>('[class*="think" i], [class*="reasoning" i], [data-testid*="think" i]')].filter(
+      visible
+    )
+    for (const el of blocks) {
+      const clone = el.cloneNode(true) as HTMLElement
+      clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
+      const text = (clone.innerText || '').trim()
+      if (!text) continue
+      if (/^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(text)) continue
+      if (text.length > best.length) best = text
+    }
+  }
+  return best.slice(0, 20_000)
 }
 
 function scheduleChunk(): void {
@@ -615,9 +648,11 @@ function schedulePageSnapshot(delay = 2200): void {
       if (pageSnapshotTries++ < 5) schedulePageSnapshot(1500)
       return
     }
-    if (text === lastPageSnapshot) return
-    lastPageSnapshot = text
-    send({ type: 'page-snapshot', text })
+    const think = lastThinkText()
+    const sig = text + '\n---lidow-think---\n' + think
+    if (sig === lastPageSnapshot) return
+    lastPageSnapshot = sig
+    send({ type: 'page-snapshot', text, think })
   }, delay)
 }
 
@@ -651,37 +686,85 @@ function ensureDeepSeekStyles(): void {
     #lidow-project-folders{
       --lpf-text:#0f1115;
       --lpf-muted:color-mix(in srgb, var(--lpf-text) 52%, transparent);
-      --lpf-hover:color-mix(in srgb, var(--lpf-text) 9%, transparent);
-      --lpf-active-bg:color-mix(in srgb, #4d6bfe 12%, transparent);
-      --lpf-brand:#4d6bfe;
-      margin:2px 0 4px;color:var(--lpf-text);font-size:13px;font-family:var(--lpf-font,inherit)}
+      --lpf-hover:#f5f9ff;
+      --lpf-hover-text:#0b1220;
+      --lpf-active-bg:#e8f2ff;
+      --lpf-active-text:#0b3fa8;
+      --lpf-active-bar:#165dff;
+      --lpf-brand:#165dff;
+      --lpf-pill-bg:rgba(15,17,21,.055);
+      --lpf-pill-text:#8b939f;
+      --lpf-ease:cubic-bezier(.4,0,.2,1);
+      margin:2px 0 6px;padding-right:30px;color:var(--lpf-text);font-size:14px;line-height:1.5;
+      font-family:var(--lpf-font,inherit)}
+    #lidow-project-folders.lpf-dark{
+      --lpf-hover:rgba(255,255,255,.06);
+      --lpf-hover-text:#fff;
+      --lpf-active-bg:rgba(88,115,255,.18);
+      --lpf-active-text:#c9d6ff;
+      --lpf-active-bar:#7f9cff;
+      --lpf-brand:#8ba4ff;
+      --lpf-pill-bg:rgba(255,255,255,.09);
+      --lpf-pill-text:#a8b1bf}
     #lidow-project-folders button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer;text-align:left}
-    .lpf-head{display:flex;align-items:center;gap:7px;width:100%;height:28px;padding:0 10px;border-radius:8px;
-      font-size:12px;font-weight:500;color:var(--lpf-muted);transition:background .12s,color .12s}
-    .lpf-head:hover{background:var(--lpf-hover);color:var(--lpf-text)}
-    .lpf-badge{margin-left:auto;min-width:0;background:none;padding:0;font-size:11px;font-weight:400;color:var(--lpf-muted)}
-    .lpf-chevron{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.45}
+    .lpf-head{display:flex;align-items:center;gap:7px;width:100%;height:36px;padding:0 12px;border-radius:6px;
+      font-size:13px;font-weight:500;color:var(--lpf-muted);
+      transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}
+    .lpf-head:hover{background:var(--lpf-hover);color:var(--lpf-hover-text)}
+    .lpf-badge{min-width:18px;height:18px;padding:0 6px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:12px;font-weight:400}
+    .lpf-chevron{display:inline-flex;width:12px;justify-content:center;font-size:11px;opacity:.55;transform:rotate(0);
+      transition:transform .2s var(--lpf-ease)}
     .lpf-chevron.open{transform:rotate(90deg)}
-    .lpf-project-head{display:flex;align-items:center;gap:6px;width:100%;height:32px;padding:0 8px;border-radius:8px;
-      color:var(--lpf-text);transition:background .12s,color .12s}
-    .lpf-project-head:hover{background:var(--lpf-hover)}
-    .lpf-project-head.active{background:var(--lpf-active-bg);color:var(--lpf-brand)}
-    .lpf-chev{display:inline-flex;width:10px;justify-content:center;transition:transform .16s;opacity:.38;font-size:10px}
+    .lpf-collapse{display:grid;grid-template-rows:0fr;opacity:0;
+      transition:grid-template-rows .2s var(--lpf-ease),opacity .2s var(--lpf-ease)}
+    .lpf-collapse.open{grid-template-rows:1fr;opacity:1}
+    .lpf-collapse>div{overflow:hidden;min-height:0}
+    .lpf-project-head{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:36px;padding:0 12px;border-radius:6px;
+      color:var(--lpf-text);cursor:pointer;transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}
+    .lpf-project-head:hover{background:var(--lpf-hover);color:var(--lpf-hover-text)}
+    .lpf-project-head.active{background:var(--lpf-active-bg);color:var(--lpf-active-text)}
+    .lpf-project-head.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;
+      background:var(--lpf-active-bar)}
+    .lpf-project-head.active .lpf-name{font-weight:500}
+    .lpf-chev{display:inline-flex;width:12px;justify-content:center;font-size:11px;opacity:.5;flex-shrink:0;transform:rotate(0);
+      transition:transform .2s var(--lpf-ease)}
     .lpf-chev.open{transform:rotate(90deg)}
-    .lpf-folder{display:inline-flex;opacity:.55;flex-shrink:0;transition:opacity .12s}
-    .lpf-project-head:hover .lpf-folder,.lpf-project-head.active .lpf-folder{opacity:.9}
-    .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:13px;font-weight:500}
-    .lpf-count{font-size:11px;color:var(--lpf-muted);flex-shrink:0}
-    .lpf-chats{padding:1px 0 2px 32px}
-    .lpf-chat{display:flex;align-items:center;width:100%;height:30px;padding:0 8px;border-radius:7px;overflow:hidden;
-      text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:color-mix(in srgb, var(--lpf-text) 75%, transparent);
-      transition:background .12s,color .12s}
-    .lpf-chat:hover{background:var(--lpf-hover);color:var(--lpf-text)}
-    .lpf-chat.active{background:var(--lpf-active-bg);color:var(--lpf-brand)}
-    .lpf-more{display:flex;align-items:center;width:100%;height:26px;padding:0 8px;border-radius:7px;
-      font-size:11.5px;color:var(--lpf-muted);transition:background .12s,color .12s}
-    .lpf-more:hover{background:var(--lpf-hover);color:var(--lpf-text)}
-    .lpf-empty{padding:2px 10px 9px;font-size:11px;color:var(--lpf-muted);line-height:1.6}
+    .lpf-folder{display:inline-flex;flex-shrink:0;color:var(--lpf-muted);transition:color .2s var(--lpf-ease)}
+    .lpf-project-head:hover .lpf-folder{color:var(--lpf-hover-text)}
+    .lpf-project-head.open .lpf-folder,.lpf-project-head.active .lpf-folder{color:var(--lpf-brand)}
+    .lpf-folder-open{display:none}
+    .lpf-project-head.open .lpf-folder-closed{display:none}
+    .lpf-project-head.open .lpf-folder-open{display:block}
+    .lpf-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-size:14px}
+    .lpf-count{flex-shrink:0;min-width:18px;height:18px;padding:0 6px;border-radius:5px;display:inline-flex;align-items:center;justify-content:center;
+      background:var(--lpf-pill-bg);color:var(--lpf-pill-text);font-size:12px;font-weight:400}
+    .lpf-chats{padding:1px 0 3px 20px}
+    .lpf-chat{position:relative;display:flex;align-items:center;gap:8px;width:100%;height:36px;padding:0 12px;border-radius:6px;
+      font-size:14px;color:var(--lpf-text);cursor:pointer;transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}
+    .lpf-chat:hover{background:var(--lpf-hover);color:var(--lpf-hover-text)}
+    .lpf-chat.active{background:var(--lpf-active-bg);color:var(--lpf-active-text)}
+    .lpf-chat.active::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:2px;
+      background:var(--lpf-active-bar)}
+    .lpf-chat.active .lpf-chat-title{font-weight:500}
+    .lpf-doc{display:inline-flex;flex-shrink:0;color:var(--lpf-muted);transition:color .15s var(--lpf-ease)}
+    .lpf-chat:hover .lpf-doc,.lpf-chat.active .lpf-doc{color:inherit}
+    .lpf-chat-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .lpf-more-icon{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:5px;flex-shrink:0;
+      color:var(--lpf-muted);opacity:0;pointer-events:none;transition:opacity .15s var(--lpf-ease),background .15s var(--lpf-ease)}
+    .lpf-chat:hover .lpf-more-icon,.lpf-project-head:hover .lpf-more-icon{opacity:1;pointer-events:auto;
+      color:color-mix(in srgb,var(--lpf-text) 62%,transparent)}
+    .lpf-more-icon:hover{background:color-mix(in srgb,var(--lpf-text) 8%,transparent)}
+    .lpf-more{display:flex;align-items:center;height:32px;padding:0 12px;border-radius:6px;font-size:12.5px;
+      color:var(--lpf-muted);transition:background .15s var(--lpf-ease),color .15s var(--lpf-ease)}
+    .lpf-more:hover{background:var(--lpf-hover);color:var(--lpf-hover-text)}
+    .lpf-empty{padding:4px 12px 10px;font-size:12px;color:var(--lpf-muted);line-height:1.6}
+    /* 侧栏滚动条：细窄、半透明，悬浮加深（只作用于承载本面板的滚动区） */
+    .ds-scroll-area:has(#lidow-project-folders)::-webkit-scrollbar{width:6px;height:6px}
+    .ds-scroll-area:has(#lidow-project-folders)::-webkit-scrollbar-track{background:transparent}
+    .ds-scroll-area:has(#lidow-project-folders)::-webkit-scrollbar-thumb{border-radius:99px;
+      background:color-mix(in srgb,currentColor 16%,transparent)}
+    .ds-scroll-area:has(#lidow-project-folders):hover::-webkit-scrollbar-thumb{background:color-mix(in srgb,currentColor 32%,transparent)}
     #lidow-timeline{position:fixed;right:2px;top:92px;bottom:96px;width:7px;z-index:2147483000;
       border-radius:99px;background:transparent;transition:width .16s,background .16s;cursor:pointer}
     #lidow-timeline:hover{width:34px;background:rgba(127,127,127,.13)}
@@ -707,6 +790,30 @@ function findProjectFolderMount(): HTMLElement | null {
 
 function projectFolderChats(): { chat: { url: string }; project: string }[] {
   return (projectFolders?.projects ?? []).flatMap((p) => p.chats.map((chat) => ({ chat, project: p.id })))
+}
+
+/** 结构签名：数据 + 折叠/展开/显示全部，状态没变时轮询不重建 DOM（否则展开动画会被打断） */
+function folderSig(): string {
+  return JSON.stringify({
+    data: projectFolders,
+    collapsed: projectFoldersCollapsed,
+    expanded: [...projectFoldersExpanded],
+    showAll: [...projectFoldersShowAll]
+  })
+}
+
+/** 深色网页用暗色令牌；浅色网页保持规范里的浅白主题 */
+function sidebarIsDark(textColor: string): boolean {
+  const parse = (c: string): { lum: number; alpha: number } | null => {
+    const m = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s/]+([\d.]+))?\s*\)/i.exec(c)
+    if (!m) return null
+    const lum = Number(m[1]) * 0.299 + Number(m[2]) * 0.587 + Number(m[3]) * 0.114
+    return { lum, alpha: m[4] === undefined ? 1 : Number(m[4]) }
+  }
+  const bg = parse(getComputedStyle(document.body).backgroundColor)
+  if (bg && bg.alpha > 0.1) return bg.lum < 128
+  const text = parse(textColor)
+  return Boolean(text && text.lum > 160)
 }
 
 function setPendingFolder(projectId: string, urlKey: string): void {
@@ -758,6 +865,8 @@ function openChatInPage(url: string): boolean {
   if (!match) return false
   suppressActivateUntil = Date.now() + 1500
   suppressChatKey = chatUrlKey(url)
+  match.setAttribute('data-lidow-suppress', '1')
+  window.setTimeout(() => match.removeAttribute('data-lidow-suppress'), 2000)
   match.click()
   return true
 }
@@ -787,7 +896,7 @@ function renderProjectFolders(): void {
     pendingFolderTimer = undefined
   }
   const activeProjectForUi = pendingFolderProject || projectFolders.activeProjectId || ''
-  const sig = JSON.stringify({ data: projectFolders, collapsed: projectFoldersCollapsed, expanded: [...projectFoldersExpanded] })
+  const sig = folderSig()
   if (existing && existing.isConnected && sig === projectFoldersSig) {
     paintProjectFolderActive()
     return
@@ -804,8 +913,14 @@ function renderProjectFolders(): void {
     ) ?? nativeLinks[0]
   const nativeStyle = nativeLink ? getComputedStyle(nativeLink) : getComputedStyle(mount)
   const total = projectFolders.projects.reduce((n, p) => n + p.chats.length, 0)
-  const folderSvg =
-    '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35"><path d="M2 4.8h4.1l1.2 1.5H14v5.4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4.8Z"/></svg>'
+  const folderClosedSvg =
+    '<svg class="lpf-folder-closed" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>'
+  const folderOpenSvg =
+    '<svg class="lpf-folder-open" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H18a2 2 0 0 1 2 2v2"/></svg>'
+  const docSvg =
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/></svg>'
+  const moreSvg =
+    '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.2" cy="8" r="1.15"/><circle cx="8" cy="8" r="1.15"/><circle cx="12.8" cy="8" r="1.15"/></svg>'
   const body = projectFolders.projects
     .map((project) => {
       const open = projectFoldersExpanded.has(project.id)
@@ -815,7 +930,11 @@ function renderProjectFolders(): void {
         visibleChats
           .map(
             (chat) =>
-              `<button class="lpf-chat" data-lpf="chat" data-url="${escapeHtml(chat.url)}" title="${escapeHtml(chat.title)}">${escapeHtml(chat.title)}</button>`
+              `<div class="lpf-chat" data-lpf="chat" data-url="${escapeHtml(chat.url)}" title="${escapeHtml(chat.title)}">` +
+              `<span class="lpf-doc">${docSvg}</span>` +
+              `<span class="lpf-chat-title">${escapeHtml(chat.title)}</span>` +
+              `<span class="lpf-more-icon" data-lpf="chat-more" data-url="${escapeHtml(chat.url)}" title="在浏览器中打开">${moreSvg}</span>` +
+              `</div>`
           )
           .join('') +
         (project.chats.length > 8
@@ -825,23 +944,24 @@ function renderProjectFolders(): void {
           : '')
       return (
         `<div class="lpf-project">` +
-        `<button class="lpf-project-head${activeProjectForUi === project.id ? ' active' : ''}" data-lpf="project" data-id="${escapeHtml(project.id)}">` +
+        `<div class="lpf-project-head${activeProjectForUi === project.id ? ' active' : ''}${open ? ' open' : ''}" data-lpf="project" data-id="${escapeHtml(project.id)}">` +
         `<span class="lpf-chev${open ? ' open' : ''}">›</span>` +
-        `<span class="lpf-folder">${folderSvg}</span>` +
+        `<span class="lpf-folder">${folderClosedSvg}${folderOpenSvg}</span>` +
         `<span class="lpf-name" title="${escapeHtml(project.root)}">${escapeHtml(project.name)}</span>` +
         `<span class="lpf-count">${project.chats.length}</span>` +
-        `</button>` +
-        (open ? `<div class="lpf-chats">${chats}</div>` : '') +
+        `</div>` +
+        `<div class="lpf-collapse${open ? ' open' : ''}"><div><div class="lpf-chats">${chats}</div></div></div>` +
         `</div>`
       )
     })
     .join('')
   const html =
     `<button class="lpf-head" data-lpf="toggle">` +
-    `<span>项目文件夹</span><span class="lpf-badge">${total}</span>` +
     `<span class="lpf-chevron${projectFoldersCollapsed ? '' : ' open'}">›</span>` +
+    `<span>项目文件夹</span>` +
+    `<span class="lpf-badge">${total}</span>` +
     `</button>` +
-    (projectFoldersCollapsed ? '' : `<div>${body}</div>`)
+    `<div class="lpf-collapse${projectFoldersCollapsed ? '' : ' open'}"><div>${body}</div></div>`
   let panel = existing as HTMLElement | null
   if (!panel) {
     panel = document.createElement('div')
@@ -852,37 +972,51 @@ function renderProjectFolders(): void {
       const action = target.dataset.lpf
       if (action === 'toggle') {
         projectFoldersCollapsed = !projectFoldersCollapsed
-        projectFoldersSig = ''
-        renderProjectFolders()
+        const panelEl = document.getElementById('lidow-project-folders')
+        panelEl?.querySelector('.lpf-head .lpf-chevron')?.classList.toggle('open', !projectFoldersCollapsed)
+        panelEl?.querySelector(':scope > .lpf-collapse')?.classList.toggle('open', !projectFoldersCollapsed)
+        projectFoldersSig = folderSig()
       } else if (action === 'project') {
         const id = target.dataset.id ?? ''
-        if (projectFoldersExpanded.has(id)) projectFoldersExpanded.delete(id)
-        else projectFoldersExpanded.add(id)
-        projectFoldersSig = ''
-        renderProjectFolders()
+        const openNow = !projectFoldersExpanded.has(id)
+        if (openNow) projectFoldersExpanded.add(id)
+        else projectFoldersExpanded.delete(id)
+        // 直接切换 class 而不是整块重绘：重绘会把 0.2s 展开动画打断
+        const head = target.closest<HTMLElement>('.lpf-project-head')
+        head?.classList.toggle('open', openNow)
+        head?.querySelector('.lpf-chev')?.classList.toggle('open', openNow)
+        head?.parentElement?.querySelector<HTMLElement>(':scope > .lpf-collapse')?.classList.toggle('open', openNow)
+        projectFoldersSig = folderSig()
       } else if (action === 'more') {
         const id = target.dataset.id ?? ''
         if (projectFoldersShowAll.has(id)) projectFoldersShowAll.delete(id)
         else projectFoldersShowAll.add(id)
         projectFoldersSig = ''
         renderProjectFolders()
+      } else if (action === 'chat-more') {
+        const url = target.dataset.url
+        if (url) send({ type: 'float-menu-action', action: 'open-external', url })
       } else if (action === 'chat') {
         const url = target.dataset.url
         if (url) {
           const key = chatUrlKey(url)
           const found = projectFolderChats().find((x) => chatUrlKey(x.chat.url) === key)
           setPendingFolder(found?.project ?? '', key)
+          clearNativeNewChat()
+          firstRunCollapsed = false
           if (found) {
             projectFoldersExpanded.add(found.project)
             projectFoldersSig = ''
             renderProjectFolders()
           }
-          send({ type: 'activate-chat', url })
+          renderFirstRun()
+          send({ type: 'activate-chat', url, reload: true })
         }
       }
     })
   }
   panel.innerHTML = html
+  panel.classList.toggle('lpf-dark', sidebarIsDark(nativeStyle?.color ?? ''))
   if (nativeStyle) {
     panel.style.setProperty('--lpf-text', nativeStyle.color)
     panel.style.setProperty('--lpf-font', nativeStyle.fontFamily)
@@ -904,6 +1038,8 @@ function setupProjectFolderClicks(): void {
       if (!target || target.closest('#lidow-project-folders, #lidow-first-run, #lidow-first-run-banner')) return
       const link = target.closest<HTMLAnchorElement>('a[href*="/a/chat/s/"]')
       if (!link) return
+      // 程序化 SPA 切换自己点的那一条：不要再当成用户切项目
+      if (link.getAttribute('data-lidow-suppress') === '1') return
       const key = chatUrlKey(link.href)
       if (!key) return
       // 只放行程序化点击的那一个对话；用户随后点别的对话仍然要正常切项目
@@ -920,6 +1056,9 @@ function setupProjectFolderClicks(): void {
       projectFoldersExpanded.add(found.project)
       projectFoldersSig = ''
       renderProjectFolders()
+      clearNativeNewChat()
+      firstRunCollapsed = false
+      renderFirstRun()
       ev.preventDefault()
       ev.stopPropagation()
       send({ type: 'activate-chat', url: link.href })
@@ -1232,6 +1371,44 @@ let loggedIn = false
 let projectKnown = false
 /** 主进程告知：当前会话/项目已有对话记录（已初始化，重载后不再弹引导） */
 let projectInitialized = false
+/**
+ * 用户点了平台自己的「开启新对话」。
+ * 这个动作可能触发平台整页导航，preload 重跑后 projectInitialized 会被主进程
+ * 按旧会话重新置为 true，引导又被压掉。用 sessionStorage 跨重载标记“这是新对话”，
+ * 在 2 分钟内强制显示初始化入口，直到用户确认/关闭。
+ */
+const NATIVE_NEW_CHAT_KEY = 'lidow:nativeNewChatAt'
+const NATIVE_NEW_CHAT_TTL_MS = 2 * 60_000
+let nativeNewChatAt = 0
+
+function markNativeNewChat(): void {
+  nativeNewChatAt = Date.now()
+  try {
+    sessionStorage.setItem(NATIVE_NEW_CHAT_KEY, String(nativeNewChatAt))
+  } catch {
+    /* 隐私模式/无存储时内存标记仍有效 */
+  }
+}
+
+function isNativeNewChatPending(): boolean {
+  if (!nativeNewChatAt) {
+    try {
+      nativeNewChatAt = Number(sessionStorage.getItem(NATIVE_NEW_CHAT_KEY) ?? '') || 0
+    } catch {
+      nativeNewChatAt = 0
+    }
+  }
+  return nativeNewChatAt > 0 && Date.now() - nativeNewChatAt < NATIVE_NEW_CHAT_TTL_MS
+}
+
+function clearNativeNewChat(): void {
+  nativeNewChatAt = 0
+  try {
+    sessionStorage.removeItem(NATIVE_NEW_CHAT_KEY)
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
  * 引导关闭状态持久化（按项目目录记在页面 localStorage）。
@@ -1306,12 +1483,16 @@ function renderFirstRun(): void {
   // 已打开项目的用户也应看到当前目录并确认/更换（此前带着 !projectRoot 判断，
   // 项目一打开就永不弹，等于功能不存在）。
   const persisted = isFirstRunPersisted(projectRoot)
-  const shouldShow = loggedIn && projectKnown && !firstRunDismissed && !persisted && !projectInitialized
+  const nativeNewChat = isNativeNewChatPending()
+  // 平台自己的「新对话」不受 projectInitialized 压制：旧会话还有历史，
+  // 但这条新对话尚未绑定任何 Lidow 会话，必须先提供初始化入口。
+  const shouldShow = loggedIn && projectKnown && !firstRunDismissed && !persisted && (nativeNewChat || !projectInitialized)
   exposeState({
     loggedIn,
     projectKnown,
     projectRoot,
     initialized: projectInitialized,
+    nativeNewChat,
     dismissed: firstRunDismissed,
     collapsed: firstRunCollapsed,
     shouldShow
@@ -1434,6 +1615,7 @@ function renderFirstRun(): void {
     btn.textContent = '初始化中…'
     firstRunDismissed = true
     projectInitialized = true
+    clearNativeNewChat()
     // 关键：持久化本次初始化，页面随后整页导航/重载时 preload 重跑也不会再弹
     persistFirstRunDismissed(projectRoot)
     box.remove()
@@ -1447,6 +1629,7 @@ function renderFirstRun(): void {
     btn.style.opacity = '0.6'
     firstRunDismissed = true
     projectInitialized = true
+    clearNativeNewChat()
     persistFirstRunDismissed(projectRoot)
     box.remove()
     send({ type: 'float-menu-action', action: 'continue-project' })
@@ -1537,6 +1720,8 @@ function renderFirstRunBanner(): void {
     e.stopPropagation()
     firstRunDismissed = true
     firstRunCollapsed = false
+    clearNativeNewChat()
+    persistFirstRunDismissed(projectRoot)
     bar.remove()
   })
 
@@ -1684,13 +1869,27 @@ function watchNativeNewChat(): void {
         if (el && el.closest('#lidow-first-run, #lidow-first-run-banner')) return
         for (let i = 0; i < 4 && el; i++) {
           if (el.closest?.('#lidow-first-run, #lidow-first-run-banner')) return
-          const t = (el.textContent ?? '').trim()
-          if (t && NEW_CHAT_KWS.some((k) => t === k || t.startsWith(k))) {
+          const t = (el.textContent ?? '').replace(/\s+/g, ' ').trim()
+          // 只认真实可点击元素，且文案必须完全匹配。之前用 startsWith + 祖先文本，
+          // 点原生会话链接时会把整个侧栏（含“开启新对话”按钮）误判成新对话。
+          const clickable =
+            el.matches?.('button, a, [role="button"], [role="menuitem"]') ||
+            getComputedStyle(el).cursor === 'pointer'
+          const insideChatLink = Boolean(el.closest?.('a[href*="/a/chat/s/"]'))
+          const isNewChat =
+            clickable &&
+            !insideChatLink &&
+            t.length <= 16 &&
+            NEW_CHAT_KWS.some((k) => t === k || t.toLowerCase() === k.toLowerCase())
+          if (isNewChat) {
             // 等平台自己完成路由跳转后再弹，避免被它随后的渲染覆盖。
             // 显式开新对话要解除「已初始化」标记，否则新对话里引导永远不再出现。
             firstRunDismissed = true // 先压住，等 URL 真变了再放开
             projectInitialized = false
+            markNativeNewChat()
             clearFirstRunPersisted()
+            // 主进程据此解绑旧会话：否则新对话的消息仍会记到旧会话上
+            send({ type: 'native-new-chat' })
             window.setTimeout(() => {
               firstRunDismissed = false
               firstRunCollapsed = false
@@ -1791,6 +1990,9 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       projectRoot = cmd.projectRoot || null
       projectKnown = true
       projectInitialized = Boolean(cmd.initialized)
+      // 已初始化且页面落在具体对话上：之前“新对话”的 pending 已失效，
+      // 不能再让它在切回历史会话时强制弹初始化。
+      if (cmd.initialized && /\/chat\/s\/[a-f0-9-]+/i.test(location.pathname)) clearNativeNewChat()
       // 注意：这里不能重置 firstRunDismissed —— set-project 会在每次 configure
       // （切会话/重载页面）时下发，重置会让用户关掉的模态反复弹出来。
       // 只有「刚完成初始化」才需要重新评估，那由主进程在选完目录后单独通知。

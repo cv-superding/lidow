@@ -7,7 +7,7 @@ import hljs from 'highlight.js'
 import { useStore, useProject, WEB_MODE, type ReviewFile } from '../store'
 import { api } from '../api'
 import { waitWebviewWcId, webviewWcId } from '../webviews'
-import { stripToolArtifacts } from '../textClean'
+import { stripCitationMarkers, stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
 import { PureToolbar } from './TitleBar'
@@ -64,7 +64,7 @@ const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
 
 function TurnBody({ text }: { text: string }): React.JSX.Element {
   // 工具调用块由下方 ToolCard 可视化表达，正文里不再重复展示原始 JSON
-  const cleaned = stripToolArtifacts(text)
+  const cleaned = stripCitationMarkers(stripToolArtifacts(text))
   if (!cleaned) return <></>
   return (
     <div className="markdown-body">
@@ -122,7 +122,7 @@ function ThinkingBlock({ text, streaming }: { text: string; streaming: boolean }
         </span>
         <span className="shrink-0 font-medium">{streaming ? '思考中' : '已处理'}</span>
         {streaming && <span className="anim-breathe h-1 w-1 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />}
-        {preview ? (
+        {!open && preview ? (
           <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: 'var(--text-hint)' }}>
             · {preview}
           </span>
@@ -823,7 +823,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             <div className="flex flex-col gap-2">
               {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI */}
               <div className="whitespace-pre-wrap text-[13.5px] leading-[1.68]" style={{ color: 'var(--text-body)' }}>
-                {streamingText}
+                {stripCitationMarkers(streamingText)}
               </div>
               <span className="flex items-center gap-1.5 text-[11px]" style={{ color: 'var(--text-hint)' }}>
                 <span className="anim-breathe h-1.5 w-1.5 rounded-full" style={{ background: 'var(--accent)' }} />
@@ -988,6 +988,44 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               setInput(e.target.value)
               setSlashOpen(e.target.value.startsWith('/') && !e.target.value.includes(' '))
               setSlashIndex(0)
+            }}
+            onPaste={(e) => {
+              const dt = e.clipboardData
+              if (!dt) return
+              const files = [...dt.items]
+                .filter((it) => it.kind === 'file' && it.type.startsWith('image/'))
+                .map((it) => it.getAsFile())
+                .filter((f): f is File => Boolean(f))
+              if (files.length === 0) return
+              // 同时带文字时保留原生粘贴，避免吞掉用户复制的文本
+              if (dt.getData('text/plain')) return
+              e.preventDefault()
+              if (!activeSession) {
+                useStore.getState().notice('请先新建或选择会话，再粘贴图片', 'warn')
+                return
+              }
+              const session = activeSession
+              useStore.getState().notice(`正在附加 ${files.length} 张图片…`)
+              void Promise.all(
+                files.slice(0, 4).map(
+                  (f) =>
+                    new Promise<string>((resolve, reject) => {
+                      const reader = new FileReader()
+                      reader.onload = () => resolve(String(reader.result ?? ''))
+                      reader.onerror = () => reject(reader.error ?? new Error('读取剪贴板图片失败'))
+                      reader.readAsDataURL(f)
+                    })
+                )
+              )
+                .then((images) => api.pasteWebImages(session.id, images))
+                .then((r) =>
+                  useStore.getState().notice(r.message ?? (r.ok ? '图片已附加' : '图片附加失败'), r.ok ? 'info' : 'warn')
+                )
+                .catch((err) =>
+                  useStore
+                    .getState()
+                    .notice(`图片附加失败：${err instanceof Error ? err.message : String(err)}`, 'error')
+                )
             }}
             onKeyDown={(e) => {
               if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {

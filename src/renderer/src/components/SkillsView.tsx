@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import hljs from 'highlight.js'
 import type {
   ExternalSkillImportResult,
   ExternalSkillMeta,
@@ -101,18 +104,56 @@ function Modal({
 }): React.JSX.Element {
   return (
     <div
-      className="fixed inset-0 z-[76] flex items-center justify-center px-6"
-      style={{ background: 'rgba(9,12,18,.42)', backdropFilter: 'blur(3px)' }}
+      className="skill-modal-overlay fixed inset-0 z-[76] flex items-center justify-center px-6"
+      style={{ background: 'rgba(0,0,0,.4)', backdropFilter: 'blur(3px)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose()
       }}
     >
       <div
-        className={`anim-pop flex max-h-[88vh] w-full flex-col overflow-hidden rounded-[18px] ${wide ? 'max-w-[860px]' : 'max-w-[600px]'}`}
-        style={{ background: 'var(--surface-raised)', border: '1px solid var(--border-strong)', boxShadow: '0 24px 64px rgba(0,0,0,.28)' }}
+        className={`skill-modal-card flex max-h-[85vh] w-full flex-col overflow-hidden rounded-[12px] ${
+          wide ? 'max-w-[900px]' : 'max-w-[600px]'
+        }`}
+        style={{
+          background: 'var(--surface-raised)',
+          border: '1px solid var(--border)',
+          boxShadow: '0 8px 30px rgba(0,0,0,.12)'
+        }}
       >
         {children}
       </div>
+    </div>
+  )
+}
+
+/** 技能正文的 Markdown 预览：与对话区同款解析/高亮，代码块使用浅色样式 */
+function SkillMarkdown({ text }: { text: string }): React.JSX.Element {
+  return (
+    <div className="markdown-body skill-preview-md">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className ?? '')
+            const raw = String(children)
+            const isBlock = Boolean(match) || raw.includes('\n')
+            if (!isBlock) return <code {...props}>{children}</code>
+            const lang = match?.[1]
+            const known = Boolean(lang && hljs.getLanguage(lang))
+            let html = ''
+            if (known) {
+              try {
+                html = hljs.highlight(raw, { language: lang!, ignoreIllegals: true }).value
+              } catch {
+                html = ''
+              }
+            }
+            return <pre>{html ? <code dangerouslySetInnerHTML={{ __html: html }} /> : <code>{children}</code>}</pre>
+          }
+        }}
+      >
+        {text}
+      </ReactMarkdown>
     </div>
   )
 }
@@ -613,55 +654,75 @@ export function SkillsView(): React.JSX.Element {
         </div>
       )}
 
-      {detail && (
-        <Modal wide onClose={() => setDetail(null)}>
-          <div className="flex items-start gap-3 border-b px-5 py-4" style={{ borderColor: 'var(--border-soft)' }}>
-            <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px]" style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}>
-              <IconBulb size={15} />
-            </span>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-1.5">
-                <span className="text-[14px] font-semibold">{detail.skill.name}</span>
-                <span className="badge">{scopeLabel(detail.skill.scope)}</span>
-                {detail.skill.category && <span className="badge">{detail.skill.category}</span>}
+      {detail &&
+        (() => {
+          const parsed = splitSkillContent(detail.content, detail.skill)
+          const title = parsed.name || detail.skill.name
+          const description = parsed.description || detail.skill.description
+          const body = parsed.body || '（无正文）'
+          const copyText = parsed.body || detail.content
+          return (
+            <Modal wide onClose={() => setDetail(null)}>
+              <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4" style={{ borderColor: 'var(--border-soft)' }}>
+                <span
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px]"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                >
+                  <IconBulb size={13} />
+                </span>
+                <span className="max-w-[38%] shrink-0 truncate text-[14px] font-medium" title={title}>
+                  {title}
+                </span>
+                <span
+                  className="shrink-0 rounded-[4px] px-2 py-0.5 text-[12px]"
+                  style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+                >
+                  {detail.skill.category || scopeLabel(detail.skill.scope)}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px]" style={{ color: 'var(--text-hint)' }} title={detail.skill.path}>
+                  {detail.skill.path}
+                </span>
+                <button
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[6px] transition-all duration-150 hover:bg-[var(--bg-hover)] active:scale-95"
+                  title="关闭"
+                  onClick={() => setDetail(null)}
+                >
+                  <IconClose size={13} />
+                </button>
               </div>
-              <div className="mt-0.5 text-[11.5px]" style={{ color: 'var(--text-dim)' }}>
-                {detail.skill.description || '（无描述）'}
+              <div className="skill-preview-scroll min-h-0 flex-1 overflow-y-auto px-6 py-5">
+                {description && (
+                  <p className="mb-4 line-clamp-2 text-[12.5px] leading-[1.7]" style={{ color: 'var(--text-dim)' }}>
+                    {description}
+                  </p>
+                )}
+                <SkillMarkdown text={body} />
               </div>
-              <div className="mt-1 truncate font-mono text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-                {detail.skill.path}
+              <div
+                className="flex h-[52px] shrink-0 items-center justify-end gap-2 border-t px-4"
+                style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-raised)' }}
+              >
+                <button
+                  className="skill-btn secondary"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(copyText).then(
+                      () => useStore.getState().notice('技能正文已复制'),
+                      () => useStore.getState().notice('复制失败', 'warn')
+                    )
+                  }}
+                >
+                  <IconCopy size={13} /> 复制正文
+                </button>
+                <button className="skill-btn secondary" onClick={() => startEdit(detail.skill)}>
+                  <IconEdit size={13} /> 编辑
+                </button>
+                <button className="skill-btn danger" onClick={() => void moveToTrash(detail.skill)}>
+                  <IconTrash size={13} /> 回收
+                </button>
               </div>
-            </div>
-            <button className="btn btn-sm btn-ghost btn-icon" title="关闭" onClick={() => setDetail(null)}>
-              <IconClose size={12} />
-            </button>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto px-5 py-4" style={{ background: 'var(--surface-sunken)' }}>
-            <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-[1.7]" style={{ color: 'var(--text-body)' }}>
-              {detail.content}
-            </pre>
-          </div>
-          <div className="flex items-center justify-end gap-2 border-t px-5 py-3" style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}>
-            <button
-              className="btn btn-sm btn-ghost"
-              onClick={() => {
-                void navigator.clipboard.writeText(detail.content).then(
-                  () => useStore.getState().notice('技能正文已复制'),
-                  () => useStore.getState().notice('复制失败', 'warn')
-                )
-              }}
-            >
-              <IconCopy size={12} /> 复制正文
-            </button>
-            <button className="btn btn-sm btn-outline" onClick={() => startEdit(detail.skill)}>
-              <IconEdit size={12} /> 编辑
-            </button>
-            <button className="btn btn-sm btn-danger" onClick={() => void moveToTrash(detail.skill)}>
-              <IconTrash size={12} /> 回收
-            </button>
-          </div>
-        </Modal>
-      )}
+            </Modal>
+          )
+        })()}
 
       {editor && (
         <Modal onClose={() => !editorBusy && setEditor(null)}>

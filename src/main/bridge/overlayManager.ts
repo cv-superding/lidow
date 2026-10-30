@@ -63,7 +63,7 @@ export class OverlayManager {
   /** 用户在网页输入框里亲手发送的消息（同步回纯净模式的用户轮次） */
   private onPageUserMessage?: (sessionId: string, text: string) => void
   /** 页面重挂载后的最后一条 AI 回答（补齐重启/重载期间缺失的最终答复） */
-  private onPageSnapshot?: (sessionId: string, text: string) => void
+  private onPageSnapshot?: (sessionId: string, text: string, think?: string) => void
   /** webview 就绪（或重新导航）时回调，用于重发 configure */
   onReady?: (sessionId: string) => void
   /**
@@ -86,7 +86,9 @@ export class OverlayManager {
   /** 网页侧用户删除了对话（按 webContentsId 上报 URL） */
   onChatDeleted?: (webContentsId: number, url: string) => void
   /** 网页侧点击了属于某个 Lidow 项目的对话 */
-  onActivateChat?: (webContentsId: number, url: string) => void
+  onActivateChat?: (webContentsId: number, url: string, reload?: boolean) => void
+  /** 用户点平台自己的「新对话」：解绑原会话并恢复初始化引导 */
+  onNativeNewChat?: (webContentsId: number) => void
   /** overlay 就绪（无论是否已绑定会话）：用于下发网页会话删除监听列表 */
   onAnyReady?: (webContentsId: number) => void
 
@@ -429,7 +431,7 @@ export class OverlayManager {
       }
       case 'page-snapshot': {
         const sessionId = this.sessionOfWebContents(sender.id)
-        if (sessionId && payload.text.trim()) this.onPageSnapshot?.(sessionId, payload.text)
+        if (sessionId && payload.text.trim()) this.onPageSnapshot?.(sessionId, payload.text, payload.think)
         break
       }
       case 'chat-deleted': {
@@ -437,7 +439,11 @@ export class OverlayManager {
         break
       }
       case 'activate-chat': {
-        if (payload.url) this.onActivateChat?.(sender.id, payload.url)
+        if (payload.url) this.onActivateChat?.(sender.id, payload.url, payload.reload)
+        break
+      }
+      case 'native-new-chat': {
+        this.onNativeNewChat?.(sender.id)
         break
       }
       case 'open-chat-result': {
@@ -503,7 +509,7 @@ export class OverlayManager {
   }
 
   /** 注册「页面重挂载时的最后一条 AI 回答」回调 */
-  setPageSnapshotHandler(fn: (sessionId: string, text: string) => void): void {
+  setPageSnapshotHandler(fn: (sessionId: string, text: string, think?: string) => void): void {
     this.onPageSnapshot = fn
   }
 

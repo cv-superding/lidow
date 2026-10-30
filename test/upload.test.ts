@@ -19,4 +19,14 @@ describe('纯模式文件/图片上传', () => {
     expect(chat).toContain('.uploadWebFile(')
     expect(chat).toContain('uploadWebFile')
   })
+
+  it('输入框 Ctrl+V 粘贴图片：读取剪贴板并走同一条 CDP 注入', () => {
+    expect(chat).toContain('onPaste')
+    expect(chat).toContain('.pasteWebImages(')
+    expect(chat).toContain('readAsDataURL')
+    expect(handlers).toContain("R('pasteWebImages'")
+    expect(handlers).toContain('attachFilesToWebInput')
+    expect(handlers).toContain('DOM.setFileInputFiles')
+    expect(ipc).toContain('pasteWebImages')
+  })
 })

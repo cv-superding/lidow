@@ -81,7 +81,7 @@ export function Empty({
       )}
       <div className="text-[13px] font-medium">{title}</div>
       {hint && (
-        <div className="max-w-[460px] text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+        <div className="max-w-[860px] text-[11.5px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
           {hint}
         </div>
       )}

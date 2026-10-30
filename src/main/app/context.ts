@@ -1,4 +1,5 @@
 import { app, BrowserWindow, Notification, shell, webContents } from 'electron'
+import type { WebContents } from 'electron'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, cpSync, statSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -28,6 +29,7 @@ import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
 import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
+import { chromeUserAgent, isGoogleAuthUrl } from '@main/app/googleAuth'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
 import type {
@@ -191,6 +193,7 @@ export class AppContext {
   private projectDirs = new Map<string, string>()
   /** webContents → 平台/账号：首次初始化时没有会话绑定，靠它建对话到正确的平台 */
   private wcProviders = new Map<number, { providerId: string; accountId?: string }>()
+  private googleAuthWindows = new Map<number, BrowserWindow>()
   /** 本地删除网页对话进行中的 URL：忽略 overlay 反向回调，避免同名事件重复删/竞态 */
   private webChatDeletesInFlight = new Map<string, number>()
   /** Google 登录提示节流（iframe/主页面可能连续导航） */
@@ -421,7 +424,7 @@ export class AppContext {
     this.overlay.setPageUserMessageHandler((sessionId, text) => this.recordWebUserMessage(sessionId, text))
     // 页面重挂载时补齐最后一条 AI 回答：重启会中断流，之后网页上已有的最终答案
     // 不会再产生网络事件，不补的话纯净模式会停在思考片段。
-    this.overlay.setPageSnapshotHandler((sessionId, text) => this.loop.syncExternalReply(sessionId, text))
+    this.overlay.setPageSnapshotHandler((sessionId, text, think) => this.loop.syncExternalReply(sessionId, text, think))
     // 服务端权威 token 统计（SSE accumulated_token_usage 差值），按平台累计持久化
     this.overlay.setTokenUsageHandler((sessionId, tokens) => {
       const session = this.sessionOf(sessionId)
@@ -514,7 +517,8 @@ export class AppContext {
       if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
     }
     this.overlay.onChatDeleted = (webContentsId, url) => this.handleWebChatDeleted(webContentsId, url)
-    this.overlay.onActivateChat = (webContentsId, url) => void this.activateWebChat(webContentsId, url)
+    this.overlay.onActivateChat = (webContentsId, url, reload) => void this.activateWebChat(webContentsId, url, reload)
+    this.overlay.onNativeNewChat = (webContentsId) => this.handleNativeNewChat(webContentsId)
     this.overlay.onAnyReady = (webContentsId) => this.syncChatWatchToWebview(webContentsId)
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()
@@ -543,15 +547,37 @@ export class AppContext {
       // Google 登录失败有时发生在平台承载的子页面/弹层里，overlay 未必能注入；
       // 主进程侧再兜底提示一次，避免用户只看到 Google 的报错页。
       if (wc.getType() === 'webview') {
+        const webServerMode = process.env.LIDOW_WEB_SERVER === '1'
+        // Google OAuth 在嵌入 webview 里会被拒绝；桌面版改用同一分区的独立顶层窗口。
+        // Web 版（Docker）宿主窗口不可见，只能提示改用邮箱登录或导入 Cookie。
+        if (!webServerMode) {
+          // 覆盖三种入口：window.open 弹窗、页面跳转、服务端 302。
+          wc.setWindowOpenHandler(({ url }) => {
+            if (isGoogleAuthUrl(url)) {
+              this.openGoogleAuthWindow(wc, url)
+              return { action: 'deny' }
+            }
+            return { action: 'allow' }
+          })
+          const routeGoogleAuth = (event: { preventDefault(): void }, url: string): void => {
+            if (!isGoogleAuthUrl(url)) return
+            event.preventDefault()
+            this.openGoogleAuthWindow(wc, url)
+          }
+          wc.on('will-navigate', routeGoogleAuth)
+          wc.on('will-redirect', routeGoogleAuth)
+        }
         const warnGoogle = (url: string): void => {
-          if (!/accounts\.google\.com|google\.com\/(?:signin|o\/oauth)/i.test(url)) return
+          if (!isGoogleAuthUrl(url)) return
           if (Date.now() - this.lastGoogleLoginNoticeAt < 20_000) return
           this.lastGoogleLoginNoticeAt = Date.now()
           this.emit({
             type: 'notice',
             sessionId: '',
             level: 'warn',
-            message: 'Google 不允许在应用内浏览器完成登录：请返回平台登录页改用邮箱/验证码。'
+            message: webServerMode
+              ? 'Google 不允许在应用内浏览器完成登录：请改用邮箱/验证码，或在系统浏览器登录后导入 Cookie。'
+              : 'Google 登录页加载在了嵌入页面里：已尝试用独立窗口打开；若没有弹出可重试，或改用邮箱登录。'
           })
         }
         wc.on('did-navigate', (_event, url) => warnGoogle(url))
@@ -560,14 +586,7 @@ export class AppContext {
       // 嵌入式 webview 环境漂白：UA 去除 Electron 标识，对齐真实 Chrome（缓解平台"使用环境异常"误判）
       if (wc.getType() === 'webview') {
         try {
-          const chrome = process.versions.chrome ?? '126'
-          const platform =
-            process.platform === 'win32'
-              ? 'Windows NT 10.0; Win64; x64'
-              : process.platform === 'darwin'
-                ? 'Macintosh; Intel Mac OS X 10_15_7'
-                : 'X11; Linux x86_64'
-          const ua = `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome} Safari/537.36`
+          const ua = chromeUserAgent()
           wc.setUserAgent(ua)
           // 同一分区的子 frame/弹窗也要用 Chrome UA，否则 Google 会按 Electron UA 拒绝登录
           wc.session.setUserAgent(ua, 'zh-CN,zh;q=0.9,en;q=0.8')
@@ -589,6 +608,36 @@ export class AppContext {
     Logger.info('context', 'AppContext 初始化完成')
   }
 
+  /**
+   * 用户在网页里点了平台自己的「开启新对话」。
+   * 这个动作走平台内部路由，主进程原先收不到信号：webview 仍绑着旧会话，
+   * 新对话的消息会被记到旧会话，且重新加载后 projectInitialized 仍为 true，
+   * 初始化引导被压掉（用户反复反馈的“新对话没有初始化入口”）。
+   * 这里解绑旧会话并下发未初始化状态；用户确认初始化时会新建并绑定会话。
+   */
+  private handleNativeNewChat(webContentsId: number): void {
+    const sessionId = this.overlay.sessionOfWebContents(webContentsId)
+    if (sessionId) {
+      if (this.loop.isRunning(sessionId)) {
+        this.emit({
+          type: 'notice',
+          sessionId,
+          level: 'warn',
+          message: '网页已开启新对话：原会话正在执行的任务将停止回传'
+        })
+      }
+      this.overlay.unbindSession(sessionId)
+      Logger.info('nav', `网页开启新对话：解绑 ${sessionId.slice(-6)}`)
+    }
+    const project = this.activeProject()
+    this.overlay.sendCmdToWebContents(webContentsId, {
+      kind: 'set-project',
+      projectRoot: project?.root ?? null,
+      initialized: false
+    })
+    this.syncChatWatchToWebview(webContentsId)
+  }
+
   private focusWindow(): void {
     // 目录选择框打开时不要抢焦点：否则原生对话框会被主窗口压到后面
     if (isDirectoryPickerOpen()) return
@@ -597,6 +646,106 @@ export class AppContext {
     if (win.isMinimized()) win.restore()
     win.show()
     win.focus()
+  }
+
+  /** 设置变更后刷新已打开网页的 hook 配置（每轮注入开关 / 系统提示词） */
+  refreshProviderHooks(): void {
+    for (const sessionId of this.overlay.boundSessionIds()) {
+      const session = this.sessionOf(sessionId)
+      if (!session) continue
+      const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
+      const spec = provider ? HOOKS[provider.id] : undefined
+      if (!spec) continue
+      void this.overlay.injectHook(
+        sessionId,
+        buildHookSource(spec, this.systemPromptFor(sessionId), this.settings.get().injectSystemPromptEveryTurn)
+      )
+    }
+  }
+
+  /**
+   * Google 会拒绝在嵌入 webview 里完成 OAuth，但普通顶层窗口可以通过。
+   * 用同一 partition 起独立窗口，登录完成的 Cookie 会自然写进网页会话；
+   * 窗口关闭后重载原网页即可变成已登录。
+   */
+  private openGoogleAuthWindow(source: WebContents, url: string): void {
+    const existing = this.googleAuthWindows.get(source.id)
+    if (existing && !existing.isDestroyed()) {
+      existing.show()
+      existing.focus()
+      return
+    }
+    const win = new BrowserWindow({
+      width: 520,
+      height: 780,
+      show: true,
+      title: 'Google 登录（完成后会自动同步）',
+      autoHideMenuBar: true,
+      backgroundColor: '#ffffff',
+      webPreferences: {
+        session: source.session,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true
+      }
+    })
+    win.webContents.setUserAgent(chromeUserAgent())
+    this.googleAuthWindows.set(source.id, win)
+    const reloadSource = (): void => {
+      if (!source.isDestroyed()) {
+        try {
+          source.reload()
+        } catch {
+          /* 页面已关闭 */
+        }
+      }
+      this.focusWindow()
+    }
+    win.on('closed', () => {
+      this.googleAuthWindows.delete(source.id)
+      reloadSource()
+    })
+    let origin = ''
+    try {
+      origin = new URL(source.getURL()).origin
+    } catch {
+      /* 来源未知时只能等用户手动关闭 */
+    }
+    let finished = false
+    const finish = (): void => {
+      if (finished) return
+      finished = true
+      // 等平台把 Set-Cookie 落盘后再关窗口，closed 事件会重载网页
+      setTimeout(() => {
+        if (!win.isDestroyed()) win.close()
+      }, 800)
+    }
+    win.webContents.on('did-navigate', (_event, target) => {
+      try {
+        const u = new URL(target)
+        if (origin && u.origin === origin && !/\/(?:auth|login|signin|sign-in|oauth)/i.test(u.pathname)) finish()
+      } catch {
+        /* 忽略无效 URL */
+      }
+    })
+    // 某些网络环境里 Google 仍可能拒绝（策略会动态调整），给出明确退路
+    win.webContents.on('did-finish-load', () => {
+      void win.webContents
+        .executeJavaScript(`(document.body && document.body.innerText || '').slice(0, 2500)`)
+        .then((text) => {
+          if (!/无法登录|可能不安全|browser or app may not be secure|disallowed_useragent/i.test(String(text))) return
+          Logger.warn('auth', 'Google 登录在独立窗口仍被拒绝')
+          this.emit({
+            type: 'notice',
+            sessionId: '',
+            level: 'warn',
+            message: 'Google 仍拒绝了独立窗口登录，请改用邮箱/验证码登录。'
+          })
+        })
+        .catch(() => undefined)
+    })
+    void win.loadURL(url).catch((e) => Logger.warn('auth', `Google 登录窗口打开失败: ${String(e)}`))
+    Logger.info('auth', `Google 登录改用独立窗口: ${new URL(url).host}`)
   }
 
   /**
@@ -750,7 +899,12 @@ export class AppContext {
     // 同时把系统提示词带进去：用户在网页输入框里自己发消息时，hook 会把它拼进请求体，
     // 这样 AI 也拿得到工具协议与工作目录（否则它会答「我没有文件系统访问权限」）。
     const spec = HOOKS[provider.id]
-    if (spec) void this.overlay.injectHook(sessionId, buildHookSource(spec, this.systemPromptFor(sessionId)))
+    if (spec) {
+      void this.overlay.injectHook(
+        sessionId,
+        buildHookSource(spec, this.systemPromptFor(sessionId), this.settings.get().injectSystemPromptEveryTurn)
+      )
+    }
     // 插件网页脚本：登记后按「页面加载完成」时机注入（直接 executeJs 会在
     // 页面加载期打在 about:blank 上静默丢失；刷新后也由 did-finish-load 重放）
     this.overlay.setWebScripts(sessionId, this.webScriptsOf(provider.id))
@@ -1073,7 +1227,7 @@ export class AppContext {
    * 网页侧点击了一个已知项目对话：切换 Lidow 活动项目/会话并绑定当前 webview。
    * 页面点击已在 overlay 中 preventDefault，这里负责导航到目标对话。
    */
-  async activateWebChat(webContentsId: number, rawUrl: string): Promise<void> {
+  async activateWebChat(webContentsId: number, rawUrl: string, reload = false): Promise<void> {
     const wc = webContents.fromId(webContentsId)
     if (!wc || wc.isDestroyed()) return
     const key = chatUrlKey(rawUrl)
@@ -1135,8 +1289,18 @@ export class AppContext {
     })
     // 先把新的活动项目推给网页：面板高亮立即更新，不用等导航完成
     this.syncProjectFoldersToWebview(webContentsId)
-    if (chatUrlKey(wc.getURL()) !== key) {
-      const targetUrl = session.providerUrl || rawUrl
+    const targetUrl = session.providerUrl || rawUrl
+    if (chatUrlKey(wc.getURL()) === key) {
+      // 项目文件夹点回“当前 URL”：页面可能停在上一次失败切换留下的旧对话，
+      // 仅显式 reload 请求时强制重载对齐；原生侧栏点击仍保持无刷新。
+      if (reload) {
+        try {
+          wc.reload()
+        } catch {
+          /* 页面已销毁 */
+        }
+      }
+    } else {
       // 优先点侧栏里已有的链接做 SPA 切换；找不到才整页 loadURL。
       // 整页 reload 会让注入的项目文件夹消失 1~3 秒，用户感知就是“切对话很慢”。
       const opened = await this.overlay.openChatInPage(session.id, targetUrl)

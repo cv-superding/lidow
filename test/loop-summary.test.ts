@@ -195,6 +195,36 @@ describe('重启后的最终回答恢复', () => {
     loop.syncExternalReply('sess_1', '郑州的')
     expect(session().turns).toHaveLength(1)
   })
+
+  it('网页快照带思考/搜索前缀且去掉了引用角标时，不重复追加整段回答', () => {
+    const { loop, session, addTurn } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '今天济南的天气咋样', ts: Date.now(), status: 'done' })
+    const answer =
+      '济南今天（10月30日，周五）：晴，11~23℃，北风3~4级，空气质量良。\n\n' +
+      '- 天气：晴到晴间多云，白天回暖尚可，夜间降温快[reference:0]\n' +
+      '- 气温：市区最低约 12℃，最高 22~23℃[reference:4]\n' +
+      '- 风力：南风转北风 3~4 级，阵风稍大[reference:5]'
+    addTurn({ id: 'a1', role: 'assistant', text: answer, ts: Date.now(), status: 'done' })
+    const snapshot =
+      '已思考（用时 10 秒）搜索到 12 个网页' + answer.replace(/\[reference:\d+\]/g, '')
+    loop.syncExternalReply('sess_1', snapshot)
+    expect(session().turns).toHaveLength(2)
+    expect(session().turns[1]!.text).toBe(answer)
+  })
+
+  it('页面快照带来更完整的思考块时更新 think，不新增轮次', () => {
+    const { loop, session, addTurn } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '今天济南的天气咋样', ts: Date.now(), status: 'done' })
+    const answer = '济南今天晴，11~23℃。'
+    addTurn({ id: 'a1', role: 'assistant', text: answer, ts: Date.now(), status: 'done', think: '用户问天气' })
+    loop.syncExternalReply(
+      'sess_1',
+      answer,
+      '已思考（用时 10 秒）用户问济南天气。搜索到 12 个网页。信息足够，总结天气。'
+    )
+    expect(session().turns).toHaveLength(2)
+    expect(session().turns[1]!.think).toContain('信息足够')
+  })
 })
 
 describe('长任务轮数上限', () => {

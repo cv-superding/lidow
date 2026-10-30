@@ -196,6 +196,8 @@ export interface LidowApi {
   overlayToggle(sessionId: string, kind: 'toggle-think' | 'toggle-search' | 'upload-file'): Promise<boolean>
   /** 选择本机文件并附加到当前网页会话的输入区（桌面纯模式） */
   uploadWebFile(sessionId: string): Promise<{ ok: boolean; canceled?: boolean; count?: number; message?: string }>
+  /** 粘贴剪贴板里的图片：data URL 注入当前网页会话的输入区 */
+  pasteWebImages(sessionId: string, images: string[]): Promise<{ ok: boolean; count?: number; message?: string }>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
   checkUpdate(manual?: boolean): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }>
