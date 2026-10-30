@@ -64,7 +64,7 @@ export function PureModeShell({
   const [providerId, setProviderId] = useState(() => {
     const s = useStore.getState()
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
-    return tab?.providerId ?? s.activeSession?.providerId ?? ''
+    return tab?.providerId ?? s.activeSession?.providerId ?? s.sessions[0]?.providerId ?? ''
   })
   const [, setTick] = useState(0)
 
@@ -74,7 +74,8 @@ export function PureModeShell({
   const currentAccount = activeTab?.accountId ?? activeSession?.accountId ?? ''
   useEffect(() => {
     if (currentProvider) setProviderId(currentProvider)
-  }, [currentProvider])
+    else if (!providerId && sessions[0]) setProviderId(sessions[0].providerId)
+  }, [currentProvider, providerId, sessions])
 
   const filtered = useMemo(
     () => filterSessionList(sessions, { query, providerId, currentProvider, currentAccount }),
