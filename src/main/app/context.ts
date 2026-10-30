@@ -27,9 +27,14 @@ import { SyncService } from '@main/sync/service'
 import { CredentialVault } from '@main/infra/vault'
 import { JobScheduler } from '@main/infra/jobs'
 import { HotkeyManager, checkForUpdate, listTemplates } from '@main/app/platform'
-import { isDirectoryPickerOpen, parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
+import {
+  isDirectoryPickerOpen,
+  parentWindowFor,
+  showDirectoryPicker
+} from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
 import { applyChromeClientHints, chromeUserAgent, isGoogleAuthUrl } from '@main/app/googleAuth'
+import { findSystemBrowser, runSystemBrowserLogin } from '@main/app/systemBrowserLogin'
 import { buildSystemPrompt } from '@main/prompt/build'
 import { registerRuntimeServices } from '@main/dsh/services'
 import type {
@@ -127,11 +132,15 @@ function isGenericTitlePart(part: string, providerName: string): boolean {
 function cleanChatTitle(raw: string | undefined, providerName: string): string {
   let t = (raw ?? '').replace(/\s+/g, ' ').trim()
   if (!t) return ''
-  const parts = t.split(/\s+[-|·]\s+/).map((x) => x.trim()).filter(Boolean)
+  const parts = t
+    .split(/\s+[-|·]\s+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
   if (parts.length > 1) {
     // 只剔除尾部平台名/首页标语，避免把「ChatGPT - 使用指南」这类
     // 以平台名开头的真实标题削成「使用指南」。
-    while (parts.length > 1 && isGenericTitlePart(parts[parts.length - 1]!, providerName)) parts.pop()
+    while (parts.length > 1 && isGenericTitlePart(parts[parts.length - 1]!, providerName))
+      parts.pop()
     t = parts.join(' - ').trim()
   }
   if (!t || isGenericTitlePart(t, providerName)) return ''
@@ -194,6 +203,8 @@ export class AppContext {
   /** webContents → 平台/账号：首次初始化时没有会话绑定，靠它建对话到正确的平台 */
   private wcProviders = new Map<number, { providerId: string; accountId?: string }>()
   private googleAuthWindows = new Map<number, BrowserWindow>()
+  /** 系统浏览器登录一次只跑一个：独立配置不能被两个实例同时占用 */
+  private systemLoginBusy = false
   /** 本地删除网页对话进行中的 URL：忽略 overlay 反向回调，避免同名事件重复删/竞态 */
   private webChatDeletesInFlight = new Map<string, number>()
   /** Google 登录提示节流（iframe/主页面可能连续导航） */
@@ -219,10 +230,13 @@ export class AppContext {
       }))
     }
     this.overlay.setSendIntervalProvider(() => this.settings.get().webSendIntervalMs ?? 1000)
-    this.projectStore = new JsonStore<{ projects: ProjectInfo[]; activeProjectId: string | null }>(join(userData, 'projects.json'), {
-      projects: [],
-      activeProjectId: null
-    })
+    this.projectStore = new JsonStore<{ projects: ProjectInfo[]; activeProjectId: string | null }>(
+      join(userData, 'projects.json'),
+      {
+        projects: [],
+        activeProjectId: null
+      }
+    )
     this.projects = this.projectStore.get().projects
     for (const p of this.projects) this.projectDirs.set(p.id, p.root)
     // 启动时对全部已知项目补跑脚手架（幂等）：旧项目也能获得 .lidow/skills 等目录。
@@ -314,7 +328,10 @@ export class AppContext {
       jobs: this.jobs
     })
 
-    this.dshKv = new JsonStore<Record<string, Record<string, unknown>>>(join(userData, 'dsh-kv.json'), {})
+    this.dshKv = new JsonStore<Record<string, Record<string, unknown>>>(
+      join(userData, 'dsh-kv.json'),
+      {}
+    )
     this.tokenUsage = new JsonStore<Record<string, number>>(join(userData, 'token-stats.json'), {})
     registerRuntimeServices(this.dsh, {
       kv: this.dshKv,
@@ -378,7 +395,8 @@ export class AppContext {
           customNotice: m.customNotice ?? ''
         }
       },
-      captureMemory: (content) => this.memory.add(content.slice(0, 40), content, ['标记'], 'marker'),
+      captureMemory: (content) =>
+        this.memory.add(content.slice(0, 40), content, ['标记'], 'marker'),
       systemPromptFor: (sessionId) => this.systemPromptFor(sessionId),
       takeThinking: (sessionId) => this.takeThinking(sessionId),
       // 自动续接：新会话需要自己的网页绑定。这里只做主进程侧绑定，
@@ -403,8 +421,12 @@ export class AppContext {
       }
     })
     this.hotkeys.registerAction('stop-all', () => this.stopAll('all'))
-    this.hotkeys.registerAction('new-session', () => this.emit({ type: 'ui-new-session', sessionId: '' }))
-    this.hotkeys.registerAction('toggle-pure', () => this.emit({ type: 'ui-toggle-pure', sessionId: '' }))
+    this.hotkeys.registerAction('new-session', () =>
+      this.emit({ type: 'ui-new-session', sessionId: '' })
+    )
+    this.hotkeys.registerAction('toggle-pure', () =>
+      this.emit({ type: 'ui-toggle-pure', sessionId: '' })
+    )
     this.hotkeys.applyAll()
 
     this.overlay.setThinkChunkHandler((sessionId, think) => {
@@ -421,10 +443,14 @@ export class AppContext {
       void this.loop.adoptExternalReply(sessionId, text)
     })
     // 网页里亲手发的用户消息也要出现在纯净模式（双向同步的另一半）
-    this.overlay.setPageUserMessageHandler((sessionId, text) => this.recordWebUserMessage(sessionId, text))
+    this.overlay.setPageUserMessageHandler((sessionId, text) =>
+      this.recordWebUserMessage(sessionId, text)
+    )
     // 页面重挂载时补齐最后一条 AI 回答：重启会中断流，之后网页上已有的最终答案
     // 不会再产生网络事件，不补的话纯净模式会停在思考片段。
-    this.overlay.setPageSnapshotHandler((sessionId, text, think) => this.loop.syncExternalReply(sessionId, text, think))
+    this.overlay.setPageSnapshotHandler((sessionId, text, think) =>
+      this.loop.syncExternalReply(sessionId, text, think)
+    )
     // 服务端权威 token 统计（SSE accumulated_token_usage 差值），按平台累计持久化
     this.overlay.setTokenUsageHandler((sessionId, tokens) => {
       const session = this.sessionOf(sessionId)
@@ -438,7 +464,8 @@ export class AppContext {
         this.focusWindow()
         return
       }
-      const level = action === 'stop-generate' ? 'generate' : action === 'stop-tool' ? 'tool' : 'all'
+      const level =
+        action === 'stop-generate' ? 'generate' : action === 'stop-tool' ? 'tool' : 'all'
       this.loop.stop(sessionId, level)
     })
     this.overlay.onReady = (sessionId) => this.configureOverlay(sessionId)
@@ -451,7 +478,8 @@ export class AppContext {
     this.overlay.onConfirmProject = (webContentsId) => void this.sendInitPrompt(webContentsId)
     // 「延续上个对话」：压缩当前会话 → 摘要作为新对话的第一条消息。
     // 等于同一项目的上下文接力：新窗口从上次的进度接着干。
-    this.overlay.onContinueProject = (webContentsId) => void this.continueProjectInNewChat(webContentsId)
+    this.overlay.onContinueProject = (webContentsId) =>
+      void this.continueProjectInNewChat(webContentsId)
     this.overlay.onOpenExternal = (webContentsId, url) => {
       const target = url || webContents.fromId(webContentsId)?.getURL()
       if (target) void shell.openExternal(target)
@@ -478,14 +506,19 @@ export class AppContext {
           .list()
           .find((m) => m.id !== sessionId && m.providerUrl === url)
         if (conflict) {
-          Logger.warn('nav', `忽略重复对话 URL session=${sessionId.slice(-6)} 已属于 ${conflict.id.slice(-6)}`)
+          Logger.warn(
+            'nav',
+            `忽略重复对话 URL session=${sessionId.slice(-6)} 已属于 ${conflict.id.slice(-6)}`
+          )
           return
         }
       }
       const cleanTitle = cleanChatTitle(title, descriptor?.name ?? session.providerId)
       // 用户手动命名的会话保持原名，网页按首条消息自动生成的标题不覆盖
       const nextTitle =
-        session.titleLocked || !cleanTitle || cleanTitle === session.title ? session.title : cleanTitle
+        session.titleLocked || !cleanTitle || cleanTitle === session.title
+          ? session.title
+          : cleanTitle
       const nextUrl = shouldRecordUrl ? url : session.providerUrl
       if (nextUrl === session.providerUrl && nextTitle === session.title) return
       this.sessionStoreOf(session.projectId).update(sessionId, (x) => ({
@@ -507,7 +540,10 @@ export class AppContext {
         })
       }
       if (shouldRecordUrl) {
-        Logger.info('nav', `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`)
+        Logger.info(
+          'nav',
+          `providerUrl 已记录 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`
+        )
       }
       if (nextTitle !== session.title) {
         Logger.info('nav', `会话标题同步自网页: ${session.title} → ${nextTitle}`)
@@ -516,8 +552,10 @@ export class AppContext {
       const wcId = this.overlay.wcIdOfSession(sessionId)
       if (wcId !== undefined) this.syncChatWatchToWebview(wcId, session.projectId)
     }
-    this.overlay.onChatDeleted = (webContentsId, url) => this.handleWebChatDeleted(webContentsId, url)
-    this.overlay.onActivateChat = (webContentsId, url, reload) => void this.activateWebChat(webContentsId, url, reload)
+    this.overlay.onChatDeleted = (webContentsId, url) =>
+      this.handleWebChatDeleted(webContentsId, url)
+    this.overlay.onActivateChat = (webContentsId, url, reload) =>
+      void this.activateWebChat(webContentsId, url, reload)
     this.overlay.onNativeNewChat = (webContentsId) => this.handleNativeNewChat(webContentsId)
     this.overlay.onAnyReady = (webContentsId) => this.syncChatWatchToWebview(webContentsId)
     this.overlay.onLogin = (webContentsId) => {
@@ -533,7 +571,8 @@ export class AppContext {
         // 绑定会话时按项目判断；尚未绑定（新开网页/新窗口）则显示初始化入口，
         // 让用户能把这个新对话接到当前项目（项目已有历史也允许再开一个）。
         // 新网页/新会话必须给初始化入口；只有当前会话确实已有对话/已初始化才压掉
-        initialized: this.settings.get().pureMode || (session ? this.sessionInitialized(session) : false)
+        initialized:
+          this.settings.get().pureMode || (session ? this.sessionInitialized(session) : false)
       })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
@@ -658,17 +697,123 @@ export class AppContext {
       if (!spec) continue
       void this.overlay.injectHook(
         sessionId,
-        buildHookSource(spec, this.systemPromptFor(sessionId), this.settings.get().injectSystemPromptEveryTurn)
+        buildHookSource(
+          spec,
+          this.systemPromptFor(sessionId),
+          this.settings.get().injectSystemPromptEveryTurn
+        )
       )
     }
   }
 
   /**
-   * Google 会拒绝在嵌入 webview 里完成 OAuth，但普通顶层窗口可以通过。
-   * 用同一 partition 起独立窗口，登录完成的 Cookie 会自然写进网页会话；
-   * 窗口关闭后重载原网页即可变成已登录。
+   * Google 对 Electron 环境有服务端风控：UA/UA-CH 能过登录页，提交邮箱后仍会跳 rejected。
+   * 桌面端优先用系统 Chrome/Edge 完成登录（真实浏览器），再把 Provider Cookie 同步回该分区；
+   * 没有系统浏览器或调试通道不可用时，退回同分区顶层窗口。
    */
   private openGoogleAuthWindow(source: WebContents, url: string): void {
+    const existing = this.googleAuthWindows.get(source.id)
+    if (existing && !existing.isDestroyed()) {
+      existing.show()
+      existing.focus()
+      return
+    }
+    if (this.systemLoginBusy) {
+      this.emit({
+        type: 'notice',
+        sessionId: '',
+        level: 'warn',
+        message: '已有一个 Google 登录窗口在进行中，请先完成它再登录下一个账号。'
+      })
+      return
+    }
+    let sourceOrigin = ''
+    try {
+      sourceOrigin = new URL(source.getURL()).origin
+    } catch {
+      /* 来源未知时走嵌入窗口 */
+    }
+    const browserPath = sourceOrigin ? findSystemBrowser() : null
+    if (!browserPath) {
+      this.openEmbeddedGoogleAuthWindow(source, url)
+      return
+    }
+    this.systemLoginBusy = true
+    this.emit({
+      type: 'notice',
+      sessionId: '',
+      level: 'info',
+      message:
+        'Google 不允许应用内登录：已用系统浏览器打开平台首页。请在浏览器里点「登录」→「使用 Google 账户继续」；Google 可能要求验证码/两步验证，完成后会自动同步。'
+    })
+    void runSystemBrowserLogin({
+      browserPath,
+      sourceOrigin,
+      session: source.session
+    })
+      .then((result) => {
+        if (result === 'synced') {
+          if (!source.isDestroyed()) {
+            try {
+              // 登录后直接回平台首页：原地址可能还停在 auth/login_with 中间页
+              void source.loadURL(`${sourceOrigin}/`).catch(() => {
+                try {
+                  source.reload()
+                } catch {
+                  /* 页面已关闭 */
+                }
+              })
+            } catch {
+              /* 页面已关闭 */
+            }
+          }
+          this.focusWindow()
+          this.emit({
+            type: 'notice',
+            sessionId: '',
+            level: 'info',
+            message: '登录成功，登录态已从系统浏览器同步到 Lidow。'
+          })
+          return
+        }
+        if (result === 'rejected') {
+          this.emit({
+            type: 'notice',
+            sessionId: '',
+            level: 'error',
+            message:
+              'Google 在系统浏览器里仍拒绝了这个账号的第三方登录（常见于账号风控或高级保护）。请改用平台的邮箱/密码登录，或换一个 Google 账号。'
+          })
+          return
+        }
+        if (result === 'aborted') {
+          this.emit({
+            type: 'notice',
+            sessionId: '',
+            level: 'warn',
+            message: '登录未完成（浏览器已关闭或超时），可重试或改用邮箱/验证码登录。'
+          })
+          return
+        }
+        this.openEmbeddedGoogleAuthWindow(source, url)
+      })
+      .catch((e) => {
+        Logger.warn(
+          'auth',
+          `系统浏览器 Google 登录异常: ${e instanceof Error ? e.message : String(e)}`
+        )
+        this.openEmbeddedGoogleAuthWindow(source, url)
+      })
+      .finally(() => {
+        this.systemLoginBusy = false
+      })
+  }
+
+  /**
+   * 嵌入窗口兜底：同一 partition 起独立顶层窗口，窗口关闭后重载网页。
+   * Google 可能仍按环境拒绝，主要用于没有系统 Chrome/Edge 的环境。
+   */
+  private openEmbeddedGoogleAuthWindow(source: WebContents, url: string): void {
     const existing = this.googleAuthWindows.get(source.id)
     if (existing && !existing.isDestroyed()) {
       existing.show()
@@ -723,7 +868,12 @@ export class AppContext {
     win.webContents.on('did-navigate', (_event, target) => {
       try {
         const u = new URL(target)
-        if (origin && u.origin === origin && !/\/(?:auth|login|signin|sign-in|oauth)/i.test(u.pathname)) finish()
+        if (
+          origin &&
+          u.origin === origin &&
+          !/\/(?:auth|login|signin|sign-in|oauth)/i.test(u.pathname)
+        )
+          finish()
       } catch {
         /* 忽略无效 URL */
       }
@@ -733,7 +883,12 @@ export class AppContext {
       void win.webContents
         .executeJavaScript(`(document.body && document.body.innerText || '').slice(0, 2500)`)
         .then((text) => {
-          if (!/无法登录|可能不安全|browser or app may not be secure|disallowed_useragent/i.test(String(text))) return
+          if (
+            !/无法登录|可能不安全|browser or app may not be secure|disallowed_useragent/i.test(
+              String(text)
+            )
+          )
+            return
           Logger.warn('auth', 'Google 登录在独立窗口仍被拒绝')
           this.emit({
             type: 'notice',
@@ -799,7 +954,8 @@ export class AppContext {
     if (!wc) return
     const session = this.sessionOf(sessionId)
     if (session?.providerUrl) {
-      if (wc.getURL() !== session.providerUrl) await wc.loadURL(session.providerUrl).catch(() => undefined)
+      if (wc.getURL() !== session.providerUrl)
+        await wc.loadURL(session.providerUrl).catch(() => undefined)
       return
     }
     // 没有平台对话 URL：这个会话要开一条新的网页对话，旧对话里的系统提示词
@@ -858,7 +1014,8 @@ export class AppContext {
             await mod.register({
               id: p.id,
               log: (msg: string) => Logger.info(`plugin:${p.id}`, msg),
-              notify: (message: string) => this.emit({ type: 'notice', sessionId: '', level: 'info', message })
+              notify: (message: string) =>
+                this.emit({ type: 'notice', sessionId: '', level: 'info', message })
             })
           }
           Logger.info('plugins', `插件入口已加载: ${p.id}`)
@@ -869,7 +1026,11 @@ export class AppContext {
           // 无 platform 的脚本永远匹配不上任何 webview）
           const targets = p.platform
             ? [p.platform]
-            : [...new Set([...this.providerRegistries.values()].flatMap((r) => r.list().map((x) => x.id)))]
+            : [
+                ...new Set(
+                  [...this.providerRegistries.values()].flatMap((r) => r.list().map((x) => x.id))
+                )
+              ]
           for (const id of targets) {
             const arr = this.webScripts.get(id) ?? []
             arr.push(code)
@@ -878,7 +1039,10 @@ export class AppContext {
           Logger.info('plugins', `网页脚本已登记: ${p.id} → ${targets.join(',')}`)
         }
       } catch (e) {
-        Logger.warn('plugins', `插件 ${p.id} 加载失败: ${e instanceof Error ? e.message : String(e)}`)
+        Logger.warn(
+          'plugins',
+          `插件 ${p.id} 加载失败: ${e instanceof Error ? e.message : String(e)}`
+        )
       }
     }
   }
@@ -921,7 +1085,11 @@ export class AppContext {
     if (spec) {
       void this.overlay.injectHook(
         sessionId,
-        buildHookSource(spec, this.systemPromptFor(sessionId), this.settings.get().injectSystemPromptEveryTurn)
+        buildHookSource(
+          spec,
+          this.systemPromptFor(sessionId),
+          this.settings.get().injectSystemPromptEveryTurn
+        )
       )
     }
     // 插件网页脚本：登记后按「页面加载完成」时机注入（直接 executeJs 会在
@@ -984,7 +1152,9 @@ export class AppContext {
       },
       dangerLevel: 'safe',
       run: async (input) => {
-        const kb = this.knowledge.list().find((b) => b.name === String(input.kb) || b.id === String(input.kb))
+        const kb = this.knowledge
+          .list()
+          .find((b) => b.name === String(input.kb) || b.id === String(input.kb))
         if (!kb) return { ok: false, output: '', error: `知识库不存在: ${String(input.kb)}` }
         const hits = this.knowledge.search(kb.id, String(input.query))
         if (hits.length === 0) return { ok: true, output: '知识库中无匹配内容' }
@@ -1013,7 +1183,11 @@ export class AppContext {
         '适合：并行拆分子问题、隔离探索性工作、避免大量中间输出污染主对话上下文。' +
         'agent 参数可选，传 agents 目录里的代理名（缺省用通用子代理）。',
       parameters: {
-        agent: { type: 'string', description: '代理名（agents 目录中定义，可省略）', required: false },
+        agent: {
+          type: 'string',
+          description: '代理名（agents 目录中定义，可省略）',
+          required: false
+        },
         task: { type: 'string', description: '要交给子代理完成的任务描述', required: true }
       },
       dangerLevel: 'safe',
@@ -1025,7 +1199,9 @@ export class AppContext {
         // 以工具上下文里的会话为准：任务运行中切换活动会话不会把父子关系挂错
         const parentSessionId = ctx.sessionId || this.lastSessionId
         const parent = parentSessionId ? this.sessionOf(parentSessionId) : null
-        const project = parent ? this.projects.find((p) => p.id === parent.projectId) : this.activeProject()
+        const project = parent
+          ? this.projects.find((p) => p.id === parent.projectId)
+          : this.activeProject()
         if (!project) return { ok: false, output: '', error: '没有可用项目（子代理需要工作目录）' }
         if (!parentSessionId || !parent) return { ok: false, output: '', error: '当前没有活动会话' }
 
@@ -1034,23 +1210,45 @@ export class AppContext {
         if (agentName) {
           const agent = listAgents(project.root).find((a) => a.name === agentName)
           if (!agent) {
-            return { ok: false, output: '', error: `未找到代理「${agentName}」，可用：${listAgents(project.root).map((a) => a.name).join(', ') || '（无）'}` }
+            return {
+              ok: false,
+              output: '',
+              error: `未找到代理「${agentName}」，可用：${
+                listAgents(project.root)
+                  .map((a) => a.name)
+                  .join(', ') || '（无）'
+              }`
+            }
           }
           persona = agent.body ?? ''
         }
 
         const providerId = parent.providerId
-        const child = this.sessionStoreOf(project.id).create(project.id, providerId, undefined, parent.accountId)
+        const child = this.sessionStoreOf(project.id).create(
+          project.id,
+          providerId,
+          undefined,
+          parent.accountId
+        )
         this.sessionStoreOf(project.id).update(child.id, (s) => ({
           ...s,
           title: `[子代理] ${agentName || '通用'}：${task.slice(0, 18)}`
         }))
 
-        const prompt = [persona, '---', `任务：${task}`, '', '完成后直接给出最终结果（不要再调用工具）。']
+        const prompt = [
+          persona,
+          '---',
+          `任务：${task}`,
+          '',
+          '完成后直接给出最终结果（不要再调用工具）。'
+        ]
           .filter(Boolean)
           .join('\n\n')
 
-        Logger.info('loop', `子代理启动 session=${child.id} agent=${agentName || '通用'} 任务=${task.slice(0, 40)}`)
+        Logger.info(
+          'loop',
+          `子代理启动 session=${child.id} agent=${agentName || '通用'} 任务=${task.slice(0, 40)}`
+        )
         try {
           // 换绑网页 → 跑子任务 → 切回父会话（工具执行间隙网页本来就空闲）
           await this.rebindWebview(child.id, parentSessionId)
@@ -1061,10 +1259,16 @@ export class AppContext {
           Logger.info('loop', `子代理完成 session=${child.id} 输出 ${output.length} 字`)
           return {
             ok: true,
-            output: output ? `【子代理${agentName ? ` ${agentName}` : ''}的最终答复】\n${output.slice(0, 8000)}` : '子代理没有产出文本回复（可能被中断）'
+            output: output
+              ? `【子代理${agentName ? ` ${agentName}` : ''}的最终答复】\n${output.slice(0, 8000)}`
+              : '子代理没有产出文本回复（可能被中断）'
           }
         } catch (e) {
-          return { ok: false, output: '', error: `子代理执行失败：${e instanceof Error ? e.message : String(e)}` }
+          return {
+            ok: false,
+            output: '',
+            error: `子代理执行失败：${e instanceof Error ? e.message : String(e)}`
+          }
         } finally {
           // 必须先把网页切回父会话、再清理子会话：父会话的绑定要靠子会话
           // 当前持有的 wcId 来恢复。先解绑的话 rebind 拿不到 wcId，父会话
@@ -1223,7 +1427,8 @@ export class AppContext {
         .filter((m) => {
           if (!m.providerUrl) return false
           if (info?.providerId && m.providerId !== info.providerId) return false
-          if (info?.accountId && accountKey(m.accountId) !== accountKey(info.accountId)) return false
+          if (info?.accountId && accountKey(m.accountId) !== accountKey(info.accountId))
+            return false
           try {
             return new URL(m.providerUrl).host === host
           } catch {
@@ -1231,7 +1436,8 @@ export class AppContext {
           }
         })
         .map((m) => ({ sessionId: m.id, title: m.title || '未命名会话', url: m.providerUrl! }))
-      if (chats.length > 0) projects.push({ id: project.id, name: project.name, root: project.root, chats })
+      if (chats.length > 0)
+        projects.push({ id: project.id, name: project.name, root: project.root, chats })
     }
     return { projects, activeProjectId: this.activeProjectId() }
   }
@@ -1468,7 +1674,9 @@ export class AppContext {
 
   /** 当前会话是否已有真实对话/初始化痕迹（用于页面级是否还要弹初始化入口） */
   private sessionInitialized(session: Session): boolean {
-    return session.turns.length > 0 || Boolean(session.providerUrl) || Boolean(session.systemPromptSent)
+    return (
+      session.turns.length > 0 || Boolean(session.providerUrl) || Boolean(session.systemPromptSent)
+    )
   }
 
   /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
@@ -1546,7 +1754,10 @@ export class AppContext {
       // 初始化必须落在「当前项目」的会话上，否则会把提示词写进旧项目，
       // 或者像实测那样直接失败：会话不存在: sess_xxx。
       if (bound && bound.projectId !== project.id) {
-        Logger.info('project', `初始化：解绑旧项目会话 ${sessionId}（${bound.projectId} → ${project.id}）`)
+        Logger.info(
+          'project',
+          `初始化：解绑旧项目会话 ${sessionId}（${bound.projectId} → ${project.id}）`
+        )
         this.overlay.unbindSession(sessionId)
         sessionId = ''
       }
@@ -1574,11 +1785,20 @@ export class AppContext {
             return false
           }
         })
-        const providerId = wcInfo?.providerId ?? matched?.id ?? reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
+        const providerId =
+          wcInfo?.providerId ?? matched?.id ?? reg.list().find((x) => x.enabled)?.id ?? 'deepseek'
         const providerDesc = reg.get(providerId)
         const accountId =
-          wcInfo?.accountId ?? providerDesc?.activeAccountId ?? providerDesc?.accounts[0]?.id ?? undefined
-        const created = this.sessionStoreOf(project.id).create(project.id, providerId, undefined, accountId)
+          wcInfo?.accountId ??
+          providerDesc?.activeAccountId ??
+          providerDesc?.accounts[0]?.id ??
+          undefined
+        const created = this.sessionStoreOf(project.id).create(
+          project.id,
+          providerId,
+          undefined,
+          accountId
+        )
         this.registerWebviewProvider(webContentsId, providerId, accountId)
         sessionId = created.id
         this.overlay.bindSession(sessionId, webContentsId)
@@ -1642,10 +1862,12 @@ export class AppContext {
       const wcInfo = this.wcProviders.get(webContentsId)
       const providerId = bound?.providerId ?? wcInfo?.providerId
       // 只延续当前 webview 所属平台的历史，避免在 Kimi 页面延续出 DeepSeek 会话
-      const sessions = store.list().filter(
-        (m) =>
-          (store.get(m.id)?.turns.length ?? 0) > 0 && (!providerId || m.providerId === providerId)
-      )
+      const sessions = store
+        .list()
+        .filter(
+          (m) =>
+            (store.get(m.id)?.turns.length ?? 0) > 0 && (!providerId || m.providerId === providerId)
+        )
       const prior = sessions.find((m) => m.id === currentId) ?? sessions[0]
       if (!prior) {
         // 没有历史对话：退化为普通初始化
@@ -1656,10 +1878,11 @@ export class AppContext {
       // 压缩到摘要（compactNow 内部失败会回退本地摘要，不会抛）
       await this.loop.compactNow(prior.id, false)
       const turns = store.get(prior.id)?.turns ?? []
-      const summary = [...turns].reverse().find((t) => t.role === 'system' && t.text.includes('上下文压缩'))
+      const summary = [...turns]
+        .reverse()
+        .find((t) => t.role === 'system' && t.text.includes('上下文压缩'))
       const sys = this.systemPromptFor(prior.id)
-      const handoff =
-        this.settings.get().autoContinue.handoffPrompt
+      const handoff = this.settings.get().autoContinue.handoffPrompt
       const body = [
         sys,
         '---',
@@ -1680,7 +1903,10 @@ export class AppContext {
       await this.overlay.sendToPage(created.id, body)
       // body 里已经带了系统提示词，新会话无需在首轮再重复注入
       store.update(created.id, (x) => ({ ...x, systemPromptSent: true }))
-      Logger.info('project', `延续对话：${prior.id} → ${created.id}（摘要 ${summary?.text.length ?? 0} 字）`)
+      Logger.info(
+        'project',
+        `延续对话：${prior.id} → ${created.id}（摘要 ${summary?.text.length ?? 0} 字）`
+      )
       this.emit({
         type: 'notice',
         sessionId: created.id,
@@ -1700,11 +1926,18 @@ export class AppContext {
 
   openProject(root: string): ProjectInfo {
     // 目录已被删除/移动时不要“复活”它（mkdir 递归会重建整棵目录树）
-    if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`目录不存在或不是文件夹：${root}`)
+    if (!existsSync(root) || !statSync(root).isDirectory())
+      throw new Error(`目录不存在或不是文件夹：${root}`)
     const prevActive = this.projectStore.get().activeProjectId
     let p = this.projects.find((x) => x.root === root)
     if (!p) {
-      p = { id: `proj_${nanoid(8)}`, name: basename(root), root, createdAt: Date.now(), lastOpenedAt: Date.now() }
+      p = {
+        id: `proj_${nanoid(8)}`,
+        name: basename(root),
+        root,
+        createdAt: Date.now(),
+        lastOpenedAt: Date.now()
+      }
       this.projects.push(p)
     }
     p.lastOpenedAt = Date.now()
@@ -1774,7 +2007,10 @@ export class AppContext {
           this.emit({ type: 'session-deleted', sessionId: meta.id, title: meta.title })
         }
       } catch (e) {
-        Logger.warn('project', `移除项目时清理本地会话失败：${e instanceof Error ? e.message : String(e)}`)
+        Logger.warn(
+          'project',
+          `移除项目时清理本地会话失败：${e instanceof Error ? e.message : String(e)}`
+        )
       }
     }
     this.projects = this.projects.filter((x) => x.id !== projectId)
@@ -1909,7 +2145,8 @@ export class AppContext {
       }
     }
     const active = this.projectStore.get().activeProjectId
-    if (active && this.projects.some((p) => p.id === active && isProjectRootAvailable(p.root))) return active
+    if (active && this.projects.some((p) => p.id === active && isProjectRootAvailable(p.root)))
+      return active
     return this.projects.find((p) => isProjectRootAvailable(p.root))?.id ?? ''
   }
 
@@ -1988,7 +2225,8 @@ export class AppContext {
       confirm: (reason) => this.requestConfirm(sessionId, reason),
       trashItem: (path) => shell.trashItem(path),
       injectJs: (code) => this.overlay.executeJs(sessionId, code),
-      audit: (kind, summary, detail, backupPath) => this.audit.record(sessionId, kind, summary, detail, backupPath)
+      audit: (kind, summary, detail, backupPath) =>
+        this.audit.record(sessionId, kind, summary, detail, backupPath)
     }
   }
 
@@ -2017,7 +2255,10 @@ export class AppContext {
   /** DSH 插件注入的提示词片段（global + 当前会话） */
   promptFragments(): string {
     const all = this.dshKv.get().__promptFragments ?? {}
-    const merged = [all['global'] as string | undefined, all[this.lastSessionId] as string | undefined]
+    const merged = [
+      all['global'] as string | undefined,
+      all[this.lastSessionId] as string | undefined
+    ]
       .filter(Boolean)
       .join('\n')
     return merged.trim()
@@ -2051,7 +2292,18 @@ export class AppContext {
 
   private treeSummary(root: string): string {
     if (!existsSync(root)) return ''
-    const EXCL = new Set(['node_modules', '.git', 'dist', 'build', 'out', '.next', 'coverage', '__pycache__', '.venv', 'target'])
+    const EXCL = new Set([
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      'out',
+      '.next',
+      'coverage',
+      '__pycache__',
+      '.venv',
+      'target'
+    ])
     const lines: string[] = []
     const walk = (dir: string, depth: number): void => {
       if (depth > 2 || lines.length > 60) return
@@ -2083,7 +2335,17 @@ export class AppContext {
   readFileTree(root: string, rel: string, depth: number): FileNode[] {
     const abs = join(root, rel || '')
     if (!existsSync(abs)) return []
-    const EXCL = new Set(['node_modules', '.git', 'dist', 'build', 'out', 'coverage', '__pycache__', '.venv', 'target'])
+    const EXCL = new Set([
+      'node_modules',
+      '.git',
+      'dist',
+      'build',
+      'out',
+      'coverage',
+      '__pycache__',
+      '.venv',
+      'target'
+    ])
     const walk = (dir: string, level: number): FileNode[] => {
       let entries: string[]
       try {
@@ -2109,7 +2371,9 @@ export class AppContext {
         })
       }
       // 目录优先、同类型按名称排序：文件树/预览面板可读性
-      nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name, 'zh-CN') : a.type === 'dir' ? -1 : 1))
+      nodes.sort((a, b) =>
+        a.type === b.type ? a.name.localeCompare(b.name, 'zh-CN') : a.type === 'dir' ? -1 : 1
+      )
       return nodes
     }
     return walk(abs, 0)
@@ -2126,11 +2390,17 @@ export class AppContext {
   // ---------- 模板 / 同步 / 更新 / DSH ----------
 
   private templatesRoot(): string {
-    return app.isPackaged ? join(process.resourcesPath ?? '', 'templates') : join(app.getAppPath(), 'templates')
+    return app.isPackaged
+      ? join(process.resourcesPath ?? '', 'templates')
+      : join(app.getAppPath(), 'templates')
   }
 
   templates(): { id: string; name: string; description: string }[] {
-    return listTemplates(this.templatesRoot()).map((t) => ({ id: t.id, name: t.name, description: t.description }))
+    return listTemplates(this.templatesRoot()).map((t) => ({
+      id: t.id,
+      name: t.name,
+      description: t.description
+    }))
   }
 
   applyTemplate(templateId: string, root: string): void {
@@ -2150,7 +2420,9 @@ export class AppContext {
     return this.sync.pushAll(text)
   }
 
-  async updateCheck(manual = false): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
+  async updateCheck(
+    manual = false
+  ): Promise<{ hasUpdate: boolean; version?: string; url?: string; portable?: boolean }> {
     return checkForUpdate(manual)
   }
 

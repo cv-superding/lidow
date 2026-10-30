@@ -19,7 +19,10 @@ export function WebTabs(): React.JSX.Element {
   return (
     <div className="flex h-full flex-col">
       {/* 标签栏 */}
-      <div className="flex h-10 shrink-0 items-end gap-1 px-2" style={{ borderBottom: '1px solid var(--border)' }}>
+      <div
+        className="flex h-10 shrink-0 items-end gap-1 px-2"
+        style={{ borderBottom: '1px solid var(--border)' }}
+      >
         {tabs.map((t) => {
           const active = t.id === activeTabId
           return (
@@ -98,7 +101,7 @@ function AddTabButton(): React.JSX.Element {
   const [pickId, setPickId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
-  const picked = pickId ? providers.find((p) => p.id === pickId) ?? null : null
+  const picked = pickId ? (providers.find((p) => p.id === pickId) ?? null) : null
 
   useEffect(() => {
     if (!open) return
@@ -120,7 +123,9 @@ function AddTabButton(): React.JSX.Element {
   }
 
   const hasTab = (providerId: string, accountId: string): boolean =>
-    tabs.some((t) => t.providerId === providerId && accountKeyOf(t.accountId) === accountKeyOf(accountId))
+    tabs.some(
+      (t) => t.providerId === providerId && accountKeyOf(t.accountId) === accountKeyOf(accountId)
+    )
 
   const openAccount = (providerId: string, accountId: string): void => {
     closeMenu()
@@ -141,7 +146,9 @@ function AddTabButton(): React.JSX.Element {
       closeMenu()
       if (created) await openProviderTab(providerId, undefined, created.id)
     } catch (e) {
-      useStore.getState().notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      useStore
+        .getState()
+        .notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     } finally {
       setBusy(false)
     }
@@ -177,7 +184,11 @@ function AddTabButton(): React.JSX.Element {
       {open && (
         <div
           className="anim-pop absolute left-0 top-[calc(100%+4px)] z-50 w-[280px] overflow-hidden rounded-[var(--r-lg)] p-1.5"
-          style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          style={{
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--border)',
+            boxShadow: 'var(--shadow-lg)'
+          }}
         >
           {!picked ? (
             <>
@@ -195,13 +206,16 @@ function AddTabButton(): React.JSX.Element {
                       <span className="flex w-full items-center gap-1.5">
                         <span className="truncate text-[12px] font-medium">{p.name}</span>
                         {already && (
-                          <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
+                          <span
+                            className="ml-auto shrink-0 text-[9.5px]"
+                            style={{ color: 'var(--accent)' }}
+                          >
                             已打开
                           </span>
                         )}
                       </span>
                       <span className="text-[10px]" style={{ color: 'var(--text-hint)' }}>
-                        {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : already ? '默认账号' : '未登录'}
+                        {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '默认账号'}
                       </span>
                     </button>
                   )
@@ -237,7 +251,10 @@ function AddTabButton(): React.JSX.Element {
                       <span className="flex w-full items-center gap-1.5">
                         <span className="truncate text-[12px] font-medium">{row.label}</span>
                         {isOpen && (
-                          <span className="ml-auto shrink-0 text-[9.5px]" style={{ color: 'var(--accent)' }}>
+                          <span
+                            className="ml-auto shrink-0 text-[9.5px]"
+                            style={{ color: 'var(--accent)' }}
+                          >
                             已打开
                           </span>
                         )}
@@ -312,7 +329,9 @@ function WebviewTab({ tabId }: { tabId: string }): React.JSX.Element {
         if (cur.wcId !== wcId) st.setTabWcId(tab.id, wcId)
         // 没有会话（还没初始化项目就先打开了 AI 页面）：
         // 下发 adapter（登录态轮询依赖它）+ 项目目录（决定是否弹引导）
-        void api.syncProjectToWebview(wcId, tab.adapter, tab.providerId, tab.accountId).catch(() => undefined)
+        void api
+          .syncProjectToWebview(wcId, tab.adapter, tab.providerId, tab.accountId)
+          .catch(() => undefined)
       }
     }
     const onAttached = (): void => {
@@ -372,13 +391,18 @@ function HomeEmpty(): React.JSX.Element {
   const openProject = useStore((s) => s.openProject)
   const createSession = useStore((s) => s.createSession)
   const setView = useStore((s) => s.setView)
-  const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>([])
+  const [templates, setTemplates] = useState<{ id: string; name: string; description: string }[]>(
+    []
+  )
   const [pickId, setPickId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  const picked = pickId ? providers.find((p) => p.id === pickId) ?? null : null
+  const picked = pickId ? (providers.find((p) => p.id === pickId) ?? null) : null
 
   useEffect(() => {
-    void api.listTemplates().then(setTemplates).catch(() => setTemplates([]))
+    void api
+      .listTemplates()
+      .then(setTemplates)
+      .catch(() => setTemplates([]))
   }, [])
 
   const addAccountAndStart = async (providerId: string): Promise<void> => {
@@ -393,7 +417,9 @@ function HomeEmpty(): React.JSX.Element {
       const created = updated.accounts[updated.accounts.length - 1]
       if (created) await createSession(providerId, created.id)
     } catch (e) {
-      useStore.getState().notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      useStore
+        .getState()
+        .notice(`添加账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
     } finally {
       setBusy(false)
     }
@@ -402,11 +428,18 @@ function HomeEmpty(): React.JSX.Element {
   // ---- 无项目：引导初始化 ----
   if (projects.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+      <div
+        className="flex h-full items-center justify-center px-6"
+        style={{ background: 'var(--bg)' }}
+      >
         <div className="flex w-full max-w-[440px] flex-col items-center text-center">
           <span
             className="mb-5 flex h-12 w-12 items-center justify-center rounded-[14px] text-[20px] font-bold"
-            style={{ background: 'var(--accent)', color: 'var(--on-accent)', boxShadow: 'var(--shadow)' }}
+            style={{
+              background: 'var(--accent)',
+              color: 'var(--on-accent)',
+              boxShadow: 'var(--shadow)'
+            }}
           >
             L
           </span>
@@ -418,7 +451,10 @@ function HomeEmpty(): React.JSX.Element {
           </p>
 
           <div className="mt-6 flex w-full flex-col gap-2">
-            <button className="btn btn-primary h-9 w-full text-[13px]" onClick={() => void pickAndOpen()}>
+            <button
+              className="btn btn-primary h-9 w-full text-[13px]"
+              onClick={() => void pickAndOpen()}
+            >
               <IconFolder size={14} /> 初始化项目
             </button>
             <button
@@ -455,7 +491,10 @@ function HomeEmpty(): React.JSX.Element {
                 {templates.map((t) => (
                   <div key={t.id} className="card p-2.5 text-left">
                     <div className="truncate text-[12px] font-medium">{t.name}</div>
-                    <div className="mb-2 line-clamp-2 text-[11px] leading-relaxed" style={{ color: 'var(--text-hint)' }}>
+                    <div
+                      className="mb-2 line-clamp-2 text-[11px] leading-relaxed"
+                      style={{ color: 'var(--text-hint)' }}
+                    >
                       {t.description}
                     </div>
                     <button
@@ -490,7 +529,10 @@ function HomeEmpty(): React.JSX.Element {
       }))
     ]
     return (
-      <div className="flex h-full items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+      <div
+        className="flex h-full items-center justify-center px-6"
+        style={{ background: 'var(--bg)' }}
+      >
         <div className="w-full max-w-[440px]">
           <button
             className="mb-5 flex items-center gap-1 rounded-[var(--r-sm)] px-1 py-0.5 text-[12px] transition-colors duration-[130ms] hover:text-[var(--text)]"
@@ -542,7 +584,10 @@ function HomeEmpty(): React.JSX.Element {
   }
 
   return (
-    <div className="flex h-full items-center justify-center px-6" style={{ background: 'var(--bg)' }}>
+    <div
+      className="flex h-full items-center justify-center px-6"
+      style={{ background: 'var(--bg)' }}
+    >
       <div className="flex w-full max-w-[620px] flex-col items-center text-center">
         <h1 className="text-[17px] font-semibold tracking-tight">选择一个平台开始</h1>
         <p className="mt-1.5 text-[12px]" style={{ color: 'var(--text-hint)' }}>
@@ -557,10 +602,15 @@ function HomeEmpty(): React.JSX.Element {
               onClick={() => setPickId(p.id)}
             >
               <span className="text-[12.5px] font-medium">{p.name}</span>
-              <span className="flex items-center gap-1.5 text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
+              <span
+                className="flex items-center gap-1.5 text-[10.5px]"
+                style={{ color: 'var(--text-hint)' }}
+              >
                 <span
                   className="h-1.5 w-1.5 rounded-full"
-                  style={{ background: p.accounts.length > 0 ? 'var(--success)' : 'var(--border-strong)' }}
+                  style={{
+                    background: p.accounts.length > 0 ? 'var(--success)' : 'var(--border-strong)'
+                  }}
                 />
                 {p.accounts.length > 0 ? `${p.accounts.length} 个账号` : '选择或登录账号'}
               </span>
@@ -571,12 +621,14 @@ function HomeEmpty(): React.JSX.Element {
             style={{ border: '1px dashed var(--border-strong)' }}
             onClick={() => setView('settings')}
           >
-            <span className="flex items-center gap-1 text-[12.5px]" style={{ color: 'var(--text-dim)' }}>
+            <span
+              className="flex items-center gap-1 text-[12.5px]"
+              style={{ color: 'var(--text-dim)' }}
+            >
               <IconPlus size={12} /> 添加平台
             </span>
           </button>
         </div>
-
       </div>
     </div>
   )
