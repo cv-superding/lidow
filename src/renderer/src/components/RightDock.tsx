@@ -6,43 +6,26 @@ import { TerminalPanel } from './TerminalPanel'
 import { PureToolbar } from './TitleBar'
 import {
   IconCheck,
-  IconChevronRight,
   IconClose,
-  IconDiff,
   IconFile,
   IconFolder,
   IconFolderColor,
-  IconList,
-  IconRefresh,
-  IconTerminal
+  IconRefresh
 } from './icons'
 import type { TaskItem } from '@shared/types'
 
-const PANEL_TITLES: Record<Exclude<AuxPanel, 'launcher'>, string> = {
+const PANEL_TITLES: Record<AuxPanel, string> = {
   files: '文件资源管理器',
   tasks: '侧边任务',
   terminal: '终端',
   review: '审阅'
 }
 
-const LAUNCH_ACTIONS: {
-  id: 'files' | 'tasks' | 'review' | 'terminal'
-  label: string
-  hint: string
-  icon: typeof IconCheck
-}[] = [
-  { id: 'files', label: '打开工作区文件', hint: 'Ctrl Alt E', icon: IconFolderColor },
-  { id: 'tasks', label: '打开侧边任务', hint: '查看当前任务进度', icon: IconList },
-  { id: 'review', label: '打开审阅', hint: 'Ctrl Shift G', icon: IconDiff },
-  { id: 'terminal', label: '打开终端', hint: 'Ctrl Shift J', icon: IconTerminal }
-]
-
 /** 右侧工具侧栏：Qoder 同款标题栏 + 快捷操作 / 文件 / 任务 / 终端 / 审阅 */
 export function RightDock(): React.JSX.Element | null {
   const panel = useStore((s) => s.auxPanel)
   const width = useStore((s) => s.auxWidth)
   const setWidth = useStore((s) => s.setAuxWidth)
-  const openAux = useStore((s) => s.openAux)
   const closeAux = useStore((s) => s.closeAux)
   if (!panel) return null
 
@@ -61,7 +44,7 @@ export function RightDock(): React.JSX.Element | null {
       />
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b px-3" style={{ borderColor: 'var(--border)' }}>
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">
-          {panel === 'launcher' ? '快捷操作' : PANEL_TITLES[panel]}
+          {PANEL_TITLES[panel]}
         </span>
         <PureToolbar />
         <button
@@ -74,49 +57,10 @@ export function RightDock(): React.JSX.Element | null {
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {panel === 'launcher' && <LauncherPanel onPick={openAux} />}
         {panel === 'files' && <FilesPanel />}
         {panel === 'tasks' && <TasksPanel />}
         {panel === 'terminal' && <TerminalPanel embedded onClose={closeAux} />}
         {panel === 'review' && <ReviewPanel />}
-      </div>
-    </div>
-  )
-}
-
-function LauncherPanel({ onPick }: { onPick: (panel: AuxPanel) => void }): React.JSX.Element {
-  return (
-    <div className="flex h-full overflow-y-auto px-5 py-6">
-      <div className="m-auto flex w-full max-w-[330px] flex-col gap-2">
-        {LAUNCH_ACTIONS.map((action) => {
-          const Icon = action.icon
-          return (
-            <button
-              key={action.id}
-              className="group flex w-full items-center gap-3 rounded-[var(--r-lg)] border px-3.5 py-3 text-left transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
-              style={{
-                borderColor: 'var(--border-soft)',
-                background: 'var(--surface-raised)',
-                boxShadow: 'var(--shadow-sm)'
-              }}
-              onClick={() => onPick(action.id)}
-            >
-              <span
-                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[9px]"
-                style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
-              >
-                <Icon size={15} />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block text-[12.5px] font-medium">{action.label}</span>
-                <span className="mt-0.5 block text-[10.5px]" style={{ color: 'var(--text-hint)' }}>
-                  {action.hint}
-                </span>
-              </span>
-              <IconChevronRight size={12} className="shrink-0 opacity-40" />
-            </button>
-          )
-        })}
       </div>
     </div>
   )

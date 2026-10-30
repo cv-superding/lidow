@@ -53,7 +53,7 @@ export function WindowControls(): React.JSX.Element {
   )
 }
 
-type ToolPanelId = Exclude<AuxPanel, 'launcher'>
+type ToolPanelId = AuxPanel
 
 const TOOL_MENU: {
   id: ToolPanelId
@@ -73,7 +73,11 @@ export function PureToolbar(): React.JSX.Element {
   const openAux = useStore((s) => s.openAux)
   const closeAux = useStore((s) => s.closeAux)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [quickOpen, setQuickOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const quickRef = useRef<HTMLDivElement>(null)
+  /** 侧栏开关打开时默认显示上次用过的工具面板（Qoder 同款） */
+  const lastPanelRef = useRef<ToolPanelId>('files')
   const btn = 'flex h-7 w-7 items-center justify-center rounded-full transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]'
   const idle = { color: 'var(--text-dim)' } as const
   const active = { color: 'var(--accent)', background: 'var(--accent-soft)' } as const
@@ -87,13 +91,25 @@ export function PureToolbar(): React.JSX.Element {
     return () => window.removeEventListener('mousedown', onDown)
   }, [menuOpen])
 
-  // 快捷键/其他入口切换面板时，顺便收起文件夹菜单
+  useEffect(() => {
+    if (!quickOpen) return
+    const onDown = (e: MouseEvent): void => {
+      if (!quickRef.current?.contains(e.target as Node)) setQuickOpen(false)
+    }
+    window.addEventListener('mousedown', onDown)
+    return () => window.removeEventListener('mousedown', onDown)
+  }, [quickOpen])
+
+  // 快捷键/其他入口切换面板时，顺便收起两个浮层
   useEffect(() => {
     setMenuOpen(false)
+    setQuickOpen(false)
+    if (auxPanel) lastPanelRef.current = auxPanel
   }, [auxPanel])
 
   const openPanel = (id: ToolPanelId): void => {
     setMenuOpen(false)
+    setQuickOpen(false)
     openAux(id)
   }
 
@@ -110,6 +126,7 @@ export function PureToolbar(): React.JSX.Element {
       return
     }
     setMenuOpen(false)
+    setQuickOpen(false)
     // Web 版没有本机文件管理器，退回到右侧文件面板
     if (WEB_MODE) {
       openAux('files')
@@ -144,7 +161,10 @@ export function PureToolbar(): React.JSX.Element {
           className="flex h-7 w-7 items-center justify-center rounded-r-full transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
           style={menuOpen ? active : idle}
           title="文件与工具"
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={() => {
+            setQuickOpen(false)
+            setMenuOpen((v) => !v)
+          }}
         >
           <IconChevronDown size={10} />
         </button>
@@ -185,14 +205,58 @@ export function PureToolbar(): React.JSX.Element {
           </div>
         )}
       </div>
-      <button
-        className={btn}
-        style={auxPanel === 'launcher' ? active : idle}
-        title="快捷操作"
-        onClick={() => openAux('launcher')}
-      >
-        <IconSpark size={14} />
-      </button>
+      <div ref={quickRef} className="relative">
+        <button
+          className={btn}
+          style={quickOpen ? active : idle}
+          title="快捷操作"
+          onClick={() => {
+            setMenuOpen(false)
+            setQuickOpen((v) => !v)
+          }}
+        >
+          <IconSpark size={14} />
+        </button>
+        {quickOpen && (
+          <div
+            className="anim-pop absolute right-0 top-full z-[70] mt-1.5 w-[218px] rounded-[var(--r-lg)] p-1"
+            style={{ background: 'var(--surface-raised)', border: '1px solid var(--border)', boxShadow: 'var(--shadow-lg)' }}
+          >
+            <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-medium" style={{ color: 'var(--text-hint)' }}>
+              快捷操作
+            </div>
+            <button
+              className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[11.5px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+              onClick={openProjectFolder}
+            >
+              <span className="flex w-4 shrink-0 justify-center" style={{ color: 'var(--text-dim)' }}>
+                <IconFolderColor size={13} />
+              </span>
+              <span className="min-w-0 flex-1 truncate">文件资源管理器</span>
+            </button>
+            {TOOL_MENU.map((item) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.id}
+                  className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[11.5px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                  onClick={() => openPanel(item.id)}
+                >
+                  <span className="flex w-4 shrink-0 justify-center" style={{ color: 'var(--text-dim)' }}>
+                    <Icon size={13} />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {item.shortcut && (
+                    <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                      {item.shortcut}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
       <button
         className={btn}
         style={auxPanel === 'tasks' ? active : idle}
@@ -205,7 +269,7 @@ export function PureToolbar(): React.JSX.Element {
         className={btn}
         style={auxPanel ? active : idle}
         title={auxPanel ? '收起侧栏' : '打开侧栏'}
-        onClick={() => (auxPanel ? closeAux() : openAux('launcher'))}
+        onClick={() => (auxPanel ? closeAux() : openAux(lastPanelRef.current))}
       >
         <IconPanelRight size={14} />
       </button>

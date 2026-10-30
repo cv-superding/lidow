@@ -25,7 +25,7 @@ import type {
 } from '@shared/types'
 
 /** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
-export type AuxPanel = 'launcher' | 'files' | 'tasks' | 'terminal' | 'review'
+export type AuxPanel = 'files' | 'tasks' | 'terminal' | 'review'
 
 /**
  * Web 版（Docker 原生网页界面）：浏览器里没有 Electron webview，
