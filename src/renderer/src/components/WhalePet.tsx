@@ -466,7 +466,7 @@ export function WhalePet(): React.JSX.Element | null {
     <>
       <div
         data-whale-pet
-        className="fixed z-30 select-none"
+        className="fixed z-[70] select-none"
         style={{
           left: pos.x,
           top: pos.y,
