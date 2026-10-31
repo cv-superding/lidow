@@ -75,6 +75,7 @@ export class SessionStore {
       parentSessionId: s.parentSessionId,
       compactedTurns: s.compactedTurns,
       systemPromptSent: s.systemPromptSent,
+      systemPromptVersion: s.systemPromptVersion,
       archived: s.archived,
       // 写空串而不是 undefined：JSON 会丢 undefined，启动回填逻辑会为每个
       // 没有网页地址的会话重读整份历史文件（大会话启动明显变慢）

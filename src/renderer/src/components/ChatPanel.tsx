@@ -12,7 +12,7 @@ import { stripCitationMarkers, stripToolArtifacts } from '../textClean'
 import { toolLabel } from '../toolLabels'
 import { ToolCard } from './ToolCard'
 import { PureToolbar } from './TitleBar'
-import type { ChatTurn, ModelPickerInfo, SkillMeta, ToolResult } from '@shared/types'
+import type { ChatAttachment, ChatTurn, ModelPickerInfo, SkillMeta, ToolResult } from '@shared/types'
 import {
   IconArrowUp,
   IconStop,
@@ -552,6 +552,29 @@ function TurnItem({
           style={{ background: 'var(--bubble-user-bg)', color: 'var(--text)' }}
         >
           <div className="whitespace-pre-wrap">{turn.text}</div>
+          {turn.attachments?.length ? (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {turn.attachments.map((attachment, index) =>
+                attachment.preview ? (
+                  <img
+                    key={`${attachment.path ?? attachment.name}-${index}`}
+                    src={attachment.preview}
+                    alt={attachment.name}
+                    className="h-16 w-16 rounded-[8px] object-cover"
+                    style={{ border: '1px solid color-mix(in srgb, var(--text) 18%, transparent)' }}
+                  />
+                ) : (
+                  <span
+                    key={`${attachment.path ?? attachment.name}-${index}`}
+                    className="rounded-[8px] px-2 py-1 text-[11px]"
+                    style={{ background: 'color-mix(in srgb, var(--text) 10%, transparent)' }}
+                  >
+                    {attachment.name}
+                  </span>
+                )
+              )}
+            </div>
+          ) : null}
         </div>
         {showActions && (
           <div className="mt-1 flex items-center gap-0.5 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
@@ -1291,7 +1314,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const submit = async (): Promise<void> => {
     if (busy) return
     const text = input.trim()
-    if (!text) return
+    if (!text && attachments.length === 0) return
     // 快捷指令模板里的占位符没填就发送，AI 收到的是一句带 {{input}} 的指令
     if (text.includes('{{input}}')) {
       useStore.getState().notice('请先把 {{input}} 替换为具体内容再发送', 'warn')
@@ -1301,6 +1324,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     setEditingTurnId(null)
     setSlashOpen(false)
     const session = activeSession
+    const sentAttachments: ChatAttachment[] = attachments.map((a) => ({
+      name: a.name,
+      path: a.key,
+      preview: a.preview
+    }))
     // 发送失败必须把草稿还给用户：之前先清空输入框、异常又被 void 吞掉，
     // 一条消息和附件会凭空消失
     const guarded = async (run: () => Promise<void>): Promise<void> => {
@@ -1331,7 +1359,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         await useStore
           .getState()
           .openProviderTab(created.providerId, created.id, created.accountId)
-        await useStore.getState().sendPrompt(text)
+        await useStore.getState().sendPrompt(text, sentAttachments)
         clearAttachments(created.id)
       })
       return
@@ -1365,7 +1393,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       return
     }
     await guarded(async () => {
-      await sendPrompt(text)
+      await sendPrompt(text, sentAttachments)
       clearAttachments(session.id)
     })
   }
@@ -1680,7 +1708,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 </span>
               )}
             </div>
-            <div className="text-[12px] leading-relaxed" style={{ color: 'var(--text-body)' }}>
+            <div
+              className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-[var(--r-sm)] px-2 py-1.5 text-[11.5px] leading-relaxed"
+              style={{ color: 'var(--text-body)', background: 'color-mix(in srgb, var(--surface) 52%, transparent)' }}
+            >
               {confirmRequest.reason}
             </div>
             <div className="mt-2.5 flex justify-end gap-2">

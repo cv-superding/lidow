@@ -1,6 +1,7 @@
 import type {
   AppSettings,
   AuditEntry,
+  ChatAttachment,
   DomAdapter,
   FileNode,
   KnowledgeBase,
@@ -132,7 +133,7 @@ export interface LidowApi {
   compactSession(sessionId: string): Promise<Session>
 
   // Agent 循环
-  sendPrompt(sessionId: string, text: string): Promise<void>
+  sendPrompt(sessionId: string, text: string, attachments?: ChatAttachment[]): Promise<void>
   newChat(sessionId: string): Promise<void>
   stop(sessionId: string, level: StopLevel): Promise<void>
   confirmTool(callId: string, approved: boolean, rememberChoice?: boolean): Promise<void>

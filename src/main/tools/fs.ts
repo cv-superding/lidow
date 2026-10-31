@@ -12,7 +12,7 @@ import {
   unlinkSync,
   writeFileSync
 } from 'node:fs'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import fg from 'fast-glob'
 import { nanoid } from 'nanoid'
 import { createTwoFilesPatch } from 'diff'
@@ -47,6 +47,29 @@ export function readTextCapped(abs: string): { text: string; truncated: boolean 
   }
 }
 
+/** Parse an image path from shell probes so the read tool can render it. */
+export function imageReadPathFromCommand(command: string): string {
+  const cmd = String(command ?? '')
+  if (!/\b(?:file|strings|tesseract|ocr|identify|exiftool|xxd|hexdump|base64|cat|type|head|tail|stat|ls|dir|get-content|format-hex|certutil|python(?:\d+)?|node)\b/i.test(cmd)) return ''
+  const tokenRe = /"([^"\r\n]+)"|'([^'\r\n]+)'|([^\s"'`]+?\.(?:png|jpe?g|gif|webp|bmp|svg|ico|avif))(?=\s|$|[;&|)])/gi
+  let match: RegExpExecArray | null
+  while ((match = tokenRe.exec(cmd)) !== null) {
+    let candidate = match[1] ?? match[2] ?? match[3] ?? ''
+    if (!candidate || !/\.(?:png|jpe?g|gif|webp|bmp|svg|ico|avif)$/i.test(candidate)) continue
+    if (process.platform === 'win32') {
+      const gitDrive = /^\/([a-z])(?:\/|$)/i.exec(candidate)
+      if (gitDrive) candidate = `${gitDrive[1]!.toUpperCase()}:${candidate.slice(2)}`
+      candidate = candidate.replace(/\//g, '\\')
+    }
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {
+      /* Keep looking when a token is not a local path. */
+    }
+  }
+  return ''
+}
+
 /** 路径安全：强制限制在项目根内，拒绝越界（目录隔离） */
 export function safePath(root: string, p: string): string {
   const abs = isAbsolute(p) ? resolve(p) : resolve(root, p)
@@ -54,6 +77,16 @@ export function safePath(root: string, p: string): string {
   if (rel.startsWith('..') || isAbsolute(rel)) {
     throw new Error(`路径越界：${p} 不在项目目录 ${root} 内`)
   }
+  return abs
+}
+
+/** Read-only access may use an explicit absolute path; relative escapes still require confirmation. */
+async function readPath(root: string, p: string, ctx: ToolContext): Promise<string> {
+  const abs = isAbsolute(p) ? resolve(p) : resolve(root, p)
+  const rel = relative(root, abs)
+  if (!rel.startsWith('..') && !isAbsolute(rel)) return abs
+  if (isAbsolute(p)) return abs
+  if (!(await ctx.confirm(`读取项目目录外文件：${abs}`))) throw new Error(`用户拒绝读取项目外文件：${abs}`)
   return abs
 }
 
@@ -69,11 +102,43 @@ function denyProductDirs(p: string): void {
 
 export const readTool: ToolDef = {
   name: 'read',
-  description: '读取文件内容（文本）。大文件自动截断。',
-  parameters: { path: { type: 'string', description: '项目内相对路径', required: true }, offset: { type: 'number', description: '起始行（1 基）' }, limit: { type: 'number', description: '行数上限' } },
+  description: '读取文件内容（文本或图片）。支持项目内相对路径，也支持用户明确给出的绝对路径；大文件自动截断。',
+  parameters: { path: { type: 'string', description: '项目内相对路径，或用户明确给出的绝对路径', required: true }, offset: { type: 'number', description: '起始行（1 基）' }, limit: { type: 'number', description: '行数上限' } },
   dangerLevel: 'safe',
   async run(input, ctx) {
-    const abs = safePath(ctx.projectRoot, str(input, 'path'))
+    const abs = await readPath(ctx.projectRoot, str(input, 'path'), ctx)
+    const imageMime: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.avif': 'image/avif'
+    }
+    const mime = imageMime[extname(abs).toLowerCase()]
+    if (mime) {
+      const size = statSync(abs).size
+      const { text: raw, truncated } = readTextCapped(abs)
+      const rawOutput = clampOutput(
+        raw
+          .split('\n')
+          .map((line, index) => `${index + 1}\t${line}`)
+          .join('\n') + (truncated ? '\n…[文件超过 16MB，仅读取了前 16MB]' : ''),
+        ctx.settings.outputBufferLimit
+      )
+      if (size > 8 * 1024 * 1024) {
+        return { ok: true, output: rawOutput, display: { kind: 'binary', mime, size } }
+      }
+      // Keep the original behavior: return UTF-8-decoded bytes to the model and render a separate preview.
+      return {
+        ok: true,
+        output: rawOutput,
+        display: { kind: 'image', dataUrl: `data:${mime};base64,${readFileSync(abs).toString('base64')}`, mime, size }
+      }
+    }
     const { text: raw, truncated } = readTextCapped(abs)
     const lines = raw.split('\n')
     const offset = Math.max(1, num(input, 'offset', 1))

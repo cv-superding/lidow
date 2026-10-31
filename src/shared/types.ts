@@ -17,7 +17,15 @@ export type ToolDisplay =
   | { kind: 'terminal'; cmd: string; cwd: string; exitCode: number | null; output: string }
   | { kind: 'table'; columns: string[]; rows: string[][]; rowCount: number }
   | { kind: 'files'; pattern: string; files: string[]; truncated: boolean }
+  | { kind: 'image'; dataUrl: string; mime: string; size: number }
+  | { kind: 'binary'; mime: string; size: number }
   | { kind: 'text'; text: string }
+
+export interface ChatAttachment {
+  name: string
+  path?: string
+  preview?: string
+}
 
 export interface ToolResult {
   callId: string
@@ -39,6 +47,7 @@ export interface ChatTurn {
   text: string
   ts: number
   status: TurnStatus
+  attachments?: ChatAttachment[]
   toolResults?: ToolResult[]
   /** 模型思考过程：默认折叠，只在展开时显示（提升为可查看的活动记录） */
   think?: string
@@ -63,6 +72,7 @@ export interface SessionMeta {
    * 网页版会保留同一对话的历史，每轮重复注入只会污染上下文。
    */
   systemPromptSent?: boolean
+  systemPromptVersion?: number
   archived?: boolean
   /**
    * 平台侧对话 URL（如 DeepSeek 的 /a/chat/s/<uuid>）。

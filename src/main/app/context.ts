@@ -2092,7 +2092,7 @@ export class AppContext {
         ts: Date.now(),
         status: 'done'
       })
-      initStore.update(sessionId, (x) => ({ ...x, systemPromptSent: true }))
+      initStore.update(sessionId, (x) => ({ ...x, systemPromptSent: true, systemPromptVersion: 3 }))
       this.emit({ type: 'session-updated', sessionId })
       // 初始化完成：询问是否切到纯净模式（已经在纯净模式里就不再重复弹）
       if (!this.settings.get().pureMode) {
@@ -2187,7 +2187,7 @@ export class AppContext {
 
       await this.overlay.sendToPage(created.id, body)
       // body 里已经带了系统提示词，新会话无需在首轮再重复注入
-      store.update(created.id, (x) => ({ ...x, systemPromptSent: true }))
+      store.update(created.id, (x) => ({ ...x, systemPromptSent: true, systemPromptVersion: 3 }))
       Logger.info(
         'project',
         `延续对话：${prior.id} → ${created.id}（摘要 ${summary?.text.length ?? 0} 字）`

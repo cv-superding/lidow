@@ -132,6 +132,28 @@ export function ToolCard({ result, flat = false }: { result: ToolResult; flat?: 
             </div>
           )}
 
+          {display?.kind === 'image' && display.dataUrl && (
+            <div
+              className="flex max-h-[560px] items-center justify-center overflow-auto rounded-[var(--r-md)]"
+              style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-soft)' }}
+            >
+              <img
+                src={display.dataUrl}
+                alt={result.summary || '图片预览'}
+                className="max-h-[540px] max-w-full object-contain"
+              />
+            </div>
+          )}
+
+          {display?.kind === 'binary' && (
+            <div
+              className="rounded-[var(--r-md)] px-3 py-2 text-[11.5px]"
+              style={{ color: 'var(--text-hint)', background: 'var(--surface-sunken)' }}
+            >
+              图片文件过大，已跳过内联预览（{Math.ceil(display.size / 1024 / 1024)} MB）
+            </div>
+          )}
+
           {(!display || display.kind === 'text') && (
             <pre
               className="max-h-56 overflow-auto whitespace-pre-wrap font-mono text-[11.5px] leading-[1.6]"

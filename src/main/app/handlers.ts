@@ -5,6 +5,7 @@ import {
   shell,
   nativeTheme,
   clipboard,
+  nativeImage,
   session as electronSession,
   webContents
 } from 'electron'
@@ -26,6 +27,7 @@ import { Logger } from '@main/infra/log'
 import { isAbsoluteProjectPath, isPathInside } from '@shared/path'
 import type {
   AppSettings,
+  ChatAttachment,
   DomAdapter,
   McpServerConfig,
   ProviderDescriptor,
@@ -194,7 +196,10 @@ function describeWebFiles(paths: string[]): { path: string; name: string; previe
     const mime = PREVIEW_MIME[extname(file).slice(1).toLowerCase()]
     if (!mime) return { path: file, name }
     try {
-      if (statSync(file).size > 2 * 1024 * 1024) return { path: file, name }
+      if (statSync(file).size > 2 * 1024 * 1024) {
+        const thumbnail = nativeImage.createFromPath(file).resize({ width: 256, height: 256 })
+        return thumbnail.isEmpty() ? { path: file, name } : { path: file, name, preview: thumbnail.toDataURL() }
+      }
       return {
         path: file,
         name,
@@ -608,12 +613,21 @@ export function registerHandlers(
   })
 
   // ---------- Agent 循环 ----------
-  R('sendPrompt', (sessionId: string, text: string) => {
+  R('sendPrompt', (sessionId: string, text: string, attachments?: ChatAttachment[]) => {
     const sid = String(sessionId)
     // 抛错而不是静默忽略：渲染层据此恢复输入框草稿，不能把用户消息吞掉
     if (ctx.loop.isRunning(sid)) throw new Error('当前会话已有任务在执行，请等待完成或先停止')
     ctx.lastSessionId = sid
-    void ctx.loop.run(sid, String(text))
+    const safeAttachments = Array.isArray(attachments)
+      ? attachments
+          .filter((a) => a && typeof a.name === 'string')
+          .map((a) => ({
+            name: String(a.name),
+            path: typeof a.path === 'string' ? a.path : undefined,
+            preview: typeof a.preview === 'string' ? a.preview : undefined
+          }))
+      : undefined
+    void ctx.loop.run(sid, String(text), safeAttachments)
     void ctx.sync.pushAll(`Lidow 收到新任务：${String(text).slice(0, 200)}`)
   })
   R('stop', (sessionId: string, level: StopLevel) => {

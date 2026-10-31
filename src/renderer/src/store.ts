@@ -21,7 +21,8 @@ import type {
   KnowledgeBase,
   AuditEntry,
   MarketPlugin,
-  McpServerConfig
+  McpServerConfig,
+  ChatAttachment
 } from '@shared/types'
 
 /** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
@@ -228,7 +229,7 @@ interface LidowState {
   setActiveTab(id: string): void
   bindTabSession(tabId: string, sessionId: string, webContentsId: number): Promise<void>
   setTabWcId(tabId: string, wcId: number): void
-  sendPrompt(text: string): Promise<void>
+  sendPrompt(text: string, attachments?: ChatAttachment[]): Promise<void>
   stop(level: 'generate' | 'tool' | 'auto-loop' | 'all'): Promise<void>
   answerConfirm(ok: boolean): Promise<void>
   notice(message: string, level?: 'info' | 'warn' | 'error'): void
@@ -923,7 +924,7 @@ export const useStore = create<LidowState>((set, get) => ({
     set({ tabs: get().tabs.map((t) => (t.id === tabId ? { ...t, wcId } : t)) })
   },
 
-  async sendPrompt(text) {
+  async sendPrompt(text, attachments) {
     // 没有项目就没有工作目录：AI 只会答「我没有文件系统访问」，工具也无根可落。
     // 抛错而不是静默 return：调用方（输入框）据此恢复草稿并提示，不能吞掉消息。
     if (!get().projects.length) {
@@ -944,7 +945,7 @@ export const useStore = create<LidowState>((set, get) => ({
       // 服务端宿主已在 createSession/openSession 时绑定好网页，直接交给主进程循环
       set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
       try {
-        await api.sendPrompt(activeSession.id, text)
+        await api.sendPrompt(activeSession.id, text, attachments)
       } catch (e) {
         set({ pendingReplySessionId: '' })
         throw e
@@ -992,7 +993,7 @@ export const useStore = create<LidowState>((set, get) => ({
       await api.landSession(activeSession.id).catch(() => undefined)
     }
     try {
-      await api.sendPrompt(activeSession.id, text)
+      await api.sendPrompt(activeSession.id, text, attachments)
     } catch (e) {
       set({ pendingReplySessionId: '' })
       throw e

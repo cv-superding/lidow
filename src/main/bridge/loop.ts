@@ -1,7 +1,8 @@
-import type { AppSettings, ChatTurn, Session, StopLevel, ToolCall, ToolResult } from '@shared/types'
+import type { AppSettings, ChatAttachment, ChatTurn, Session, StopLevel, ToolCall, ToolResult } from '@shared/types'
 import { nanoid } from 'nanoid'
 import type { ToolRegistry } from '@main/tools/registry'
-import type { ToolContext } from '@main/tools/types'
+import { str, type ToolContext } from '@main/tools/types'
+import { imageReadPathFromCommand } from '@main/tools/fs'
 import {
   formatObservations,
   looksLikeActionRequest,
@@ -108,6 +109,8 @@ export interface LoopDeps {
 const MAX_TURNS = 200 // 单次任务最大工具循环轮数，防失控；长任务到上限会先请求收尾摘要
 /** 格式纠偏最大次数（对齐 cuckoo 的 FORMAT_HINT_MAX，防 AI 在两种错误格式间来回切换） */
 const MAX_WILD_HINTS = 10
+/** Bump this when the system prompt contract changes so old sessions receive the new rules. */
+const SYSTEM_PROMPT_VERSION = 3
 /** 长任务自然结束时，如果最终回复只是一句“好了”，补一轮结构化摘要 */
 const SUMMARY_NUDGE_MIN_ROUNDS = 10
 
@@ -288,7 +291,7 @@ export class AgentLoop {
     }
   }
 
-  async run(sessionId: string, userText: string): Promise<void> {
+  async run(sessionId: string, userText: string, attachments?: ChatAttachment[]): Promise<void> {
     if (this.running.has(sessionId)) {
       this.deps.emit({
         type: 'notice',
@@ -325,14 +328,15 @@ export class AgentLoop {
       // 有历史轮次但 flag 为 false（旧版本/异常落盘）也按“已发过”处理，
       // 避免升级后给正在用的会话再插一整段系统提示词。
       const promptSentBefore = before
-        ? before.systemPromptSent !== false || before.turns.length > 0
+        ? (before.systemPromptSent !== false || before.turns.length > 0) && before.systemPromptVersion === SYSTEM_PROMPT_VERSION
         : false
       const firstTurn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'user',
         text: userText,
         ts: Date.now(),
-        status: 'done'
+        status: 'done',
+        ...(attachments?.length ? { attachments } : {})
       }
       store.appendTurn(sessionId, firstTurn)
       // 自动命名：首个任务取前 24 字符作为会话标题。
@@ -361,7 +365,9 @@ export class AgentLoop {
       await this.toolLoop(sessionId, state, prompt)
       // 只有本轮真正跑完才记为已注入；发送失败/未连接时保留 false，
       // 下一条用户消息还能补上系统提示词。
-      if (injectedPrompt) store.update(sessionId, (s) => ({ ...s, systemPromptSent: true }))
+      if (injectedPrompt) {
+        store.update(sessionId, (s) => ({ ...s, systemPromptSent: true, systemPromptVersion: SYSTEM_PROMPT_VERSION }))
+      }
     } catch (err) {
       this.handleLoopError(state.sessionId, err)
     } finally {
@@ -1166,7 +1172,7 @@ export class AgentLoop {
           cur = [sys, summary, handoff, this.lastUserTextOf(prev)]
             .filter(Boolean)
             .join('\n\n---\n\n')
-          if (sys) this.deps.store.update(next, (s) => ({ ...s, systemPromptSent: true }))
+          if (sys) this.deps.store.update(next, (s) => ({ ...s, systemPromptSent: true, systemPromptVersion: SYSTEM_PROMPT_VERSION }))
           // 交接提示成了这一轮的「任务原文」：后续发送类失败要重发的是它
           originalPrompt = cur
           continue
@@ -1468,14 +1474,20 @@ export class AgentLoop {
       confirm: (reason) => this.deps.confirm(sessionId, reason)
     }
     try {
-      const out = await def.run(call.input, ctx)
+      // Models sometimes probe images with file/strings/OCR shell commands. Route those reads through read so the UI can preview them.
+      const imagePath = call.name === 'bash' || call.name === 'pwsh' ? imageReadPathFromCommand(str(call.input, 'command')) : ''
+      const executedName = imagePath ? 'read' : call.name
+      const executedInput = imagePath ? { path: imagePath } : call.input
+      const executedDef = imagePath ? this.deps.tools.get('read') : def
+      if (!executedDef) throw new Error('read tool is unavailable')
+      const out = await executedDef.run(executedInput, ctx)
       return {
         callId: call.id,
-        name: call.name,
+        name: executedName,
         ok: out.ok,
         output: out.output,
         display: out.display,
-        summary,
+        summary: imagePath ? toolSummary({ ...call, name: executedName, input: executedInput }) : summary,
         error: out.error,
         durationMs: Date.now() - started
       }

@@ -704,7 +704,10 @@ function ConfirmOverlay(): React.JSX.Element {
             </span>
           )}
         </div>
-        <div className="mb-3 text-[12.5px] leading-relaxed" style={{ color: 'var(--text-dim)' }}>
+        <div
+          className="mb-3 max-h-28 overflow-y-auto whitespace-pre-wrap break-words rounded-[var(--r-sm)] px-2 py-1.5 text-[11.5px] leading-relaxed"
+          style={{ color: 'var(--text-dim)', background: 'var(--surface-sunken)' }}
+        >
           {confirmRequest.reason}
         </div>
         <div className="flex justify-end gap-2">
