@@ -261,6 +261,8 @@ export class AppContext {
   private tokenUsage!: JsonStore<Record<string, number>>
   /** 插件网页脚本（providerId → code），loadAllPlugins 填充、configure 时注入 */
   private webScripts = new Map<string, string[]>()
+  /** 定期把平台会话 Cookie 转成持久 Cookie（DeepSeek 登录是 session cookie） */
+  private cookieTimer?: NodeJS.Timeout
   lastSessionId = ''
 
   init(): void {
@@ -519,7 +521,12 @@ export class AppContext {
         action === 'stop-generate' ? 'generate' : action === 'stop-tool' ? 'tool' : 'all'
       this.loop.stop(sessionId, level)
     })
-    this.overlay.onReady = (sessionId) => this.configureOverlay(sessionId)
+    this.overlay.onReady = (sessionId) => {
+      this.configureOverlay(sessionId)
+      const wcId = this.overlay.wcIdOfSession(sessionId)
+      const wc = wcId ? webContents.fromId(wcId) : undefined
+      if (wc && !wc.isDestroyed()) void this.persistSessionCookies(wc.session)
+    }
     // 账号显示名/登录态：网页里检测到后写回平台账号，卡片和账号选择器不再是「账号 N」
     this.overlay.onLoginState = (webContentsId, loggedIn) =>
       this.updateAccountMetaFromWeb(webContentsId, { loggedIn })
@@ -630,7 +637,11 @@ export class AppContext {
     this.overlay.onActivateChat = (webContentsId, url, reload) =>
       void this.activateWebChat(webContentsId, url, reload)
     this.overlay.onNativeNewChat = (webContentsId) => this.handleNativeNewChat(webContentsId)
-    this.overlay.onAnyReady = (webContentsId) => this.syncChatWatchToWebview(webContentsId)
+    this.overlay.onAnyReady = (webContentsId) => {
+      this.syncChatWatchToWebview(webContentsId)
+      const wc = webContents.fromId(webContentsId)
+      if (wc && !wc.isDestroyed()) void this.persistSessionCookies(wc.session)
+    }
     this.overlay.onLogin = (webContentsId) => {
       const project = this.activeProject()
       const root = project?.root ?? null
@@ -649,6 +660,25 @@ export class AppContext {
       })
       // 未初始化时把窗口提到前台，引导摆在用户眼前（"强制第一步"）
       if (!root) this.focusWindow()
+      // 登录刚刚完成时 Cookie 可能还在写入，稍等再持久化
+      const wc = webContents.fromId(webContentsId)
+      if (wc && !wc.isDestroyed()) {
+        setTimeout(() => {
+          if (!wc.isDestroyed()) void this.persistSessionCookies(wc.session)
+        }, 1500)
+      }
+    }
+    // DeepSeek 等平台的登录态是 session cookie，Chromium 重启会丢掉。
+    // 每分钟把会话级 Cookie 续成 30 天持久 Cookie，避免每次更新/重启都要重新登录。
+    if (!this.cookieTimer) {
+      this.cookieTimer = setInterval(() => {
+        for (const wc of webContents.getAllWebContents()) {
+          if (wc.getType() === 'webview' && !wc.isDestroyed()) {
+            void this.persistSessionCookies(wc.session)
+          }
+        }
+      }, 60_000)
+      this.cookieTimer.unref?.()
     }
 
     app.on('web-contents-created', (_e, wc) => {
@@ -1145,6 +1175,47 @@ export class AppContext {
       } catch {
         /* 订阅方异常不能影响主事件流 */
       }
+    }
+  }
+
+  /**
+   * 把平台登录用的会话级 Cookie 续成持久 Cookie。
+   * DeepSeek 的 ds_session_id / HWWAFSESID 都是 session cookie，Chromium 默认
+   * 只存在内存里；强制退出或更新重启后登录态就丢了（实测每次重启都要重登）。
+   */
+  private async persistSessionCookies(ses: Electron.Session): Promise<void> {
+    try {
+      const cookies = await ses.cookies.get({})
+      const expires = Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60
+      let converted = 0
+      for (const c of cookies) {
+        if (!c.session) continue
+        const host = (c.domain || '').replace(/^\./, '')
+        if (!host) continue
+        const url = `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`
+        try {
+          await ses.cookies.set({
+            url,
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            httpOnly: c.httpOnly,
+            sameSite: c.sameSite,
+            expirationDate: expires
+          })
+          converted++
+        } catch {
+          /* 个别 Cookie 不允许重设，跳过 */
+        }
+      }
+      if (converted > 0) {
+        await ses.cookies.flushStore().catch(() => undefined)
+        Logger.info('auth', `已持久化 ${converted} 个网页会话 Cookie`)
+      }
+    } catch {
+      /* 分区不可用时忽略 */
     }
   }
 

@@ -44,7 +44,13 @@ async function webChatDeleteScript(args: { url: string; title: string }): Promis
     'okay',
     'confirm'
   ]
-  const hasLabel = (el: any, labels: string[]) => labels.includes(text(el).toLowerCase())
+  const hasLabel = (el: any, labels: string[]) => {
+    const t = `${text(el)} ${el?.getAttribute?.('aria-label') ?? ''} ${el?.getAttribute?.('title') ?? ''}`
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase()
+    return labels.some((l) => t === l || (l.length >= 2 && t.includes(l)))
+  }
 
   let target: URL
   try {
@@ -58,6 +64,41 @@ async function webChatDeleteScript(args: { url: string; title: string }): Promis
   const segments = path.split('/').filter(Boolean)
   const id = segments[segments.length - 1] ?? ''
   if (!id || id.length < 4) return { ok: false, reason: '无法从会话 URL 识别对话 ID' }
+
+  // DeepSeek 侧栏菜单结构改版后「...」里找不到删除项；它自己的删除接口最稳：
+  // POST /api/v0/chat_session/delete { chat_session_ids: [id] }。
+  if (target.origin === 'https://chat.deepseek.com') {
+    try {
+      const res = await g.fetch('/api/v0/chat_session/delete', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_session_ids: [id] })
+      })
+      if (res.status === 401 || res.status === 403) {
+        return { ok: false, reason: '网页未登录，无法删除网页端对话' }
+      }
+      const json = await res.json().catch(() => null)
+      const code = json?.data?.biz_code ?? json?.code
+      if (code === 40003 || /INVALID_TOKEN/i.test(String(json?.msg ?? ''))) {
+        return { ok: false, reason: '网页未登录，无法删除网页端对话' }
+      }
+      if (res.ok && code === 0) {
+        // 直接调接口不会更新侧栏的 React 状态；刷新一次让网页端列表同步消失
+        g.setTimeout(() => {
+          try {
+            if (g.location.pathname.includes(id)) g.location.href = '/'
+            else g.location.reload()
+          } catch {
+            /* ignore */
+          }
+        }, 300)
+        return { ok: true }
+      }
+    } catch {
+      /* 接口异常时继续走下面的 UI 菜单兜底 */
+    }
+  }
   const sameChat = (a: any): boolean => {
     try {
       const u = new g.URL(String(a.href), g.location.href)

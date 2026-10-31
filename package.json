@@ -1,6 +1,6 @@
 {
   "name": "lidow",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Lidow — 零 Token 成本内嵌网页版 AI Agent 桌面端",
   "main": "./out/main/index.js",
   "type": "commonjs",
