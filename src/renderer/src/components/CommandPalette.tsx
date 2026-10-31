@@ -50,18 +50,28 @@ async function newTask(): Promise<void> {
   st.setView('home')
   st.setPure(true)
   st.setPureView('home')
-  await st.createSession(providerId)
-  const created = useStore.getState().activeSession
-  if (created) await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
+  // createSession 自己会打开标签；失败时不能再拿旧 activeSession 去重开
+  try {
+    await st.createSession(providerId)
+  } catch (e) {
+    useStore
+      .getState()
+      .notice(`新建任务失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+  }
 }
 
 function toggleTheme(): void {
   const st = useStore.getState()
-  const next = st.settings.theme === 'dark' ? 'light' : 'dark'
-  void api.updateSettings({ theme: next }).then((settings) => {
-    useStore.setState({ settings })
-    useStore.getState().applyTheme(settings)
-  })
+  // graphite/light 是浅色系；dark/midnight 才切回浅色
+  const lightThemes = new Set(['light', 'graphite', 'warm'])
+  const next = lightThemes.has(st.settings.theme) ? 'dark' : 'light'
+  void api
+    .updateSettings({ theme: next })
+    .then((settings) => {
+      useStore.setState({ settings })
+      useStore.getState().applyTheme(settings)
+    })
+    .catch(() => undefined)
 }
 
 /** Ctrl/Cmd K 命令面板：页面导航与常用动作，键盘可完全操作 */
@@ -118,12 +128,18 @@ export function CommandPalette(): React.JSX.Element | null {
         else st.setView(n.id)
       }
     }))
+    const openPanel = (panel: 'files' | 'tasks' | 'terminal' | 'review') => (): void => {
+      const st = useStore.getState()
+      // 管理页不挂载右侧面板：先回对话页再打开
+      if (st.pureMode) st.setPureView('home')
+      st.openAux(panel)
+    }
     const actions: Cmd[] = [
       { id: 'new', group: '动作', label: '新建任务', desc: '创建会话并开始对话', icon: IconPlus, kbd: 'Ctrl N', run: newTask },
-      { id: 'files', group: '动作', label: '打开文件面板', desc: '浏览项目文件', icon: IconFile, kbd: 'Ctrl Alt E', run: () => useStore.getState().openAux('files') },
-      { id: 'tasks', group: '动作', label: '打开侧边任务', desc: '查看 todoWrite 同步的任务', icon: IconList, run: () => useStore.getState().openAux('tasks') },
-      { id: 'terminal', group: '动作', label: '打开终端', desc: '在右侧运行命令', icon: IconTerminal, kbd: 'Ctrl `', run: () => useStore.getState().openAux('terminal') },
-      { id: 'review', group: '动作', label: '打开审阅', desc: '查看文件 Diff', icon: IconDiff, kbd: 'Ctrl Shift G', run: () => useStore.getState().openAux('review') },
+      { id: 'files', group: '动作', label: '打开文件面板', desc: '浏览项目文件', icon: IconFile, kbd: 'Ctrl Alt E', run: openPanel('files') },
+      { id: 'tasks', group: '动作', label: '打开侧边任务', desc: '查看 todoWrite 同步的任务', icon: IconList, run: openPanel('tasks') },
+      { id: 'terminal', group: '动作', label: '打开终端', desc: '在右侧运行命令', icon: IconTerminal, kbd: 'Ctrl `', run: openPanel('terminal') },
+      { id: 'review', group: '动作', label: '打开审阅', desc: '查看文件 Diff', icon: IconDiff, kbd: 'Ctrl Shift G', run: openPanel('review') },
       {
         id: 'pure',
         group: '动作',
@@ -165,6 +181,8 @@ export function CommandPalette(): React.JSX.Element | null {
   }
 
   const onKeyDown = (e: React.KeyboardEvent): void => {
+    // 输入法回车确认候选词不应直接执行命令
+    if (e.nativeEvent.isComposing) return
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       setSel((v) => (filtered.length ? (v + 1) % filtered.length : 0))

@@ -42,12 +42,15 @@ function makeSettings(): AppSettings {
   }
 }
 
-function makeHarness(): {
+function makeHarness(opts: { hang?: boolean; intervalMs?: number; replies?: string[] } = {}): {
   loop: AgentLoop
   session: () => Session
   addTurn: (turn: ChatTurn) => void
   prompts: string[]
   notifyDone: ReturnType<typeof vi.fn>
+  runs: string[]
+  stopState: () => { aborted: boolean; suppressed: boolean }
+  events: { type: string; sessionId: string; running?: boolean }[]
 } {
   let session: Session = {
     id: 'sess_1',
@@ -62,7 +65,11 @@ function makeHarness(): {
   }
   const prompts: string[] = []
   const notifyDone = vi.fn()
-  const settings = makeSettings()
+  const runs: string[] = []
+  const stopState = { aborted: false, suppressed: false }
+  const events: { type: string; sessionId: string; running?: boolean }[] = []
+  let rejectReply: ((e: Error) => void) | null = null
+  const settings = { ...makeSettings(), webSendIntervalMs: opts.intervalMs ?? 0 }
   const tools = {
     get: (name: string) =>
       name === 'read'
@@ -71,7 +78,10 @@ function makeHarness(): {
             description: '',
             parameters: {},
             dangerLevel: 'safe' as const,
-            run: async () => ({ ok: true, output: 'ok' })
+            run: async () => {
+              runs.push(name)
+              return { ok: true, output: 'ok' }
+            }
           }
         : undefined,
     names: () => ['read']
@@ -121,6 +131,13 @@ function makeHarness(): {
     awaitReply: async () => {
       // awaitReply 在 sendToPage 之前注册：让出一个微任务再读取本轮提示
       await Promise.resolve()
+      if (opts.hang) {
+        return new Promise<string>((_resolve, reject) => {
+          rejectReply = reject
+        })
+      }
+      const planned = opts.replies?.[prompts.length - 1]
+      if (planned !== undefined) return planned
       const last = prompts[prompts.length - 1] ?? ''
       if (last.includes('收尾摘要') || last.includes('自动循环上限')) {
         return '## 已完成\n- 完成了测试任务\n\n## 未解决\n- 无\n\n## 说明\n- 测试'
@@ -128,10 +145,17 @@ function makeHarness(): {
       return TOOL_REPLY
     },
     interruptPage: () => undefined,
+    abortReply: () => {
+      stopState.aborted = true
+      rejectReply?.(new Error('用户中止了生成'))
+    },
+    suppressPage: () => {
+      stopState.suppressed = true
+    },
     abandonReply: () => undefined,
     toolMask: () => undefined,
     notifyDone,
-    emit: () => undefined,
+    emit: (event: { type: string; sessionId: string; running?: boolean }) => events.push(event),
     settings: () => settings,
     securityMod: () => ({
       mode: 'off',
@@ -148,7 +172,16 @@ function makeHarness(): {
   const addTurn = (turn: ChatTurn): void => {
     session = { ...session, turns: [...session.turns, turn], updatedAt: Date.now() }
   }
-  return { loop, session: () => session, addTurn, prompts, notifyDone }
+  return {
+    loop,
+    session: () => session,
+    addTurn,
+    prompts,
+    notifyDone,
+    runs,
+    stopState: () => stopState,
+    events
+  }
 }
 
 describe('重启后的最终回答恢复', () => {
@@ -195,6 +228,51 @@ describe('重启后的最终回答恢复', () => {
     addTurn({ id: 'u1', role: 'user', text: '郑州的', ts: Date.now(), status: 'done' })
     loop.syncExternalReply('sess_1', '郑州的')
     expect(session().turns).toHaveLength(1)
+  })
+
+  it('停止生成会立即中止等待并压制网页后续事件', async () => {
+    const { loop, session, stopState, events } = makeHarness({ hang: true })
+    const runPromise = loop.run('sess_1', '长任务')
+    await new Promise((r) => setTimeout(r, 30))
+    expect(loop.isRunning('sess_1')).toBe(true)
+    loop.stop('sess_1', 'generate')
+    await runPromise
+    expect(stopState().aborted).toBe(true)
+    expect(stopState().suppressed).toBe(true)
+    expect(loop.isRunning('sess_1')).toBe(false)
+    const last = session().turns[session().turns.length - 1]
+    expect(last?.role).toBe('system')
+    expect(last?.text).toContain('中止')
+    // UI 的“停止生成”依赖 loop-state：开始时 true，停止/收尾时 false
+    expect(events.some((e) => e.type === 'loop-state' && e.running === true)).toBe(true)
+    expect(events.filter((e) => e.type === 'loop-state').at(-1)?.running).toBe(false)
+  })
+
+  it('循环已落盘的带工具回复被网页侧重复上报时不会二次执行工具', async () => {
+    const { loop, session, addTurn, runs } = makeHarness()
+    addTurn({ id: 'u1', role: 'user', text: '写个贪吃蛇', ts: Date.now(), status: 'done' })
+    addTurn({
+      id: 'a1',
+      role: 'assistant',
+      text: '继续处理。',
+      ts: Date.now(),
+      status: 'done',
+      toolResults: [{ callId: 'c1', name: 'read', ok: true, output: 'ok', durationMs: 1 }]
+    })
+    // 循环的最终摘要已经追加在后面：只看最后一条会漏掉这次重复上报
+    addTurn({ id: 'a2', role: 'assistant', text: '已完成摘要', ts: Date.now() + 1, status: 'done' })
+    await loop.adoptExternalReply('sess_1', TOOL_REPLY)
+    expect(session().turns).toHaveLength(3)
+    expect(runs).toHaveLength(0)
+  })
+
+  it('工具结果发送前会实际等待网页发送间隔', async () => {
+    const { loop, prompts } = makeHarness({ intervalMs: 300, replies: ['已完成'] })
+    const started = Date.now()
+    await loop.adoptExternalReply('sess_1', TOOL_REPLY)
+    const elapsed = Date.now() - started
+    expect(prompts).toHaveLength(1) // 只发送了工具观察结果
+    expect(elapsed).toBeGreaterThanOrEqual(250)
   })
 
   it('网页快照带思考/搜索前缀且去掉了引用角标时，不重复追加整段回答', () => {

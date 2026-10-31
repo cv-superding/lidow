@@ -2,7 +2,17 @@ import { Component, StrictMode } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { AppShell } from './components/AppShell'
+import { useStore } from './store'
 import './styles.css'
+
+// 兜底：任何没接住的 IPC/异步错误都要显式提示，不能表现成“按钮点了没反应”
+window.addEventListener('unhandledrejection', (event) => {
+  const reason = event.reason
+  const message = reason instanceof Error ? reason.message : String(reason)
+  console.error('[lidow] 未处理的异步错误:', reason)
+  useStore.getState().notice(`操作失败：${message}`, 'error')
+  event.preventDefault()
+})
 
 /**
  * 顶层错误边界：任何渲染异常都不应该把整棵 React 树卸载成白屏。

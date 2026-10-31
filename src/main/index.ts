@@ -277,7 +277,9 @@ function createWindow(host = false): BrowserWindow {
   else void win.loadFile(join(__dirname, '../renderer/index.html'))
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    // 渲染层/网页可能触发 window.open；只允许 http(s) 交给系统浏览器，
+    // file:// 或自定义协议（ms-*/vbscript 等）一律不执行
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
     return { action: 'deny' }
   })
   return win
@@ -334,14 +336,21 @@ app.whenReady().then(async () => {
   })
 
   if (WEB_SERVER) {
+    const webToken = process.env.LIDOW_WEB_TOKEN || undefined
     webServer = new WebServer({
       root: app.isPackaged ? join(process.resourcesPath, 'web') : join(__dirname, '../web'),
       host: process.env.LIDOW_WEB_HOST || '0.0.0.0',
       port: Number(process.env.LIDOW_WEB_PORT || 6080),
-      token: process.env.LIDOW_WEB_TOKEN || undefined,
+      token: webToken,
       invoke: invokeApi,
       openai: createOpenAiHandler(openAiHost)
     })
+    if (!webToken) {
+      Logger.warn(
+        'web',
+        'Web 版未设置 LIDOW_WEB_TOKEN：接口仅靠 Sec-Fetch-Site 挡住浏览器跨站请求，远程访问请务必配置 Token'
+      )
+    }
     await webServer.listen()
   }
 

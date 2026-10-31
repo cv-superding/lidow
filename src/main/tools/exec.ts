@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { isAbsolute, join, resolve } from 'node:path'
 import { existsSync } from 'node:fs'
 import { isReadOnly, judgeCommand } from '@main/security/commandGuard'
+import { isPathInside } from '@shared/path'
 import type { ToolDef, ToolContext } from './types'
 import { clampOutput, str } from './types'
 
@@ -11,6 +12,8 @@ export interface ExecResult {
   output: string
   timedOut: boolean
   durationMs: number
+  /** 实际执行目录（审计/终端卡片展示用） */
+  cwd?: string
 }
 
 const OUTPUT_HARD_CAP = 512 * 1024 // 512KB 硬上限，防止命令输出撑爆内存
@@ -100,7 +103,7 @@ export async function execCommand(
   }
 
   const cwd = opts.cwd && (isAbsolute(opts.cwd) ? resolve(opts.cwd) : resolve(ctx.projectRoot, opts.cwd))
-  if (cwd && !cwd.startsWith(resolve(ctx.projectRoot))) {
+  if (cwd && !isPathInside(ctx.projectRoot, cwd)) {
     return { ok: false, exitCode: null, output: `cwd 越界：仅允许项目目录内`, timedOut: false, durationMs: 0 }
   }
   const workdir = cwd && existsSync(cwd) ? cwd : ctx.projectRoot
@@ -114,10 +117,29 @@ export async function execCommand(
   const started = Date.now()
   return new Promise<ExecResult>((resolveP) => {
     if (ctx.signal?.aborted) {
-      resolveP({ ok: false, exitCode: null, output: '用户中止了命令', timedOut: false, durationMs: 0 })
+      resolveP({ ok: false, exitCode: null, output: '用户中止了命令', timedOut: false, durationMs: 0, cwd: workdir })
       return
     }
-    const child = spawn(file, args, { cwd: workdir, windowsHide: true, env: { ...process.env } })
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(file, args, {
+        cwd: workdir,
+        windowsHide: true,
+        env: { ...process.env },
+        // POSIX 下建独立进程组，超时/停止时能连同子进程一起杀掉
+        detached: process.platform !== 'win32'
+      })
+    } catch (e) {
+      resolveP({
+        ok: false,
+        exitCode: null,
+        output: `启动失败: ${String(e)}`,
+        timedOut: false,
+        durationMs: Date.now() - started,
+        cwd: workdir
+      })
+      return
+    }
     let out = ''
     let timedOut = false
     let aborted = false
@@ -130,30 +152,11 @@ export async function execCommand(
     child.stdout?.on('data', push)
     child.stderr?.on('data', push)
 
-    const timer = setTimeout(() => {
-      timedOut = true
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        /* ignore */
-      }
-    }, Math.max(5_000, ctx.settings.commandTimeoutMs))
-
-    // 「停止工具」：杀掉子进程并让上层把本轮标记为已取消
-    const onAbort = (): void => {
-      aborted = true
-      try {
-        child.kill('SIGKILL')
-      } catch {
-        /* ignore */
-      }
-    }
-    ctx.signal?.addEventListener('abort', onAbort, { once: true })
-
     const finish = (code: number | null): void => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      if (killFallback) clearTimeout(killFallback)
       ctx.signal?.removeEventListener('abort', onAbort)
       const trimmed = clampOutput(out, limit)
       const suffix = timedOut
@@ -166,9 +169,84 @@ export async function execCommand(
         exitCode: code,
         output: trimmed + suffix,
         timedOut,
-        durationMs: Date.now() - started
+        durationMs: Date.now() - started,
+        cwd: workdir
       })
     }
+
+    /**
+     * 只杀 shell 不够：npm/vite 等会派生子进程，子进程继承 stdout 管道后
+     * 'close' 永远不触发，工具会一直卡到应用退出。这里杀整棵进程树，
+     * 并设兜底：管道销毁 + 按当前输出结束本轮。
+     */
+    let killFallback: NodeJS.Timeout | null = null
+    const killTree = (): void => {
+      const pid = child.pid
+      if (pid) {
+        if (process.platform === 'win32') {
+          try {
+            const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+              windowsHide: true,
+              stdio: 'ignore'
+            })
+            killer.on('error', () => undefined)
+            killer.unref()
+          } catch {
+            /* ignore */
+          }
+        } else {
+          try {
+            process.kill(-pid, 'SIGKILL')
+          } catch {
+            try {
+              child.kill('SIGKILL')
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+      if (!killFallback) {
+        killFallback = setTimeout(() => {
+          killFallback = null
+          try {
+            child.stdout?.destroy()
+            child.stderr?.destroy()
+          } catch {
+            /* ignore */
+          }
+          finish(child.exitCode ?? null)
+        }, 3000)
+        killFallback.unref?.()
+      }
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true
+      killTree()
+    }, Math.max(5_000, ctx.settings.commandTimeoutMs))
+
+    // 「停止工具」：杀掉进程树并让上层把本轮标记为已取消
+    const onAbort = (): void => {
+      aborted = true
+      killTree()
+    }
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
+
+    // 进程退出但管道被孙进程占用时 close 不会来：exit 后短暂等待输出排空即收尾
+    child.on('exit', (code) => {
+      if (settled) return
+      setTimeout(() => {
+        if (settled) return
+        try {
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        } catch {
+          /* ignore */
+        }
+        finish(code)
+      }, 800).unref?.()
+    })
     child.on('close', finish)
     child.on('error', (err) => {
       out += `\n[lidow] 启动失败: ${String(err)}`
@@ -185,11 +263,12 @@ export const bashTool: ToolDef = {
   async run(input, ctx) {
     const cmd = str(input, 'command')
     const r = await execCommand(cmd, ctx, { shell: 'auto', cwd: str(input, 'cwd') || undefined })
-    ctx.audit?.('command', cmd.slice(0, 120), { cmd, exitCode: r.exitCode, cwd: ctx.projectRoot })
+    const cwd = r.cwd ?? ctx.projectRoot
+    ctx.audit?.('command', cmd.slice(0, 120), { cmd, exitCode: r.exitCode, cwd })
     return {
       ok: r.ok,
       output: `[exit ${r.exitCode ?? 'null'}] ${r.output}`,
-      display: { kind: 'terminal', cmd, cwd: ctx.projectRoot, exitCode: r.exitCode, output: r.output },
+      display: { kind: 'terminal', cmd, cwd, exitCode: r.exitCode, output: r.output },
       error: r.timedOut ? 'timeout' : undefined
     }
   }
@@ -203,11 +282,12 @@ export const pwshTool: ToolDef = {
   async run(input, ctx) {
     const cmd = str(input, 'command')
     const r = await execCommand(cmd, ctx, { shell: 'pwsh' })
-    ctx.audit?.('command', cmd.slice(0, 120), { cmd, exitCode: r.exitCode })
+    const cwd = r.cwd ?? ctx.projectRoot
+    ctx.audit?.('command', cmd.slice(0, 120), { cmd, exitCode: r.exitCode, cwd })
     return {
       ok: r.ok,
       output: `[exit ${r.exitCode ?? 'null'}] ${r.output}`,
-      display: { kind: 'terminal', cmd, cwd: ctx.projectRoot, exitCode: r.exitCode, output: r.output },
+      display: { kind: 'terminal', cmd, cwd, exitCode: r.exitCode, output: r.output },
       error: r.timedOut ? 'timeout' : undefined
     }
   }

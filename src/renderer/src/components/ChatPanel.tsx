@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import hljs from 'highlight.js'
-import { useStore, useProject, WEB_MODE, type ReviewFile } from '../store'
+import { useStore, useActiveProject, WEB_MODE, type ReviewFile } from '../store'
 import { api } from '../api'
 import { waitWebviewWcId, webviewWcId } from '../webviews'
 import { stripCitationMarkers, stripToolArtifacts } from '../textClean'
@@ -200,11 +200,6 @@ function ToolGroup({
     // 执行中自动展开看进度；结束后收起，但失败时保持展开避免错误被藏起来
     setOpen(running || failed > 0)
   }, [running, failed])
-  useEffect(() => {
-    if (!running) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [running])
   useEffect(() => {
     if (!running) return
     const timer = window.setInterval(() => setNow(Date.now()), 1000)
@@ -584,13 +579,7 @@ function TurnItem({
     <div className="flex flex-col gap-2">
       {/* 处理过程默认折叠，只露摘要；历史轮次也保留可展开查看 */}
       {turn.think && <ThinkingBlock text={turn.think} streaming={false} />}
-      {visibleText ? (
-        <TurnBody text={visibleText} />
-      ) : !turn.text && (turn.toolResults?.length ?? 0) === 0 ? (
-        <span className="text-[12px] italic" style={{ color: 'var(--text-hint)' }}>
-          （本轮仅工具调用，无文本）
-        </span>
-      ) : null}
+      {visibleText ? <TurnBody text={visibleText} /> : null}
       {turn.toolResults && turn.toolResults.length > 0 && (
         <ToolGroup results={turn.toolResults} running={toolRunning} startedAt={turn.ts} />
       )}
@@ -669,6 +658,9 @@ function PermissionPicker(): React.JSX.Element {
                   void api
                     .updateSettings({ permissionMode: m.id })
                     .then((next) => useStore.setState({ settings: next }))
+                    .catch(() =>
+                      useStore.getState().notice('切换权限模式失败', 'warn')
+                    )
                 }}
               >
                 <span
@@ -921,7 +913,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const [slashIndex, setSlashIndex] = useState(0)
   const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
   const projectId = useStore((s) => s.activeProjectId)
-  const project = useProject(useStore())
+  const project = useActiveProject()
   const providers = useStore((s) => s.providers)
   const toggleState = useStore((s) => s.toggleState)
   const providerActions = activeSession
@@ -1091,6 +1083,13 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const running = activeSession
     ? turns[turns.length - 1]?.status === 'streaming' || hasStreaming
     : false
+  // 主进程循环状态贯穿整个任务：工具轮之间、重试等待、首包未到都不会闪回“发送”
+  const loopRunning = useStore((s) =>
+    Boolean(s.activeSession && s.runningSessionIds.includes(s.activeSession.id))
+  )
+  const sendWaiting = useStore((s) =>
+    Boolean(s.activeSession && s.sendWaiting.includes(s.activeSession.id))
+  )
   // 实时思考只在任务进行中显示：刚发出（最后一轮是用户）或正在生成/执行；
   // 任务结束后网页侧迟到的 think-chunk 不能再挂到最终答复下面。
   const liveThinking = Boolean(
@@ -1117,7 +1116,11 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   // 思考阶段（或网页侧刚开始回复）发送键仍然可点，会重复发消息。
   const busy = Boolean(
     activeSession &&
-      (running || toolRunning || pendingReplySessionId === activeSession.id || liveThinking)
+      (loopRunning ||
+        running ||
+        toolRunning ||
+        pendingReplySessionId === activeSession.id ||
+        liveThinking)
   )
   // 一个任务可能包含多段助手回复（工具批次/中间说明）。操作栏只在任务最后
   // 一段有正文的回复后出现一次，避免截图中每隔一个工具组就重复一排按钮。
@@ -1298,6 +1301,18 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     setEditingTurnId(null)
     setSlashOpen(false)
     const session = activeSession
+    // 发送失败必须把草稿还给用户：之前先清空输入框、异常又被 void 吞掉，
+    // 一条消息和附件会凭空消失
+    const guarded = async (run: () => Promise<void>): Promise<void> => {
+      try {
+        await run()
+      } catch (e) {
+        setInput(text)
+        useStore
+          .getState()
+          .notice(`发送失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      }
+    }
     if (text === '/new') {
       const providerId = session?.providerId ?? preferredProviderId()
       if (providerId) await useStore.getState().createSession(providerId)
@@ -1310,36 +1325,49 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         setInput(text)
         return
       }
-      await useStore.getState().createSession(providerId)
-      const created = useStore.getState().activeSession
-      if (!created) {
-        setInput(text)
-        return
-      }
-      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
-      await useStore.getState().sendPrompt(text)
-      clearAttachments(created.id)
+      await guarded(async () => {
+        const created = await useStore.getState().createSession(providerId)
+        if (!created) throw new Error('创建会话失败')
+        await useStore
+          .getState()
+          .openProviderTab(created.providerId, created.id, created.accountId)
+        await useStore.getState().sendPrompt(text)
+        clearAttachments(created.id)
+      })
       return
     }
     if (text === '/compact') {
-      const next = await api.compactSession(session.id)
-      useStore.setState({ activeSession: next })
+      try {
+        const next = await api.compactSession(session.id)
+        useStore.setState({ activeSession: next })
+      } catch (e) {
+        setInput(text)
+        useStore
+          .getState()
+          .notice(`压缩失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      }
       return
     }
     if (text === '/memory') {
-      await sendPrompt(
-        '请用 remember 工具保存本次会话的关键结论与用户偏好（若无可保存内容请直接说明）。'
-      )
-      clearAttachments(session.id)
+      await guarded(async () => {
+        await sendPrompt(
+          '请用 remember 工具保存本次会话的关键结论与用户偏好（若无可保存内容请直接说明）。'
+        )
+        clearAttachments(session.id)
+      })
       return
     }
     if (text === '/plan') {
-      await sendPrompt('请先用 planSubmit 工具把这个需求拆解为分步计划，等待我确认后再执行。')
-      clearAttachments(session.id)
+      await guarded(async () => {
+        await sendPrompt('请先用 planSubmit 工具把这个需求拆解为分步计划，等待我确认后再执行。')
+        clearAttachments(session.id)
+      })
       return
     }
-    await sendPrompt(text)
-    clearAttachments(session.id)
+    await guarded(async () => {
+      await sendPrompt(text)
+      clearAttachments(session.id)
+    })
   }
 
   const slashItems = useMemo(
@@ -1549,6 +1577,20 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             />
           ))}
           {waiting && <PendingIndicator />}
+          {sendWaiting && (
+            <div className="flex justify-center">
+              <span
+                className="badge inline-flex items-center gap-1.5"
+                style={{ color: 'var(--text-dim)' }}
+              >
+                <span
+                  className="anim-breathe h-1 w-1 rounded-full"
+                  style={{ background: 'var(--accent)' }}
+                />
+                等待发送间隔 · 工具结果稍后自动发送
+              </span>
+            </div>
+          )}
           {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
           {taskChangeResults.length > 0 && (
             <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
@@ -2016,6 +2058,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 })
             }}
             onKeyDown={(e) => {
+              // 中文输入法回车确认候选词时不能直接发送
+              if (e.nativeEvent.isComposing) return
               if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 e.preventDefault()
                 const n = slashFiltered.length
@@ -2052,9 +2096,14 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               className="btn btn-ghost btn-icon btn-sm"
               title="上传文件/图片（附加到网页输入区）"
               onClick={() => {
-                if (!activeSession) return
+                if (!activeSession) {
+                  useStore.getState().notice('请先新建或选择会话，再上传附件', 'warn')
+                  return
+                }
                 if (WEB_MODE) {
-                  void api.overlayToggle(activeSession.id, 'upload-file')
+                  void api
+                    .overlayToggle(activeSession.id, 'upload-file')
+                    .catch(() => useStore.getState().notice('网页附件入口未就绪', 'warn'))
                   return
                 }
                 startUpload(activeSession.id)
@@ -2068,10 +2117,16 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 className="composer-chip disabled:opacity-40"
                 data-active={toggleState.think}
                 disabled={busy || !toggleState.thinkAvailable}
-                title="深度思考"
-                onClick={() =>
-                  activeSession && void api.overlayToggle(activeSession.id, 'toggle-think')
-                }
+                title={!toggleState.thinkAvailable ? '当前网页未检测到深度思考开关' : '深度思考'}
+                onClick={() => {
+                  if (!activeSession) return
+                  void api
+                    .overlayToggle(activeSession.id, 'toggle-think')
+                    .then((ok) => {
+                      if (!ok) useStore.getState().notice('网页未就绪，暂时无法切换深度思考', 'warn')
+                    })
+                    .catch(() => useStore.getState().notice('切换深度思考失败', 'warn'))
+                }}
               >
                 <IconBrain size={13} />
                 <span>{thinkLabel}</span>
@@ -2082,10 +2137,16 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 className="composer-chip disabled:opacity-40"
                 data-active={toggleState.search}
                 disabled={busy || !toggleState.searchAvailable}
-                title="智能搜索"
-                onClick={() =>
-                  activeSession && void api.overlayToggle(activeSession.id, 'toggle-search')
-                }
+                title={!toggleState.searchAvailable ? '当前网页未检测到联网搜索开关' : '智能搜索'}
+                onClick={() => {
+                  if (!activeSession) return
+                  void api
+                    .overlayToggle(activeSession.id, 'toggle-search')
+                    .then((ok) => {
+                      if (!ok) useStore.getState().notice('网页未就绪，暂时无法切换联网搜索', 'warn')
+                    })
+                    .catch(() => useStore.getState().notice('切换联网搜索失败', 'warn'))
+                }}
               >
                 <IconGlobe size={13} />
                 <span>智能搜索</span>
@@ -2318,6 +2379,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                     value={initName}
                     onChange={(e) => setInitName(e.target.value)}
                     onKeyDown={(e) => {
+                      if (e.nativeEvent.isComposing) return
                       if (e.key === 'Enter') {
                         e.preventDefault()
                         void finishInit()

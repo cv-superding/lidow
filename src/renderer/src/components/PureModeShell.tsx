@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useStore, useProject } from '../store'
+import { DEFAULT_ACCOUNT_ID, useStore, useActiveProject } from '../store'
 import { filterSessionList } from '../sessionFilter'
 import { api } from '../api'
 import { ResizeHandle } from './ResizeHandle'
@@ -162,7 +162,7 @@ export function PureModeShell({
   const sessions = useStore((s) => s.sessions)
   const activeSession = useStore((s) => s.activeSession)
   const providers = useStore((s) => s.providers)
-  const project = useProject(useStore())
+  const project = useActiveProject()
   const setPureView = useStore((s) => s.setPureView)
   const setPure = useStore((s) => s.setPure)
   const pureView = useStore((s) => s.pureView)
@@ -234,10 +234,18 @@ export function PureModeShell({
   }, [])
 
   const switchSession = async (id: string): Promise<void> => {
-    await useStore.getState().openSession(id)
-    const session = useStore.getState().activeSession
-    if (session)
-      await useStore.getState().openProviderTab(session.providerId, session.id, session.accountId)
+    try {
+      await useStore.getState().openSession(id)
+      const session = useStore.getState().activeSession
+      if (session)
+        await useStore
+          .getState()
+          .openProviderTab(session.providerId, session.id, session.accountId ?? DEFAULT_ACCOUNT_ID)
+    } catch (e) {
+      useStore
+        .getState()
+        .notice(`切换会话失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+    }
   }
 
   const newSession = async (): Promise<void> => {
@@ -247,10 +255,17 @@ export function PureModeShell({
       return
     }
     setPureView('home')
-    await useStore.getState().createSession(pid)
-    const created = useStore.getState().activeSession
-    if (created)
-      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
+    try {
+      const created = await useStore.getState().createSession(pid)
+      if (!created) return
+      await useStore
+        .getState()
+        .openProviderTab(created.providerId, created.id, created.accountId ?? DEFAULT_ACCOUNT_ID)
+    } catch (e) {
+      useStore
+        .getState()
+        .notice(`新建任务失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+    }
   }
 
   /**
@@ -272,10 +287,17 @@ export function PureModeShell({
       return
     }
     setPureView('home')
-    await useStore.getState().createSession(pid)
-    const created = useStore.getState().activeSession
-    if (created)
-      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
+    try {
+      const created = await useStore.getState().createSession(pid)
+      if (!created) return
+      await useStore
+        .getState()
+        .openProviderTab(created.providerId, created.id, created.accountId ?? DEFAULT_ACCOUNT_ID)
+    } catch (e) {
+      useStore
+        .getState()
+        .notice(`切换平台失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+    }
   }
 
   const navBtn =
@@ -328,7 +350,7 @@ export function PureModeShell({
               <span className="flex w-4 justify-center">
                 <IconHistory size={15} />
               </span>
-              <span className="flex-1 truncate text-left">自动化</span>
+              <span className="flex-1 truncate text-left">任务看板</span>
             </button>
             <button
               className={`${navBtn} ${pureView === 'plugins' ? 'bg-[var(--bg-hover)]' : 'hover:bg-[var(--bg-hover)]'}`}
@@ -370,11 +392,21 @@ export function PureModeShell({
             className="btn btn-ghost btn-icon btn-sm"
             title="清理空会话（新建后未发送的）"
             onClick={() => {
-              if (!project) return
-              void api.cleanupEmptySessions(project.id, activeSession?.id).then((n) => {
-                void useStore.getState().refreshSessions()
-                useStore.getState().notice(n > 0 ? `已清理 ${n} 个空会话` : '没有需要清理的空会话')
-              })
+              if (!project) {
+                useStore.getState().notice('请先初始化项目，再清理空会话', 'warn')
+                return
+              }
+              void api
+                .cleanupEmptySessions(project.id, activeSession?.id)
+                .then((n) => {
+                  void useStore.getState().refreshSessions().catch(() => undefined)
+                  useStore.getState().notice(n > 0 ? `已清理 ${n} 个空会话` : '没有需要清理的空会话')
+                })
+                .catch((e) => {
+                  useStore
+                    .getState()
+                    .notice(`清理失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+                })
             }}
           >
             <IconTrash size={12} />
@@ -468,6 +500,7 @@ export function PureModeShell({
                         onFocus={(e) => e.currentTarget.select()}
                         onKeyDown={(e) => {
                           e.stopPropagation()
+                          if (e.nativeEvent.isComposing) return
                           if (e.key === 'Enter') {
                             e.preventDefault()
                             void commitRename(s)
@@ -542,7 +575,15 @@ export function PureModeShell({
             >
               Lidow Web
             </span>
-            <button className="btn btn-sm btn-outline" onClick={onLogin}>
+            <button
+              className="btn btn-sm btn-outline"
+              onClick={() => {
+                // 桌面纯模式没有 onLogin 回调：之前按钮是死的。
+                // 退到工作台平台选择页，用户可以在那里登录/选账号。
+                if (onLogin) onLogin()
+                else void setPure(false)
+              }}
+            >
               登录平台
             </button>
           </>
@@ -567,7 +608,11 @@ export function PureModeShell({
               className="btn btn-ghost btn-icon btn-sm"
               title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
               style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
-              onClick={() => toggleAux('files')}
+              onClick={() => {
+                // 管理页不挂载右侧面板：先回到对话页再开关
+                setPureView('home')
+                toggleAux('files')
+              }}
             >
               <IconFile size={14} />
             </button>

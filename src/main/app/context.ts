@@ -424,6 +424,10 @@ export class AppContext {
       waitPageIdle: (sessionId) => this.overlay.waitPageIdle(sessionId),
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
       interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
+      // 停止生成：立即结束本地等待并压制网页后续事件，不能只依赖网页停止按钮
+      abortReply: (sessionId) => this.overlay.abortReply(sessionId),
+      suppressPage: (sessionId) => this.overlay.suppressPage(sessionId),
+      finishReply: (sessionId, text) => this.overlay.finishReply(sessionId, text),
       abandonReply: (sessionId) => this.overlay.abandonReply(sessionId),
       emit: (event) => this.emit(event),
       settings: () => this.settings.get(),
@@ -550,7 +554,8 @@ export class AppContext {
       void this.continueProjectInNewChat(webContentsId)
     this.overlay.onOpenExternal = (webContentsId, url) => {
       const target = url || webContents.fromId(webContentsId)?.getURL()
-      if (target) void shell.openExternal(target)
+      // 只放行 http(s)：file:// 或自定义协议会被系统 shell 直接执行
+      if (target && /^https?:\/\//i.test(target)) void shell.openExternal(target)
     }
     // 记录会话 ↔ 平台对话 URL：换绑 webview 时才能导航回正确的对话。
     // 没有这个映射，子代理/自动续接切回父会话后页面停在别人的对话里。
@@ -587,9 +592,10 @@ export class AppContext {
       if (shouldRecordUrl) {
         // 同一网页对话不能同时归属两个 Lidow 会话；否则两边发送都会写进同一个
         // 平台对话，历史互相污染。网页侧手动切换对话时宁可忽略这次导航。
+        const urlKey = chatUrlKey(url)
         const conflict = this.sessionStoreOf(session.projectId)
           .list()
-          .find((m) => m.id !== sessionId && m.providerUrl === url)
+          .find((m) => m.id !== sessionId && chatUrlKey(m.providerUrl) === urlKey)
         if (conflict) {
           Logger.warn(
             'nav',
@@ -766,11 +772,13 @@ export class AppContext {
     const sessionId = this.overlay.sessionOfWebContents(webContentsId)
     if (sessionId) {
       if (this.loop.isRunning(sessionId)) {
+        // 提示文案承诺了“任务停止”，就必须真的停掉循环，而不是让它继续空跑
+        this.loop.stop(sessionId, 'all')
         this.emit({
           type: 'notice',
           sessionId,
           level: 'warn',
-          message: '网页已开启新对话：原会话正在执行的任务将停止回传'
+          message: '网页已开启新对话：原会话正在执行的任务已停止'
         })
       }
       this.overlay.unbindSession(sessionId)
@@ -1574,15 +1582,21 @@ export class AppContext {
 
   /** 项目关联的网页对话：本地会话 + 持久索引（目录删除后仍能找到网页端） */
   projectChatRefs(projectId: string): ProjectChatRef[] {
+    // 按归一化 URL 去重：同一对话的查询参数/尾斜杠变化不能算两条记录
     const byUrl = new Map<string, ProjectChatRef>()
-    for (const ref of this.projectChats.list(projectId)) byUrl.set(ref.url, ref)
+    for (const ref of this.projectChats.list(projectId)) {
+      const key = chatUrlKey(ref.url)
+      if (key) byUrl.set(key, ref)
+    }
     const project = this.projects.find((p) => p.id === projectId)
     if (project && isProjectRootAvailable(project.root)) {
       try {
         const store = this.sessionStoreOf(projectId)
         for (const m of store.list()) {
           if (!m.providerUrl) continue
-          byUrl.set(m.providerUrl, {
+          const key = chatUrlKey(m.providerUrl)
+          if (!key) continue
+          byUrl.set(key, {
             sessionId: m.id,
             providerId: m.providerId,
             accountId: m.accountId,
@@ -2092,7 +2106,10 @@ export class AppContext {
       Logger.info('project', `已发送初始化提示词 session=${sessionId} len=${sys.length}`)
       return true
     } catch (e) {
-      Logger.warn('project', `发送初始化提示词失败：${e instanceof Error ? e.message : String(e)}`)
+      const message = e instanceof Error ? e.message : String(e)
+      Logger.warn('project', `发送初始化提示词失败：${message}`)
+      // 弹窗已经关闭，失败必须让用户看到原因并保留重试入口
+      this.emit({ type: 'notice', sessionId: '', level: 'warn', message: `初始化未完成：${message}` })
       return false
     }
   }
@@ -2105,6 +2122,11 @@ export class AppContext {
   async startProjectSession(sessionId: string): Promise<boolean> {
     const wcId = this.overlay.wcIdOfSession(sessionId)
     if (wcId === undefined) return false
+    // sendInitPrompt 以「活动项目」落会话：会话属于别的项目时不能把初始化
+    // 发进当前项目的页面，否则会出现会话/目录错配。
+    const session = this.sessionOf(sessionId)
+    const active = this.activeProject()
+    if (!session || !active || session.projectId !== active.id) return false
     return this.sendInitPrompt(wcId)
   }
 
@@ -2648,6 +2670,14 @@ export class AppContext {
 
   stopAll(level: 'generate' | 'tool' | 'auto-loop' | 'all'): void {
     for (const sid of this.runningSessionIds()) this.loop.stop(sid, level)
+    // 渲染层可能已经丢失 running 状态（页面重载/旧窗口）：全局停止也要
+    // 压制已绑定网页的后续事件，保证“停止”按钮不是无响应
+    if (level === 'generate' || level === 'all') {
+      for (const sid of this.overlay.boundSessionIds()) {
+        this.overlay.suppressPage(sid)
+        this.overlay.abortReply(sid)
+      }
+    }
   }
 
   // ---------- 模板 / 同步 / 更新 / DSH ----------

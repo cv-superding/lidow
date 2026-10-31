@@ -95,6 +95,18 @@ describe('skills discovery', () => {
     expect(listSkills(root).some((s) => s.name === 'claude-helper' && s.scope === 'project')).toBe(true)
   })
 
+  it('导入扁平 .md 技能后仍能被扫描到', () => {
+    const flatExternal = join(root, '.claude', 'skills', 'flat-import.md')
+    mkdirSync(dirname(flatExternal), { recursive: true })
+    writeFileSync(flatExternal, '---\nname: flat-import\ndescription: flat external\n---\nbody')
+    const result = importExternalSkills([flatExternal], 'project', root)
+    expect(result.imported).toHaveLength(1)
+    const imported = listSkills(root).find((s) => s.name === 'flat-import' && s.scope === 'project')
+    expect(imported).toBeTruthy()
+    expect(imported?.path.toLowerCase().endsWith('.md')).toBe(true)
+    expect(readSkill(imported!.path, root)).toContain('flat external')
+  })
+
   it('识别其他 Agent 中软链接/目录联接的技能，并复制真实内容', () => {
     const linkedSource = join(root, 'linked-source')
     const externalRoot = join(root, '.gemini', 'skills')

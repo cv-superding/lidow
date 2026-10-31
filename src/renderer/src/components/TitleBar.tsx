@@ -20,11 +20,21 @@ import {
  * 自绘窗口控制（Windows/Linux 关闭原生 frame 后必需）。
  * 按钮区域必须 no-drag，否则会被标题栏拖拽区吞掉点击。
  */
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform)
+
 export function WindowControls(): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
   useEffect(() => {
-    void api.windowIsMaximized().then(setMaximized)
+    // 双击标题栏 / Win+↑ / 贴边最大化都不会经过按钮点击：靠 resize 同步图标状态
+    const update = (): void => {
+      void api.windowIsMaximized().then(setMaximized).catch(() => undefined)
+    }
+    update()
+    window.addEventListener('resize', update)
+    return () => window.removeEventListener('resize', update)
   }, [])
+  // macOS 用原生红绿灯（frame: true），自绘按钮会变成第二套控件
+  if (IS_MAC) return <></>
   const cls =
     'group flex h-full w-10 items-center justify-center transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]'
   const iconColor = { color: 'var(--text-hint)' } as const
@@ -110,6 +120,9 @@ export function PureToolbar(): React.JSX.Element {
   const openPanel = (id: ToolPanelId): void => {
     setMenuOpen(false)
     setQuickOpen(false)
+    // 管理页（设置/任务等）不挂载右侧工具面板：先回对话页，
+    // 否则顶栏这些按钮点了看不到任何变化（用户感知就是摆设）
+    useStore.getState().setPureView('home')
     openAux(id)
   }
 
@@ -225,35 +238,67 @@ export function PureToolbar(): React.JSX.Element {
             <div className="px-2.5 pb-1 pt-1.5 text-[10px] font-medium" style={{ color: 'var(--text-hint)' }}>
               快捷操作
             </div>
-            <button
-              className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[11.5px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-              onClick={openProjectFolder}
-            >
-              <span className="flex w-4 shrink-0 justify-center" style={{ color: 'var(--text-dim)' }}>
-                <IconFolderColor size={13} />
-              </span>
-              <span className="min-w-0 flex-1 truncate">文件资源管理器</span>
-            </button>
-            {TOOL_MENU.map((item) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.id}
-                  className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[11.5px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-                  onClick={() => openPanel(item.id)}
-                >
-                  <span className="flex w-4 shrink-0 justify-center" style={{ color: 'var(--text-dim)' }}>
-                    <Icon size={13} />
+            {(
+              [
+                {
+                  label: '命令面板',
+                  shortcut: 'Ctrl K',
+                  action: () => {
+                    setQuickOpen(false)
+                    window.dispatchEvent(new CustomEvent('lidow:command'))
+                  }
+                },
+                {
+                  label: '新建任务',
+                  shortcut: 'Ctrl N',
+                  action: () => {
+                    setQuickOpen(false)
+                    const st = useStore.getState()
+                    const pid = st.activeSession?.providerId ?? st.providers[0]?.id
+                    if (!pid) {
+                      st.notice('请先在平台页选择一个 AI 平台', 'warn')
+                      return
+                    }
+                    st.setPureView('home')
+                    void st.createSession(pid).catch(() => undefined)
+                  }
+                },
+                {
+                  label: '打开项目目录',
+                  action: () => {
+                    setQuickOpen(false)
+                    openProjectFolder()
+                  }
+                },
+                {
+                  label: '设置',
+                  action: () => {
+                    setQuickOpen(false)
+                    useStore.getState().setPureView('settings')
+                  }
+                },
+                {
+                  label: '检查更新',
+                  action: () => {
+                    setQuickOpen(false)
+                    void useStore.getState().checkUpdate(true)
+                  }
+                }
+              ] as { label: string; shortcut?: string; action: () => void }[]
+            ).map((item) => (
+              <button
+                key={item.label}
+                className="flex w-full items-center gap-2.5 rounded-[var(--r-sm)] px-2.5 py-2 text-left text-[11.5px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                onClick={item.action}
+              >
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.shortcut && (
+                  <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-hint)' }}>
+                    {item.shortcut}
                   </span>
-                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                  {item.shortcut && (
-                    <span className="shrink-0 text-[10px]" style={{ color: 'var(--text-hint)' }}>
-                      {item.shortcut}
-                    </span>
-                  )}
-                </button>
-              )
-            })}
+                )}
+              </button>
+            ))}
           </div>
         )}
       </div>
@@ -314,11 +359,8 @@ export function PureMenuBar(): React.JSX.Element {
       return
     }
     s.setPureView('home')
-    void (async () => {
-      await s.createSession(pid)
-      const created = useStore.getState().activeSession
-      if (created) await s.openProviderTab(created.providerId, created.id, created.accountId)
-    })()
+    // createSession 自己会打开对应标签；失败时 activeSession 仍是旧会话，不能再拿它开标签
+    void s.createSession(pid).catch(() => undefined)
   }
 
   const menus: Record<string, PureMenuItem[]> = {

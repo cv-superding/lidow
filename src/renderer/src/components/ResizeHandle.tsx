@@ -85,6 +85,8 @@ export function ResizeHandle({
       onPointerMove={onPointerMove}
       onPointerUp={endDrag}
       onPointerCancel={endDrag}
+      // 拖动中手柄被卸载（切面板）时也会触发，避免 body 残留 col-resize
+      onLostPointerCapture={endDrag}
       onDoubleClick={() => onResize(side === 'left' ? 320 : 268)}
     >
       {/* 视觉指示：hover 半亮，拖动时全亮并加宽 */}

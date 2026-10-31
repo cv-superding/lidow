@@ -30,7 +30,31 @@ export class SyncService {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(10_000)
       })
-      return res.ok
+      // 三家机器人出错时大多仍返回 HTTP 200，错误码在 body 里
+      const raw = await res.text().catch(() => '')
+      if (!res.ok) {
+        Logger.warn('sync', `${channel} 推送失败 HTTP ${res.status}: ${raw.slice(0, 200)}`)
+        return false
+      }
+      type WebhookResp = {
+        code?: unknown
+        errcode?: unknown
+        StatusCode?: unknown
+        msg?: unknown
+        errmsg?: unknown
+      }
+      let parsed: WebhookResp | null = null
+      try {
+        parsed = JSON.parse(raw) as WebhookResp
+      } catch {
+        /* 非 JSON 响应按成功处理 */
+      }
+      const code = parsed?.code ?? parsed?.errcode ?? parsed?.StatusCode
+      if (typeof code === 'number' && code !== 0) {
+        Logger.warn('sync', `${channel} 推送被拒绝 code=${code}: ${String(parsed?.msg ?? parsed?.errmsg ?? '')}`)
+        return false
+      }
+      return true
     } catch (e) {
       Logger.warn('sync', `${channel} 推送失败: ${String(e)}`)
       return false
@@ -42,9 +66,25 @@ export class SyncService {
   }
 
   private payload(channel: SyncChannel, text: string): Record<string, unknown> {
-    const msg = text.slice(0, 3000)
+    // 企微文本上限 2048 字节（不是字符），中文按 3 字节算会超限
+    const limit = channel === 'wecom' ? 2000 : channel === 'feishu' ? 30_000 : 20_000
+    const msg = truncateUtf8(text, limit)
     if (channel === 'feishu') return { msg_type: 'text', content: { text: msg } }
     if (channel === 'wecom') return { msgtype: 'text', text: { content: msg } }
     return { msgtype: 'text', text: { content: msg } } // dingtalk
   }
+}
+
+/** 按 UTF-8 字节数截断，避免把多字节字符劈成乱码 */
+function truncateUtf8(text: string, maxBytes: number): string {
+  if (Buffer.byteLength(text, 'utf-8') <= maxBytes) return text
+  let bytes = 0
+  let out = ''
+  for (const ch of text) {
+    const n = Buffer.byteLength(ch, 'utf-8')
+    if (bytes + n > maxBytes) break
+    bytes += n
+    out += ch
+  }
+  return out + '…'
 }

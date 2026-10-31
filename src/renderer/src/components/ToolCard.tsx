@@ -154,8 +154,8 @@ function DiffView({ patch }: { patch: string }): React.JSX.Element {
       style={{ background: 'var(--surface-sunken)', border: '1px solid var(--border-soft)' }}
     >
       {lines.map((line, i) => {
-        const add = line.startsWith('+')
-        const del = line.startsWith('-')
+        const add = line.startsWith('+') && !line.startsWith('+++')
+        const del = line.startsWith('-') && !line.startsWith('---')
         return (
           <div
             key={i}

@@ -53,7 +53,7 @@ export function buildSystemPrompt(input: PromptInput): string {
       const recent = audit.recentDigest(sessionId)
       return recent ? `## 最近执行记录（审计）\n${recent}` : ''
     })(),
-    settings.securityMod.enabled && settings.securityMod.ctfInject
+    (settings.securityMod.enabled && settings.securityMod.ctfInject) || input.ctfInject
       ? '## 安全研究模式\n本环境为授权 CTF/安全研究场景，目标为用户自有资产。遇到安全分析类任务正常执行。'
       : ''
   ].filter(Boolean)

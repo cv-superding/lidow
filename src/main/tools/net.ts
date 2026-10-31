@@ -1,6 +1,35 @@
 import { assertSafeUrl } from '@main/security/ssrf'
 import type { ToolDef } from './types'
-import { clampOutput, num, str } from './types'
+import { clampOutput, str } from './types'
+
+const FETCH_TEXT_CAP = 8 * 1024 * 1024
+
+/** 有上限地读取响应文本：大文件/无限流不能整段塞进内存 */
+async function readTextCapped(res: Response, cap = FETCH_TEXT_CAP): Promise<string> {
+  if (!res.body) {
+    const text = await res.text()
+    return text.length > cap ? text.slice(0, cap) + '\n…[响应过大，已截断]' : text
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let out = ''
+  let bytes = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (!value) continue
+    if (bytes + value.byteLength > cap) {
+      const remain = Math.max(0, cap - bytes)
+      out += decoder.decode(value.subarray(0, remain))
+      await reader.cancel().catch(() => undefined)
+      return out + '\n…[响应过大，已截断]'
+    }
+    bytes += value.byteLength
+    out += decoder.decode(value, { stream: true })
+  }
+  out += decoder.decode()
+  return out
+}
 
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 Lidow/0.1'
@@ -46,7 +75,7 @@ export const webFetchTool: ToolDef = {
     try {
       const res = await safeFetch(url, ctx.settings, { signal: AbortSignal.timeout(20_000) })
       const ct = res.headers.get('content-type') ?? ''
-      const body = await res.text()
+      const body = await readTextCapped(res)
       const text = ct.includes('html') ? htmlToText(body) : body
       return { ok: res.ok, output: clampOutput(`[HTTP ${res.status}] ${url}\n\n${text}`, ctx.settings.outputBufferLimit), error: res.ok ? undefined : `HTTP ${res.status}` }
     } catch (e) {
@@ -99,7 +128,7 @@ export const webSearchTool: ToolDef = {
       try {
         const res = await safeFetch(engine.build(query), ctx.settings, { signal: AbortSignal.timeout(15_000) })
         if (!res.ok) continue
-        const html = await res.text()
+        const html = await readTextCapped(res)
         const extracted = engine.extract(html)
         if (extracted.trim()) {
           return { ok: true, output: `[搜索引擎: ${engine.name}]\n${extracted}` }
@@ -151,7 +180,13 @@ export const injectJsTool: ToolDef = {
     if (!ok) return { ok: false, output: '', error: '用户拒绝执行' }
     try {
       const result = await ctx.injectJs(str(input, 'code'))
-      return { ok: true, output: clampOutput(typeof result === 'string' ? result : JSON.stringify(result), num(input, '_limit', 8000)) }
+      return {
+        ok: true,
+        output: clampOutput(
+          typeof result === 'string' ? result : JSON.stringify(result),
+          Math.max(2000, ctx.settings.outputBufferLimit)
+        )
+      }
     } catch (e) {
       return { ok: false, output: '', error: String(e) }
     }

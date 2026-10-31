@@ -49,21 +49,67 @@ export function runTerminal(
   return new Promise<TerminalResult>((done) => {
     let out = ''
     let timedOut = false
+    let settled = false
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(file, args, { cwd, windowsHide: true, env: { ...process.env } })
+      child = spawn(file, args, {
+        cwd,
+        windowsHide: true,
+        env: { ...process.env },
+        detached: process.platform !== 'win32'
+      })
     } catch (e) {
       done({ output: String(e instanceof Error ? e.message : e), exitCode: null, timedOut: false })
       return
     }
 
+    const finish = (code: number | null): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      const truncated = out.length >= OUTPUT_CAP ? '\n…（输出已截断）' : ''
+      done({ output: out.slice(0, OUTPUT_CAP) + truncated, exitCode: code, timedOut })
+    }
+    const killTree = (): void => {
+      const pid = child.pid
+      if (!pid) return
+      if (process.platform === 'win32') {
+        try {
+          const killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
+            windowsHide: true,
+            stdio: 'ignore'
+          })
+          killer.on('error', () => undefined)
+          killer.unref()
+        } catch {
+          /* ignore */
+        }
+      } else {
+        try {
+          process.kill(-pid, 'SIGKILL')
+        } catch {
+          try {
+            child.kill('SIGKILL')
+          } catch {
+            /* 已退出 */
+          }
+        }
+      }
+    }
+
     const timer = setTimeout(() => {
       timedOut = true
-      try {
-        child.kill()
-      } catch {
-        /* 已退出 */
-      }
+      killTree()
+      // 子进程树可能仍占着管道，兜底结束
+      setTimeout(() => {
+        try {
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        } catch {
+          /* ignore */
+        }
+        finish(child.exitCode ?? null)
+      }, 3000).unref?.()
     }, timeoutMs)
 
     const append = (buf: Buffer): void => {
@@ -74,13 +120,21 @@ export function runTerminal(
     child.stderr?.on('data', append)
 
     child.on('error', (e) => {
-      clearTimeout(timer)
-      done({ output: out + `\n${String(e.message)}`, exitCode: null, timedOut })
+      out += `\n${String(e.message)}`
+      finish(null)
     })
-    child.on('close', (code) => {
-      clearTimeout(timer)
-      const truncated = out.length >= OUTPUT_CAP ? '\n…（输出已截断）' : ''
-      done({ output: out.slice(0, OUTPUT_CAP) + truncated, exitCode: code, timedOut })
+    // exit 先到但管道被孙进程占住时 close 不会触发
+    child.on('exit', (code) => {
+      setTimeout(() => {
+        try {
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+        } catch {
+          /* ignore */
+        }
+        finish(code)
+      }, 500).unref?.()
     })
+    child.on('close', finish)
   })
 }

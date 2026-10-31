@@ -916,10 +916,22 @@ const MENU_ACTIONS: { id: string; label: string }[] = [
   { id: 'open-panel', label: '打开面板' }
 ]
 
+let ballEl: HTMLElement | null = null
+let ballMenuEl: HTMLElement | null = null
+let ballDrag = { dragging: false, moved: false, sx: 0, sy: 0 }
+let ballWindowWired = false
+let ballStyleAdded = false
+
 function setupFloatingBall(): void {
   if (document.getElementById('lidow-ball')) return
-  const style = new CSSStyleSheet()
-  style.replaceSync(`
+  // 球被冲掉时旧菜单可能还挂在 body 上：重建前先清掉，避免重复 id
+  document.getElementById('lidow-menu')?.remove()
+  // 样式/全局监听只挂一次：平台重渲染把球冲掉时每秒会重建，重复挂会泄漏
+  if (!ballStyleAdded) {
+    ballStyleAdded = true
+    const styleEl = document.createElement('style')
+    styleEl.id = 'lidow-ball-style'
+    styleEl.textContent = `
     #lidow-ball{position:fixed;z-index:2147483647;right:18px;bottom:96px;width:40px;height:40px;border-radius:50%;
       background:linear-gradient(135deg,#8dff4f,#59d915);box-shadow:0 4px 16px rgba(89,217,21,.35);cursor:grab;
       display:flex;align-items:center;justify-content:center;color:#fff;font-size:15px;font-weight:700;user-select:none;
@@ -932,14 +944,17 @@ function setupFloatingBall(): void {
       padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer;}
     #lidow-menu button:hover{background:rgba(255,255,255,.08);}
     #lidow-menu .danger{color:#ff7b7b;}
-  `)
-  void document.adoptedStyleSheets.push(style)
+  `
+    document.head.appendChild(styleEl)
+  }
 
   const ball = document.createElement('div')
   ball.id = 'lidow-ball'
   ball.textContent = 'L'
   const menu = document.createElement('div')
   menu.id = 'lidow-menu'
+  ballEl = ball
+  ballMenuEl = menu
   for (const a of MENU_ACTIONS) {
     const b = document.createElement('button')
     b.textContent = a.label
@@ -965,38 +980,12 @@ function setupFloatingBall(): void {
     menu.appendChild(b)
   }
 
-  // 拖拽
-  let dragging = false
-  let moved = false
-  let sx = 0
-  let sy = 0
   ball.addEventListener('mousedown', (e) => {
-    dragging = true
-    moved = false
-    sx = e.clientX
-    sy = e.clientY
+    ballDrag = { dragging: true, moved: false, sx: e.clientX, sy: e.clientY }
   })
-  window.addEventListener('mousemove', (e) => {
-    if (!dragging) return
-    const dx = e.clientX - sx
-    const dy = e.clientY - sy
-    if (Math.abs(dx) + Math.abs(dy) > 4) moved = true
-    if (moved) {
-      ball.style.right = 'auto'
-      ball.style.bottom = 'auto'
-      ball.style.left = `${ball.offsetLeft + dx}px`
-      ball.style.top = `${ball.offsetTop + dy}px`
-      sx = e.clientX
-      sy = e.clientY
-    }
-  })
-  window.addEventListener('mouseup', () => {
-    dragging = false
-  })
-
   // 左键单击 = 面板；右键 = 三层停止菜单
   ball.addEventListener('click', () => {
-    if (!moved) send({ type: 'float-menu-action', action: 'open-panel' })
+    if (!ballDrag.moved) send({ type: 'float-menu-action', action: 'open-panel' })
   })
   ball.addEventListener('contextmenu', (e) => {
     e.preventDefault()
@@ -1005,9 +994,30 @@ function setupFloatingBall(): void {
     menu.style.left = `${e.clientX - 160}px`
     menu.style.top = `${e.clientY - 10}px`
   })
-  window.addEventListener('click', () => {
-    menu.style.display = 'none'
-  })
+
+  if (!ballWindowWired) {
+    ballWindowWired = true
+    window.addEventListener('mousemove', (e) => {
+      if (!ballDrag.dragging) return
+      const dx = e.clientX - ballDrag.sx
+      const dy = e.clientY - ballDrag.sy
+      if (Math.abs(dx) + Math.abs(dy) > 4) ballDrag.moved = true
+      if (ballDrag.moved && ballEl) {
+        ballEl.style.right = 'auto'
+        ballEl.style.bottom = 'auto'
+        ballEl.style.left = `${ballEl.offsetLeft + dx}px`
+        ballEl.style.top = `${ballEl.offsetTop + dy}px`
+        ballDrag.sx = e.clientX
+        ballDrag.sy = e.clientY
+      }
+    })
+    window.addEventListener('mouseup', () => {
+      ballDrag.dragging = false
+    })
+    window.addEventListener('click', () => {
+      if (ballMenuEl) ballMenuEl.style.display = 'none'
+    })
+  }
 
   document.body.appendChild(ball)
   document.body.appendChild(menu)
@@ -2346,8 +2356,11 @@ function renderFirstRun(): void {
     existing.remove()
   }
 
-  const style = new CSSStyleSheet()
-  style.replaceSync(`
+  // 样式只插一次：此前每次重建弹窗都 push 一个 CSSStyleSheet，切会话多了会积累
+  if (!document.getElementById('lidow-first-run-style')) {
+    const styleEl = document.createElement('style')
+    styleEl.id = 'lidow-first-run-style'
+    styleEl.textContent = `
     /* 强制模态：全屏遮罩 + 居中卡片。之前是右上角浮动小卡片，
        用户根本不会注意到 —— 初始化是使用前的必要步骤，必须挡住主界面 */
     #lidow-first-run{position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;
@@ -2398,11 +2411,8 @@ function renderFirstRun(): void {
       #lidow-first-run .fr-close{color:#8a8f9b;}
       #lidow-first-run .fr-close:hover{background:rgba(255,255,255,.08);color:#e4e6eb;}
     }
-  `)
-  try {
-    void document.adoptedStyleSheets.push(style)
-  } catch {
-    /* 老内核不支持构造式样式表 */
+  `
+    document.head.appendChild(styleEl)
   }
 
   const hasDir = Boolean(projectRoot)
@@ -2711,7 +2721,12 @@ function reportToggleStates(): void {
  * 于是新对话里没有初始化引导（实测：新对话窗口缺少入口）。
  * 用捕获阶段的全局点击代理来补：命中新对话按钮文案就重置。
  */
+let nativeNewChatWatched = false
 function watchNativeNewChat(): void {
+  // configure 会在每次切会话/重载时下发：重复 addEventListener 会让一次点击
+  // 触发 N 次解绑/提示/定时器（页面开得越久越严重）
+  if (nativeNewChatWatched) return
+  nativeNewChatWatched = true
   const NEW_CHAT_KWS = [
     '开启新对话',
     '新建对话',

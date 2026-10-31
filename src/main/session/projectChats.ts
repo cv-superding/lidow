@@ -17,6 +17,17 @@ export interface ProjectChatRef {
 
 type Data = Record<string, ProjectChatRef[]>
 
+/** 平台对话 URL 归一化：查询参数/尾斜杠变化不代表另一条对话 */
+function urlKey(raw: string | undefined): string {
+  if (!raw) return ''
+  try {
+    const u = new URL(raw)
+    return `${u.origin}${u.pathname.replace(/\/+$/, '')}`
+  } catch {
+    return raw
+  }
+}
+
 /**
  * 存在 userData/project-chats.json，不随项目目录走。
  * 目的：用户把已初始化的项目文件夹删掉后，仍能在「移除项目」时
@@ -43,8 +54,8 @@ export class ProjectChatIndex {
     if (!projectId) return
     const data = this.store.get()
     const byUrl = new Map<string, ProjectChatRef>()
-    for (const ref of data[projectId] ?? []) byUrl.set(ref.url, ref)
-    for (const ref of refs) if (ref.url) byUrl.set(ref.url, ref)
+    for (const ref of data[projectId] ?? []) byUrl.set(urlKey(ref.url), ref)
+    for (const ref of refs) if (ref.url) byUrl.set(urlKey(ref.url), ref)
     this.write(projectId, [...byUrl.values()])
   }
 
@@ -55,11 +66,12 @@ export class ProjectChatIndex {
 
   removeByUrl(url: string): void {
     if (!url) return
+    const key = urlKey(url)
     const data = this.store.get()
     let changed = false
     const next: Data = { ...data }
     for (const projectId of Object.keys(next)) {
-      const filtered = next[projectId]!.filter((r) => r.url !== url)
+      const filtered = next[projectId]!.filter((r) => urlKey(r.url) !== key)
       if (filtered.length !== next[projectId]!.length) {
         changed = true
         if (filtered.length > 0) next[projectId] = filtered

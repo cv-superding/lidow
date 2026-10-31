@@ -20,10 +20,12 @@ import { deleteWebChat as removeWebChat } from '@main/bridge/webChatDelete'
 import { deleteChatsInHiddenPage } from '@main/bridge/webChatDeleteHidden'
 import { parentWindowFor, showDirectoryPicker } from '@main/app/directoryPicker'
 import { isProjectRootAvailable } from '@main/app/projectFs'
+import { readTextCapped } from '@main/tools/fs'
 import { IMAGE_EXTS, savePastedImages } from './pasteImages'
 import { Logger } from '@main/infra/log'
-import { isAbsoluteProjectPath } from '@shared/path'
+import { isAbsoluteProjectPath, isPathInside } from '@shared/path'
 import type {
+  AppSettings,
   DomAdapter,
   McpServerConfig,
   ProviderDescriptor,
@@ -31,6 +33,57 @@ import type {
   SkillDraft,
   StopLevel
 } from '@shared/types'
+
+/**
+ * 数值设置兜底：输入框被清空会提交 0/NaN，直接持久化会让看门狗变成
+ * 「开启但永不触发」、超时变成 5 秒、每轮都自动压缩。统一钳到安全区间。
+ */
+function sanitizeSettings(s: AppSettings): AppSettings {
+  const num = (v: unknown, min: number, max: number, fallback: number): number => {
+    const n = Number(v)
+    return Number.isFinite(n) ? Math.min(max, Math.max(min, Math.round(n))) : fallback
+  }
+  const watchdog = s.watchdog ?? { enabled: true, idleMs: 90_000, maxRetries: 3, prompt: '请继续' }
+  const retry =
+    s.retry ?? {
+      enabled: true,
+      delayMinMs: 4000,
+      delayMaxMs: 10_000,
+      maxRetries: 10,
+      delay429Ms: 120_000,
+      maxRetries429: 40,
+      prompt: ''
+    }
+  const delayMinMs = num(retry.delayMinMs, 500, 600_000, 4000)
+  return {
+    ...s,
+    commandTimeoutMs: num(s.commandTimeoutMs, 5_000, 600_000, 30_000),
+    sandboxTimeoutMs: num(s.sandboxTimeoutMs, 5_000, 600_000, 60_000),
+    outputBufferLimit: num(s.outputBufferLimit, 4096, 16 * 1024 * 1024, 1024 * 1024),
+    compactThreshold: num(s.compactThreshold, 10_000, 10_000_000, 600_000),
+    batchDeleteThreshold: num(s.batchDeleteThreshold, 1, 100_000, 200),
+    webSendIntervalMs: num(s.webSendIntervalMs, 0, 60_000, 1000),
+    watchdog: {
+      ...watchdog,
+      idleMs: num(watchdog.idleMs, 5000, 600_000, 90_000),
+      maxRetries: num(watchdog.maxRetries, 1, 100, 3)
+    },
+    retry: {
+      ...retry,
+      delayMinMs,
+      delayMaxMs: Math.max(delayMinMs, num(retry.delayMaxMs, 500, 600_000, 10_000)),
+      maxRetries: num(retry.maxRetries, 1, 100, 10),
+      delay429Ms: num(retry.delay429Ms, 1000, 3_600_000, 120_000),
+      maxRetries429: num(retry.maxRetries429, 1, 1000, 40)
+    },
+    apiServer: {
+      enabled: Boolean(s.apiServer?.enabled),
+      host: s.apiServer?.host || '127.0.0.1',
+      port: num(s.apiServer?.port, 1, 65535, 6080),
+      token: s.apiServer?.token ?? ''
+    }
+  }
+}
 
 /** 主题令牌 → Chromium nativeTheme：嵌入网页经 prefers-color-scheme 跟随应用主题 */
 function applyNativeTheme(theme: unknown): void {
@@ -167,11 +220,14 @@ export function registerHandlers(
     projects: ctx.projectsSnapshot(),
     activeProjectId: ctx.activeProjectId(),
     settings: ctx.settings.get(),
-    version: app.getVersion()
+    version: app.getVersion(),
+    runningSessionIds: ctx.runningSessionIds()
   }))
   R('updateSettings', (...args: unknown[]) => {
-    const patch = args[0] as Record<string, unknown>
-    const next = ctx.settings.set(patch as never)
+    const patch = args[0] as Partial<AppSettings>
+    // 先合并并钳制，只落盘一次：避免无效值（0/NaN）先写进 settings.json
+    const next = sanitizeSettings({ ...ctx.settings.get(), ...patch })
+    ctx.settings.set(next)
     ctx.hotkeys.applyAll()
     applyNativeTheme(next.theme)
     // 每轮注入开关/系统提示词变化后，已经打开的网页 hook 立即生效
@@ -553,8 +609,11 @@ export function registerHandlers(
 
   // ---------- Agent 循环 ----------
   R('sendPrompt', (sessionId: string, text: string) => {
-    ctx.lastSessionId = String(sessionId)
-    void ctx.loop.run(String(sessionId), String(text))
+    const sid = String(sessionId)
+    // 抛错而不是静默忽略：渲染层据此恢复输入框草稿，不能把用户消息吞掉
+    if (ctx.loop.isRunning(sid)) throw new Error('当前会话已有任务在执行，请等待完成或先停止')
+    ctx.lastSessionId = sid
+    void ctx.loop.run(sid, String(text))
     void ctx.sync.pushAll(`Lidow 收到新任务：${String(text).slice(0, 200)}`)
   })
   R('stop', (sessionId: string, level: StopLevel) => {
@@ -679,6 +738,9 @@ export function registerHandlers(
     const dir = String(target ?? '')
     if (!dir) throw new Error('没有项目目录')
     const { spawn } = await import('node:child_process')
+    // PowerShell 单引号字符串里再出现单引号会提前闭合：必须双写转义，
+    // 否则项目名带 ' 时 Set-Location 的参数会变成可执行片段。
+    const psDir = dir.replace(/'/g, "''")
     const map: Record<string, [string, string[]]> = {
       explorer: [process.platform === 'win32' ? 'explorer.exe' : 'xdg-open', [dir]],
       vscode: ['code', [dir]],
@@ -686,18 +748,26 @@ export function registerHandlers(
       terminal: [
         process.platform === 'win32' ? 'powershell.exe' : 'bash',
         process.platform === 'win32'
-          ? ['-NoExit', '-Command', `Set-Location -LiteralPath '${dir}'`]
+          ? ['-NoExit', '-Command', `Set-Location -LiteralPath '${psDir}'`]
           : ['-i']
       ]
     }
     const [bin, args] = map[String(appId)] ?? map.explorer!
-    try {
-      const child = spawn(bin, args, { detached: true, stdio: 'ignore', cwd: dir })
-      child.unref()
-      return true
-    } catch {
-      return false
-    }
+    return new Promise<boolean>((resolveP) => {
+      try {
+        const child = spawn(bin, args, { detached: true, stdio: 'ignore', cwd: dir })
+        child.on('error', (e) => {
+          Logger.warn('app', `打开外部程序失败 ${bin}: ${e.message}`)
+          resolveP(false)
+        })
+        child.on('spawn', () => {
+          child.unref()
+          resolveP(true)
+        })
+      } catch {
+        resolveP(false)
+      }
+    })
   })
   R('openExternal', async (url: string) => {
     const u = String(url ?? '')
@@ -722,7 +792,7 @@ export function registerHandlers(
     const raw = String(cwd ?? '')
     if (raw) {
       const resolved = isAbsolute(raw) ? resolve(raw) : resolve(root, raw)
-      if (resolved.startsWith(resolve(root))) workdir = resolved
+      if (isPathInside(root, resolved)) workdir = resolved
     }
     return runTerminal(String(command ?? ''), workdir)
   })
@@ -730,7 +800,12 @@ export function registerHandlers(
   // ---------- 工具 / 文件 ----------
   R('readFileTree', (projectId: string, dir: string, depth: number) => {
     const project = ctx.projects.find((p) => p.id === String(projectId))
-    return project ? ctx.readFileTree(project.root, String(dir ?? ''), Number(depth ?? 3)) : []
+    if (!project) return []
+    const rel = String(dir ?? '')
+    const abs = resolve(join(project.root, rel))
+    if (!isPathInside(project.root, abs)) throw new Error('路径越界')
+    const safeDepth = Math.max(0, Math.min(10, Number(depth ?? 3) || 3))
+    return ctx.readFileTree(project.root, rel, safeDepth)
   })
   R('readFileContent', (projectId: string, relPath: string) => {
     const project = ctx.projects.find((p) => p.id === String(projectId))
@@ -738,10 +813,13 @@ export function registerHandlers(
     const abs = resolve(join(project.root, String(relPath)))
     const rel = relative(project.root, abs)
     if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('路径越界')
-    const raw = readFileSync(abs, 'utf-8')
+    const { text: raw, truncated } = readTextCapped(abs)
     if (raw.includes('\u0000')) return '（二进制文件，暂不支持预览）'
+    const source = truncated ? `${raw}\n\n…[文件超过 16MB，仅读取了前 16MB]` : raw
     // 大文件全量塞进渲染进程会卡死：预览截断到 300k
-    return raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw
+    return source.length > 300_000
+      ? `${source.slice(0, 300_000)}\n\n…[文件过大，预览已截断]`
+      : source
   })
   R('readFilePreview', (projectId: string, relPath: string) => {
     const project = ctx.projects.find((p) => p.id === String(projectId))
@@ -786,20 +864,27 @@ export function registerHandlers(
       }
     }
     if (ext === '.html' || ext === '.htm') {
-      const html = readFileSync(abs, 'utf-8')
+      const { text: html, truncated } = readTextCapped(abs)
+      const source = truncated ? `${html}\n\n…[文件超过 16MB，仅读取了前 16MB]` : html
       return {
         kind: 'html' as const,
         content:
-          html.length > 300_000 ? `${html.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : html,
+          source.length > 300_000
+            ? `${source.slice(0, 300_000)}\n\n…[文件过大，预览已截断]`
+            : source,
         mime: 'text/html',
         size
       }
     }
-    const raw = readFileSync(abs, 'utf-8')
+    const { text: raw, truncated } = readTextCapped(abs)
     if (raw.includes('\u0000')) return { kind: 'binary' as const, size }
+    const source = truncated ? `${raw}\n\n…[文件超过 16MB，仅读取了前 16MB]` : raw
     return {
       kind: 'text' as const,
-      content: raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw,
+      content:
+        source.length > 300_000
+          ? `${source.slice(0, 300_000)}\n\n…[文件过大，预览已截断]`
+          : source,
       size
     }
   })
@@ -978,11 +1063,13 @@ export function registerHandlers(
     // 单个 webview 只能承载一个会话：换绑会把原会话正在跑的任务踢下车，
     // 明确提示而不是让用户以为任务还在后台继续
     if (prev && prev !== sid && ctx.loop.isRunning(prev)) {
+      // 一个 webview 只能承载一个会话：换绑后旧任务已无发送通道，必须停掉
+      ctx.loop.stop(prev, 'all')
       ctx.emit({
         type: 'notice',
         sessionId: prev,
         level: 'warn',
-        message: '原会话正在执行任务：切换到其他会话后该任务无法继续'
+        message: '原会话正在执行任务：切换到其他会话后该任务已停止'
       })
     }
     // 换绑时清理被抛弃的空会话（0 轮次）：否则每点一次「新建任务」又切走，

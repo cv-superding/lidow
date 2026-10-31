@@ -1,11 +1,29 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { net } from 'electron'
 import { JsonStore } from '@main/infra/store'
 import { Logger } from '@main/infra/log'
 import { execCommand } from '@main/tools/exec'
+import { isPathInside } from '@shared/path'
 import type { ToolContext } from '@main/tools/types'
 import type { InstalledPlugin, MarketPlugin, PluginManifest } from '@shared/types'
+
+const SAFE_ID = /^[A-Za-z0-9._-]+$/
+const MAX_PLUGIN_ZIP = 200 * 1024 * 1024
+
+/** 插件 id/目录名只允许单段安全字符：manifest 里的 id 不能当路径用 */
+function safePluginId(id: string): string {
+  const v = String(id ?? '')
+  if (!SAFE_ID.test(v) || v === '.' || v === '..') throw new Error(`非法插件 id: ${id}`)
+  return v
+}
+
+/** manifest 里的入口路径必须落在插件目录内（否则 = 加载/读取任意文件） */
+function insidePlugin(pluginDir: string, rel: string | undefined): string | undefined {
+  if (!rel) return undefined
+  const abs = join(pluginDir, rel)
+  return isPathInside(pluginDir, abs) ? rel : undefined
+}
 
 /**
  * 插件系统：安装（GitHub/Gitee zip 下载 + 系统解压）、启停、卸载、依赖检测。
@@ -41,26 +59,32 @@ export class PluginManager {
   }
 
   private pluginDir(id: string): string {
-    return join(this.pluginsDir(), id)
+    return join(this.pluginsDir(), safePluginId(id))
   }
 
   list(): InstalledPlugin[] {
     const out: InstalledPlugin[] = []
     const fsDirs = safeReadDir(this.pluginsDir())
-    for (const id of fsDirs) {
-      const manifestPath = join(this.pluginsDir(), id, 'manifest.json')
+    for (const dirName of fsDirs) {
+      // 目录名就是插件身份：manifest.id 只用于展示，绝不能拿来拼 uninstall 路径
+      if (!SAFE_ID.test(dirName) || dirName === '.' || dirName === '..') continue
+      const pluginDir = join(this.pluginsDir(), dirName)
+      const manifestPath = join(pluginDir, 'manifest.json')
       if (!existsSync(manifestPath)) continue
       try {
         const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as PluginManifest
         out.push({
           ...manifest,
-          id: manifest.id ?? id,
+          id: dirName,
+          entry: insidePlugin(pluginDir, manifest.entry),
+          dsh: insidePlugin(pluginDir, manifest.dsh),
+          webScript: insidePlugin(pluginDir, manifest.webScript),
           installedAt: statMtime(manifestPath),
-          enabled: !this.store.get().disabled.includes(manifest.id ?? id),
-          dir: join(this.pluginsDir(), id)
+          enabled: !this.store.get().disabled.includes(dirName),
+          dir: pluginDir
         })
       } catch (e) {
-        Logger.warn('plugins', `清单损坏 ${id}: ${String(e)}`)
+        Logger.warn('plugins', `清单损坏 ${dirName}: ${String(e)}`)
       }
     }
     return out
@@ -137,12 +161,23 @@ export class PluginManager {
     // 全部失败且无结果：这是网络问题的信号，必须让用户看见而不是显示空态
     const warning = results.length === 0 && errors.length > 0 ? `市场搜索失败：${errors.join('；')}（请检查系统代理设置）` : undefined
     const installed = new Set(this.list().map((p) => p.id))
-    return { items: results.map((r) => ({ ...r, installed: installed.has(r.id) })), warning }
+    return {
+      items: results.map((r) => ({
+        ...r,
+        // 市场 id 是 owner/repo，安装后的目录名是 repo
+        installed: installed.has(r.id) || installed.has(r.id.split('/').pop() ?? '')
+      })),
+      warning
+    }
   }
 
   /** 安装：下载 zip → 系统解压 → 校验 manifest */
   async install(repoFullName: string, source: 'github' | 'gitee'): Promise<void> {
-    const id = repoFullName.split('/').pop() ?? repoFullName
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repoFullName)) {
+      throw new Error(`非法仓库地址: ${repoFullName}`)
+    }
+    const rawId = repoFullName.split('/').pop() ?? repoFullName
+    const id = safePluginId(rawId.replace(/[^A-Za-z0-9._-]/g, '_'))
     const target = this.pluginDir(id)
     if (existsSync(target)) throw new Error(`插件已安装: ${id}`)
     const zipUrl =
@@ -167,36 +202,49 @@ export class PluginManager {
     const extractTo = join(this.userDataDir, `.extract-${Date.now()}`)
     mkdirSync(extractTo, { recursive: true })
     const isWin = process.platform === 'win32'
+    // PowerShell 单引号字符串里的 ' 必须双写；路径均来自本地临时目录
+    const psQuote = (p: string): string => `'${p.replace(/'/g, "''")}'`
     const cmd = isWin
-      ? `powershell -NoProfile -Command "Expand-Archive -LiteralPath '${tmpZip}' -DestinationPath '${extractTo}' -Force"`
+      ? `powershell -NoProfile -Command "Expand-Archive -LiteralPath ${psQuote(tmpZip)} -DestinationPath ${psQuote(extractTo)} -Force"`
       : `unzip -o ${JSON.stringify(tmpZip)} -d ${JSON.stringify(extractTo)}`
     const r = await execCommand(cmd, this.execCtx())
-    if (!r.ok) throw new Error(`解压失败: ${r.output.slice(0, 300)}`)
-    // zip 内通常是 <repo>-master/ 顶层目录，取唯一子目录内容
+    if (!r.ok) {
+      rmSync(extractTo, { recursive: true, force: true })
+      rmSync(tmpZip, { force: true })
+      throw new Error(`解压失败: ${r.output.slice(0, 300)}`)
+    }
+    // zip 内通常是 <repo>-master/ 顶层目录，取唯一子目录内容。
+    // 这里必须校验目录名：压缩包里的顶层目录名可控，不能直接拼进 shell。
     const inner = safeReadDir(extractTo)
-    const srcDir = inner.length === 1 ? join(extractTo, inner[0]!) : extractTo
-    const r2 = await execCommand(
-      isWin
-        ? `powershell -NoProfile -Command "Copy-Item -Path '${srcDir}\\*' -Destination '${target}' -Recurse -Force"`
-        : `cp -a ${JSON.stringify(srcDir + '/.')} ${JSON.stringify(target)}/`,
-      this.execCtx()
-    )
-    rmSync(extractTo, { recursive: true, force: true })
-    rmSync(tmpZip, { force: true })
-    if (!r2.ok) throw new Error(`安装文件复制失败: ${r2.output.slice(0, 300)}`)
+    const candidate = inner.length === 1 ? join(extractTo, inner[0]!) : extractTo
+    const srcDir = isPathInside(extractTo, candidate) ? candidate : extractTo
+    try {
+      // 用 Node 复制而不是 cp/Copy-Item：zip 解出的目录名可包含引号/$(...)，
+      // 拼 shell 会变成命令注入。
+      cpSync(srcDir, target, { recursive: true, force: true })
+    } catch (e) {
+      // 复制失败不要留下一个“已安装”的空壳目录
+      rmSync(target, { recursive: true, force: true })
+      throw e
+    } finally {
+      rmSync(extractTo, { recursive: true, force: true })
+      rmSync(tmpZip, { force: true })
+    }
     if (!existsSync(join(target, 'manifest.json'))) {
       Logger.warn('plugins', `插件 ${id} 无 manifest.json，按原样保留`)
     }
   }
 
   uninstall(id: string): void {
-    rmSync(this.pluginDir(id), { recursive: true, force: true })
-    this.store.update((d) => ({ disabled: d.disabled.filter((x) => x !== id) }))
+    const safe = safePluginId(id)
+    rmSync(this.pluginDir(safe), { recursive: true, force: true })
+    this.store.update((d) => ({ disabled: d.disabled.filter((x) => x !== safe) }))
   }
 
   toggle(id: string, enabled: boolean): void {
+    const safe = safePluginId(id)
     this.store.update((d) => ({
-      disabled: enabled ? d.disabled.filter((x) => x !== id) : [...new Set([...d.disabled, id])]
+      disabled: enabled ? d.disabled.filter((x) => x !== safe) : [...new Set([...d.disabled, safe])]
     }))
   }
 
@@ -324,5 +372,9 @@ function statMtime(path: string): number {
 }
 
 async function downloadTo(res: Response, file: string): Promise<void> {
-  writeFileSync(file, Buffer.from(await res.arrayBuffer()))
+  const declared = Number(res.headers.get('content-length') ?? 0)
+  if (declared > MAX_PLUGIN_ZIP) throw new Error(`插件包过大（${Math.round(declared / 1024 / 1024)}MB）`)
+  const buf = Buffer.from(await res.arrayBuffer())
+  if (buf.byteLength > MAX_PLUGIN_ZIP) throw new Error(`插件包过大（${Math.round(buf.byteLength / 1024 / 1024)}MB）`)
+  writeFileSync(file, buf)
 }

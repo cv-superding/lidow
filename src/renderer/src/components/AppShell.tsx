@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useStore, useProject, type ViewId } from '../store'
+import { useStore, useActiveProject, type ViewId } from '../store'
 import { api } from '../api'
 import { ChatPanel } from './ChatPanel'
 import { WebTabs } from './WebTabs'
@@ -82,7 +82,11 @@ export function PanelHeader({ title, children }: { title: string; children?: Rea
 }
 
 export function LeftRail(): React.JSX.Element {
-  const { view, setView, pureMode, setPure } = useStore()
+  // 不能解构整个 store：流式 token 每个都会触发一次 set，整个左栏跟着重渲染
+  const view = useStore((s) => s.view)
+  const setView = useStore((s) => s.setView)
+  const pureMode = useStore((s) => s.pureMode)
+  const setPure = useStore((s) => s.setPure)
   const railPinned = useStore((s) => s.railPinned)
   const [hovered, setHovered] = useState(false)
   // 悬停时向右展开盖住内容，用负 margin 抵消布局宽度，避免网页跟着左右跳动
@@ -237,9 +241,18 @@ export function LeftRail(): React.JSX.Element {
 /** 顶栏：品牌 | 项目面包屑 | 运行态 + 窗口控制。整条可拖拽窗口 */
 function TopBar(): React.JSX.Element {
   const view = useStore((s) => s.view)
-  const streamingText = useStore((s) => s.streamingText)
   const stop = useStore((s) => s.stop)
-  const running = streamingText.length > 0
+  // 以主进程 loop-state 为准：工具轮/重试间隙不会闪回“空闲”，
+  // 同时保留流式/思考/首包信号兜底
+  const running = useStore(
+    (s) =>
+      s.runningSessionIds.length > 0 ||
+      Boolean(
+        s.streamingText ||
+          s.thinkingText ||
+          (s.activeSession && s.pendingReplySessionId === s.activeSession.id)
+      )
+  )
   return (
     <div
       className="flex h-10 shrink-0 items-center border-b"
@@ -308,7 +321,7 @@ function ProjectSwitcher(): React.JSX.Element {
   }, [open])
 
   return (
-    <div ref={boxRef} className="relative">
+    <div ref={boxRef} className="relative" style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}>
       <button
         className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-[var(--r-md)] px-2 text-[12px] transition-colors duration-[110ms] hover:bg-[var(--bg-hover)]"
         style={{ color: 'var(--text-dim)' }}
@@ -417,7 +430,7 @@ function TopActions(): React.JSX.Element {
   }
 
   const iconCls = 'btn btn-ghost btn-icon'
-  const project = useProject(useStore())
+  const project = useActiveProject()
 
   return (
     <>
@@ -484,7 +497,12 @@ function TopActions(): React.JSX.Element {
         className={iconCls}
         title={auxPanel === 'files' ? '收起文件面板' : '打开文件面板'}
         style={{ color: auxPanel === 'files' ? 'var(--accent)' : undefined }}
-        onClick={() => (auxPanel === 'files' ? closeAux() : openAux('files'))}
+        onClick={() => {
+          // 管理页不挂载 RightDock：先回工作台，否则点了没有任何反应
+          useStore.getState().setView('home')
+          if (auxPanel === 'files') closeAux()
+          else openAux('files')
+        }}
       >
         <IconPanelRight size={15} />
       </button>
@@ -494,7 +512,10 @@ function TopActions(): React.JSX.Element {
         className={iconCls}
         title="终端 (Ctrl `)"
         style={{ color: auxPanel === 'terminal' ? 'var(--accent)' : undefined }}
-        onClick={() => toggleAux('terminal')}
+        onClick={() => {
+          useStore.getState().setView('home')
+          toggleAux('terminal')
+        }}
       >
         <IconTerminal size={15} />
       </button>
@@ -640,7 +661,8 @@ export function SessionDeleteDialog(): React.JSX.Element | null {
 
 /** 危险操作确认浮层 */
 function ConfirmOverlay(): React.JSX.Element {
-  const { confirmRequest, answerConfirm } = useStore()
+  const confirmRequest = useStore((s) => s.confirmRequest)
+  const answerConfirm = useStore((s) => s.answerConfirm)
   const sessions = useStore((s) => s.sessions)
   const activeSession = useStore((s) => s.activeSession)
   if (!confirmRequest) return <></>
@@ -697,12 +719,21 @@ export function AppShell(): React.JSX.Element {
     const onKey = (e: KeyboardEvent): void => {
       if (e.ctrlKey && e.key === '`') {
         e.preventDefault()
+        useStore.getState().setView('home')
         useStore.getState().toggleAux('terminal')
         return
       }
       const mod = e.ctrlKey || e.metaKey
       if (!mod) return
       const key = e.key.toLowerCase()
+      // 顶栏/快捷菜单都标注了 Ctrl N 新建任务，此前没有任何处理器
+      if (!e.altKey && !e.shiftKey && key === 'n') {
+        e.preventDefault()
+        const st = useStore.getState()
+        const pid = st.activeSession?.providerId ?? st.providers[0]?.id
+        if (pid) void st.createSession(pid).catch(() => undefined)
+        return
+      }
       if (e.altKey && key === 'e') {
         e.preventDefault()
         useStore.getState().openAux('files')

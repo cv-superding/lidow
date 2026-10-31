@@ -71,6 +71,8 @@ interface ExtractCtx {
   observed: boolean
   /** ChatGPT 新版 Workspace 的增量/patch 流状态 */
   chatgpt?: { id: string; text: string }
+  /** Claude 旧协议 completion 字段可能是累计快照，用来算增量 */
+  claudeText?: string
 }
 
 /** DeepSeek 补齐帧提取：p/v 增量补丁 + fragments APPEND + BATCH 展开（cuckoo 同款逻辑） */
@@ -798,7 +800,7 @@ export const CLAUDE_HOOK: ProviderHookSpec = {
     method.toUpperCase() === 'POST' &&
     /\/api\/organizations\/.+\/chat_conversations\/.+\/completion/.test(url),
   isStopStream: (url, method) => method.toUpperCase() === 'POST' && /\/completion\/stop/.test(url),
-  extract: (frame) => {
+  extract: (frame, ctx) => {
     const f = frame as {
       type?: string
       completion?: string
@@ -806,9 +808,18 @@ export const CLAUDE_HOOK: ProviderHookSpec = {
       delta?: { text?: string }
     }
     if (!f || typeof f !== 'object') return null
-    if (f.type === 'completion' && typeof f.completion === 'string') return { text: f.completion }
-    if (f.type === 'content_block_delta' && typeof f.delta?.text === 'string')
+    const state = (ctx ?? {}) as ExtractCtx
+    if (f.type === 'completion' && typeof f.completion === 'string') {
+      // 旧版 claude.ai 的 completion 是「到目前为止全文」：直接追加会整段重复
+      const prev = state.claudeText ?? ''
+      state.claudeText = f.completion
+      if (f.completion.startsWith(prev)) return { text: f.completion.slice(prev.length) }
+      return { text: f.completion, replace: true }
+    }
+    if (f.type === 'content_block_delta' && typeof f.delta?.text === 'string') {
+      state.claudeText = (state.claudeText ?? '') + f.delta.text
       return { text: f.delta.text }
+    }
     if (f.stop_reason) return { finished: true }
     return null
   }

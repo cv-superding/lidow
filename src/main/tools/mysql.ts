@@ -11,7 +11,7 @@ interface MysqlConfig {
   database: string
 }
 
-const WRITE_PREFIX = /^(insert|update|delete|drop|alter|create|truncate|rename|replace|grant|revoke|call|merge|load|lock)\b/i
+const WRITE_PREFIX = /^(insert|update|delete|drop|alter|create|truncate|rename|replace|grant|revoke|call|merge|load|lock|handler)\b/i
 
 /** 去掉前导注释/空白：块注释或行注释开头曾能绕过写操作确认 */
 function stripLeadingComments(sql: string): string {
@@ -24,6 +24,52 @@ function stripLeadingComments(sql: string): string {
     if (next === out) return out
     out = next
   }
+}
+
+/** 分号是否只出现在字符串/注释内部（INSERT ('a;b') 不能误判为多语句） */
+function hasMultipleStatements(sql: string): boolean {
+  let quote: string | null = null
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i]!
+    if (quote) {
+      if (ch === '\\' && quote !== '`') {
+        i++
+        continue
+      }
+      if (ch === quote) {
+        if (sql[i + 1] === quote && quote !== '`') {
+          i++
+          continue
+        }
+        quote = null
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch
+      continue
+    }
+    if (ch === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i + 2)
+      if (end < 0) return false
+      i = end
+      continue
+    }
+    if (ch === '#') {
+      const end = sql.indexOf('\n', i + 1)
+      if (end < 0) return false
+      i = end
+      continue
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2)
+      if (end < 0) return false
+      i = end + 1
+      continue
+    }
+    if (ch === ';') return true
+  }
+  return false
 }
 
 function loadConfig(projectRoot: string): MysqlConfig {
@@ -53,13 +99,22 @@ export const mysqlTool: ToolDef = {
   dangerLevel: 'confirm',
   async run(input, ctx) {
     const sql = str(input, 'sql').trim().replace(/;\s*$/, '')
-    if (sql.includes(';')) return { ok: false, output: '', error: '仅允许单条 SQL（检测到多个分号）' }
-    const maxRows = typeof input.maxRows === 'number' ? input.maxRows : 50
+    // 只看字符串/注释外的分号，避免把 INSERT ('a;b') 误判成多语句
+    if (hasMultipleStatements(sql))
+      return { ok: false, output: '', error: '仅允许单条 SQL（检测到多个分号）' }
+    const maxRows = Math.max(1, Math.min(1000, Number(input.maxRows) || 50))
 
     const bare = stripLeadingComments(sql)
-    // WITH … DELETE 这类 CTE 写操作不以写关键字开头，也要走确认门
+    // WITH … DELETE 这类 CTE 写操作不以写关键字开头，也要走确认门。
+    // /*!50000 DROP ... */ 是 MySQL 的「可执行注释」，stripLeadingComments 会把它
+    // 整段剥掉，必须单独识别为写操作。
     const isWrite =
-      WRITE_PREFIX.test(bare) || (/^with\b/i.test(bare) && /\b(insert|update|delete|replace|merge)\b/i.test(bare))
+      sql.includes('/*!') ||
+      WRITE_PREFIX.test(bare) ||
+      (/^with\b/i.test(bare) && /\b(insert|update|delete|replace|merge)\b/i.test(bare)) ||
+      /\binto\s+(outfile|dumpfile)\b/i.test(bare) ||
+      /\bfor\s+update\b/i.test(bare) ||
+      /\block\s+in\s+share\s+mode\b/i.test(bare)
     if (isWrite) {
       const ok = await ctx.confirm(`执行写操作 SQL：${sql.slice(0, 160)}`)
       if (!ok) return { ok: false, output: '', error: '用户拒绝执行该写操作' }

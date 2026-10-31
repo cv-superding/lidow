@@ -50,13 +50,16 @@ export function TerminalPanel({
   onClose,
   height = 0,
   onHeightChange = () => undefined,
-  embedded = false
+  embedded = false,
+  active = true
 }: {
   onClose: () => void
   height?: number
   onHeightChange?: (h: number) => void
   /** 嵌入右侧栏：隐藏拖拽条与标题栏，由 Dock 头部承担 */
   embedded?: boolean
+  /** 是否正在显示：隐藏时不要抢输入焦点 */
+  active?: boolean
 }): React.JSX.Element {
   const [blocks, setBlocks] = useState<Block[]>([])
   const [input, setInput] = useState('')
@@ -74,8 +77,8 @@ export function TerminalPanel({
   }, [projectId])
 
   useEffect(() => {
-    inputRef.current?.focus()
-  }, [])
+    if (active) inputRef.current?.focus()
+  }, [active])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -264,6 +267,7 @@ export function TerminalPanel({
             setHistIndex(-1)
           }}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return
             if (e.key === 'Enter') {
               e.preventDefault()
               void run()

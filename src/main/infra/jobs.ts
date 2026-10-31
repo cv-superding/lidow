@@ -76,16 +76,25 @@ export class JobScheduler {
   }
 
   private startTimer(job: Job): void {
-    const ms = Math.max(60_000, job.schedule.kind === 'interval' ? job.schedule.intervalMs : 60_000)
+    const raw = job.schedule.kind === 'interval' ? Number(job.schedule.intervalMs) : 60_000
+    // NaN 会让 setInterval 退化成 1ms 死循环：插件传来非法值时必须回退默认
+    const ms = Number.isFinite(raw) ? Math.max(60_000, raw) : 60_000
     const t = setInterval(() => void this.runOnce(job), ms)
     this.timers.set(job.id, t)
   }
 
   private scheduleDaily(job: Job): void {
     if (job.schedule.kind !== 'daily') return
-    const [hh = '0', mm = '0'] = job.schedule.at.split(':')
+    const m = /^(\d{1,2}):(\d{2})$/.exec(job.schedule.at.trim())
+    const hh = m ? Number(m[1]) : NaN
+    const mm = m ? Number(m[2]) : NaN
+    if (!Number.isInteger(hh) || !Number.isInteger(mm) || hh > 23 || mm > 59) {
+      // 非法时间会让 target 变成 Invalid Date、setTimeout(NaN) 立刻执行并递归自身
+      Logger.warn('jobs', `作业 ${job.name} 的每日时间无效: ${job.schedule.at}（已跳过调度）`)
+      return
+    }
     const target = new Date()
-    target.setHours(Number(hh), Number(mm), 0, 0)
+    target.setHours(hh, mm, 0, 0)
     if (target.getTime() <= Date.now()) target.setDate(target.getDate() + 1)
     const delay = target.getTime() - Date.now()
     const t = setTimeout(() => {

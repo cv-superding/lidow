@@ -15,8 +15,13 @@ export const clipboardTool: ToolDef = {
     text: { type: 'string', description: 'write 时要写入的文本' }
   },
   dangerLevel: 'safe',
-  async run(input) {
+  async run(input, ctx) {
     const action = str(input, 'action')
+    const mode = ctx.settings.permissionMode ?? 'autonomous'
+    if ((mode === 'plan' || mode === 'ask') && action === 'read') {
+      const ok = await ctx.confirm('读取系统剪贴板内容（可能包含密码等敏感文本）')
+      if (!ok) return { ok: false, output: '', error: '用户拒绝读取剪贴板' }
+    }
     if (action === 'read') {
       const text = await clipboard.readText()
       return { ok: true, output: text ? `剪贴板内容（${text.length} 字符）：\n${text.slice(0, 4000)}` : '剪贴板为空或非文本' }
@@ -36,6 +41,11 @@ export const screenshotTool: ToolDef = {
   parameters: { width: { type: 'number', description: '缩略图宽度，默认 1280（保护输出体积）' } },
   dangerLevel: 'safe',
   async run(input, ctx) {
+    const mode = ctx.settings.permissionMode ?? 'autonomous'
+    if (mode === 'plan' || mode === 'ask') {
+      const ok = await ctx.confirm('截取当前屏幕并保存到项目目录')
+      if (!ok) return { ok: false, output: '', error: '用户拒绝截屏' }
+    }
     const width = num(input, 'width', 1280)
     const sources = await desktopCapturer.getSources({
       types: ['screen'],

@@ -1,7 +1,14 @@
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
+import { timingSafeEqual } from 'node:crypto'
 import { extname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { Logger } from '../infra/log'
+
+function tokenEquals(a: string, b: string): boolean {
+  const left = Buffer.from(a)
+  const right = Buffer.from(b)
+  return left.length === right.length && timingSafeEqual(left, right)
+}
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -87,13 +94,36 @@ export class WebServer {
   }
 
   private authorized(req: IncomingMessage, url: URL): boolean {
-    if (!this.opts.token) return true
+    if (!this.opts.token) {
+      // 无 Token 模式给本机浏览器 UI 用。浏览器跨站请求会带 Sec-Fetch-Site:
+      // cross-site；挡住它（CSRF 防护），命令行/同源请求不受影响。
+      const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
+      return site !== 'cross-site' && site !== 'cross-origin'
+    }
     const header = req.headers.authorization ?? ''
     const bearer = header.startsWith('Bearer ') ? header.slice(7) : ''
-    return bearer === this.opts.token || url.searchParams.get('token') === this.opts.token
+    return tokenEquals(bearer, this.opts.token) || tokenEquals(url.searchParams.get('token') ?? '', this.opts.token)
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    try {
+      await this.route(req, res)
+    } catch (e) {
+      Logger.warn('web', `请求处理失败: ${e instanceof Error ? e.message : String(e)}`)
+      try {
+        if (!res.headersSent) {
+          res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+          res.end('bad request')
+        } else if (!res.writableEnded) {
+          res.end()
+        }
+      } catch {
+        /* 连接已断开 */
+      }
+    }
+  }
+
+  private async route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://localhost')
     if (url.pathname === '/healthz') {
       res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' })
@@ -164,7 +194,13 @@ export class WebServer {
 
   private serveStatic(pathname: string, res: ServerResponse): void {
     const root = resolve(this.opts.root)
-    const decoded = decodeURIComponent(pathname)
+    let decoded: string
+    try {
+      decoded = decodeURIComponent(pathname)
+    } catch {
+      res.writeHead(400).end('bad path')
+      return
+    }
     const target = resolve(join(root, normalize(decoded)))
     const rel = relative(root, target)
     if (rel.startsWith('..') || isAbsolute(rel)) {
@@ -188,7 +224,16 @@ export class WebServer {
         ? 'no-cache'
         : 'public, max-age=31536000, immutable'
     })
-    createReadStream(file).pipe(res)
+    const stream = createReadStream(file)
+    stream.on('error', () => {
+      try {
+        if (!res.headersSent) res.writeHead(500)
+        if (!res.writableEnded) res.end()
+      } catch {
+        /* 连接已断开 */
+      }
+    })
+    stream.pipe(res)
   }
 }
 

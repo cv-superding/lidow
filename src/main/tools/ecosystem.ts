@@ -41,7 +41,9 @@ export function createEcosystemTools(refs: EcosystemRefs): ToolDef[] {
     parameters: { keyword: { type: 'string', description: '标题关键词', required: true } },
     dangerLevel: 'safe',
     async run(input) {
-      const kw = str(input, 'keyword').toLowerCase()
+      const kw = str(input, 'keyword').trim().toLowerCase()
+      // 空关键词会让 includes('') 命中第一条记忆，等于随机删除
+      if (!kw) return { ok: false, output: '', error: 'keyword 不能为空' }
       const hit = refs.memory.list().find((e) => e.title.toLowerCase().includes(kw))
       if (!hit) return { ok: false, output: '', error: `没有匹配「${kw}」的记忆` }
       refs.memory.remove(hit.id)

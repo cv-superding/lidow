@@ -51,6 +51,13 @@ interface Channel {
   lastResolvedText?: string
   /** 最近一次网页流活动（网络层/ DOM）：发送前据此等页面真正静下来 */
   lastActivityAt?: number
+  /** 本轮回复真正结束的时刻：发送间隔必须从这里算，不能用最后一个分片的时间 */
+  lastReplyEndAt?: number
+  /**
+   * 用户已停止本轮：网页侧可能还在继续生成，之后到达的 chunk/最终回答
+   * 不能再推给纯净模式，也不能重新接管执行工具。下一次发送/网页直发时解除。
+   */
+  suppressed?: boolean
 }
 
 /**
@@ -271,7 +278,7 @@ export class OverlayManager {
         for (const r of ch.chunkResolvers) r(payload.text, tps)
         // 没有 loop 等待方 = 用户在网页里自己发的任务：这里直接把流推给
         // 纯净模式，否则要等整段回复结束才一次性出现（大代码块会像卡死）。
-        if (ch.chunkResolvers.size === 0) {
+        if (ch.chunkResolvers.size === 0 && !ch.suppressed) {
           const sid = this.sessionOfWebContents(sender.id)
           if (sid) this.onPageStream?.(sid, payload.text, tps)
         }
@@ -291,11 +298,13 @@ export class OverlayManager {
         this.clearErrorGrace(ch)
         ch.streamBuf = payload.text
         ch.lastActivityAt = Date.now()
+        ch.lastReplyEndAt = ch.lastActivityAt
         for (const r of ch.chunkResolvers) r(payload.text, 0)
         ch.chunkResolvers.clear()
         if (ch.replyResolvers.size === 0) {
-          // 没有等待方：网页侧自己发的消息，或网络 hook 失败后的 DOM 兜底
-          if (payload.text.trim() && !sameReply(ch.lastResolvedText, payload.text)) {
+          // 没有等待方：网页侧自己发的消息，或网络 hook 失败后的 DOM 兜底。
+          // suppressed = 用户刚点过停止：即使网页还回了一句，也不能再接管。
+          if (!ch.suppressed && payload.text.trim() && !sameReply(ch.lastResolvedText, payload.text)) {
             ch.lastResolvedText = payload.text
             const sid = this.sessionOfWebContents(sender.id)
             if (sid) this.onPageReply?.(sid, payload.text)
@@ -330,7 +339,7 @@ export class OverlayManager {
         for (const r of ch.chunkResolvers)
           r(payload.text, this.estimateTps(payload.text.length, ch))
         // 思考过程流式上报（纯净模式折叠块显示）
-        if (payload.think) {
+        if (payload.think && !ch.suppressed) {
           const sessionId = this.sessionOfWebContents(sender.id)
           if (sessionId) this.onThinkChunk?.(sessionId, payload.think)
         }
@@ -344,6 +353,8 @@ export class OverlayManager {
           // 只有 Lidow 主动停止（看门狗/停止按钮）才交给 loop 的停止逻辑。
           const byLidow = ch.lidowStopped === true
           ch.lidowStopped = false
+          ch.lastActivityAt = Date.now()
+          ch.lastReplyEndAt = ch.lastActivityAt
           if (!byLidow) {
             for (const r of ch.replyResolvers) r(new Error('用户在网页侧停止了生成'))
             ch.replyResolvers.clear()
@@ -368,6 +379,8 @@ export class OverlayManager {
             break
           }
           this.clearErrorGrace(ch)
+          ch.lastActivityAt = Date.now()
+          ch.lastReplyEndAt = ch.lastActivityAt
           const detail = payload.reason ? `（${payload.reason}）` : ''
           const partial = payload.text ? `，已收到 ${payload.text.length} 字` : ''
           const err = new Error(`AI 回复中断${detail}${partial}`)
@@ -383,6 +396,9 @@ export class OverlayManager {
         // finished：以网络层文本为准结束本轮（覆盖 DOM 兜底）
         this.clearErrorGrace(ch)
         ch.netText = payload.text
+        // 回复结束的权威时刻：下一次自动发送的间隔从这里开始算
+        ch.lastActivityAt = Date.now()
+        ch.lastReplyEndAt = ch.lastActivityAt
         // 服务端权威 token：accumulated 是会话累计，本轮消耗 = 本轮 − 上一轮
         if (typeof payload.tokens === 'number') {
           const delta = payload.tokens - (ch.lastAcc ?? 0)
@@ -408,7 +424,12 @@ export class OverlayManager {
         // 没有等待方 → 可能是用户在网页里自己发的新消息，也可能是多阶段回答的
         // 最终一段（搜索/深度思考完成后会再发一轮）。只按文本去重，不再用
         // 「距上次 resolve 不足 8 秒」直接丢弃 —— 那会把最终答案吞掉。
-        if (!hadWaiter && payload.text.trim() && !sameReply(ch.lastResolvedText, payload.text)) {
+        if (
+          !hadWaiter &&
+          !ch.suppressed &&
+          payload.text.trim() &&
+          !sameReply(ch.lastResolvedText, payload.text)
+        ) {
           ch.lastResolvedText = payload.text
           const sessionId = this.sessionOfWebContents(sender.id)
           if (sessionId) this.onPageReply?.(sessionId, payload.text)
@@ -475,7 +496,9 @@ export class OverlayManager {
         break
       }
       case 'user-message': {
-        // 网页侧直发的用户消息：只记到当前绑定的会话，避免串台
+        // 网页侧直发的用户消息：只记到当前绑定的会话，避免串台。
+        // 这是新一轮用户意图，解除“用户已停止”的压制。
+        ch.suppressed = false
         const sessionId = this.sessionOfWebContents(sender.id)
         if (sessionId && payload.text.trim()) this.onPageUserMessage?.(sessionId, payload.text)
         break
@@ -690,10 +713,14 @@ export class OverlayManager {
       // 网络层还在出字/思考时不要发：重试提示会被平台排成“中途插话”
       await this.waitForPageQuiet(ch, quietWindow(interval))
       if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
-      // 设置里的间隔是“上一条回复结束后等多久”，从页面最后一次活动算起，
-      // 不能从上次发送算起：长回复早就超过间隔，等于没有等待。
-      const remain = remainingSendDelay(ch.lastActivityAt, interval)
-      if (remain > 0) await new Promise((r) => setTimeout(r, remain))
+      // 设置里的间隔是“上一条回复结束后等多久”：基准必须是回复结束时刻，
+      // 不能用最后一个流式分片（平台收尾/工具执行会让它早于真正结束）。
+      const replyEnd = Math.max(ch.lastReplyEndAt ?? 0, ch.lastActivityAt ?? 0)
+      const remain = remainingSendDelay(replyEnd, interval)
+      if (remain > 0) {
+        Logger.info('overlay', `发送间隔：等待 ${remain}ms（设置 ${interval}ms）`)
+        await new Promise((r) => setTimeout(r, remain))
+      }
       if (this.bindings.get(sessionId) !== wcId) throw new Error('会话已切换，已取消排队消息')
       this.lastSendAt.set(wcId, Date.now())
       await this.sendNow(ch, text)
@@ -723,6 +750,8 @@ export class OverlayManager {
     const target = this.targetOf(ch)
     if (!target) throw new Error('webview 已销毁')
     this.startTs.delete(ch.webContentsId)
+    // 新请求落地：解除上一次「用户停止」造成的网页事件压制
+    ch.suppressed = false
     // 新请求落地前清空上一轮的权威文本/错误：DOM 兜底只会用本轮的数据
     this.clearErrorGrace(ch)
     ch.lidowStopped = false
@@ -918,6 +947,57 @@ export class OverlayManager {
     }, 15_000)
     timer.unref?.()
     this.targetOf(ch)?.send('lidow:overlay-cmd', { kind: 'stop' } satisfies OverlayCommand)
+  }
+
+  /**
+   * 用户停止本轮：网页可能不理会停止按钮继续输出，之后到达的流/最终回答
+   * 一律不再推给纯净模式，也不重新接管执行工具。下一次发送或网页直发时解除。
+   */
+  suppressPage(sessionId: string): void {
+    const ch = this.channelOfSession(sessionId)
+    if (ch) ch.suppressed = true
+  }
+
+  /**
+   * 用当前已收到的正文直接结束等待。
+   * 用于看门狗：页面已经静默但正文还在，不要再发「请继续」冒充用户消息。
+   */
+  finishReply(sessionId: string, text: string): boolean {
+    const ch = this.channelOfSession(sessionId)
+    if (!ch || ch.replyResolvers.size === 0) return false
+    this.clearErrorGrace(ch)
+    if (ch.domFallbackTimer) {
+      clearTimeout(ch.domFallbackTimer)
+      ch.domFallbackTimer = undefined
+    }
+    ch.streamBuf = text
+    ch.netText = text
+    ch.lastActivityAt = Date.now()
+    ch.lastReplyEndAt = ch.lastActivityAt
+    for (const r of ch.replyResolvers) r(text)
+    ch.replyResolvers.clear()
+    ch.chunkResolvers.clear()
+    return true
+  }
+
+  /**
+   * 立即结束当前等待方：不能只依赖网页真的停下。
+   * 网页没响应停止按钮时，本地循环也必须马上退出（否则“停止生成”看起来没反应）。
+   */
+  abortReply(sessionId: string, message = '用户中止了生成'): void {
+    const ch = this.channelOfSession(sessionId)
+    if (!ch) return
+    this.clearErrorGrace(ch)
+    if (ch.domFallbackTimer) {
+      clearTimeout(ch.domFallbackTimer)
+      ch.domFallbackTimer = undefined
+    }
+    if (ch.replyResolvers.size === 0) return
+    ch.lastActivityAt = Date.now()
+    ch.lastReplyEndAt = ch.lastActivityAt
+    for (const r of ch.replyResolvers) r(new Error(message))
+    ch.replyResolvers.clear()
+    ch.chunkResolvers.clear()
   }
 
   /**

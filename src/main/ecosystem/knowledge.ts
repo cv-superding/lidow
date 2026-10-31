@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { extname, join } from 'node:path'
 import { nanoid } from 'nanoid'
 import { JsonStore } from '@main/infra/store'
@@ -75,7 +75,18 @@ export class KnowledgeManager {
   private rebuild(kbId: string, root: string): number {
     this.docs = this.docs.filter((d) => d.kbId !== kbId)
     let count = 0
-    const walk = (dir: string): void => {
+    // 知识库目录可能有指回上层的软链接/junction：按 realpath 去重并限深，
+    // 否则启动时会无限递归把主进程卡死。
+    const visited = new Set<string>()
+    const walk = (dir: string, depth: number): void => {
+      if (depth > 30) return
+      try {
+        const real = realpathSync(dir)
+        if (visited.has(real)) return
+        visited.add(real)
+      } catch {
+        /* realpath 失败时按原路径继续 */
+      }
       let entries: string[]
       try {
         entries = readdirSync(dir)
@@ -92,7 +103,7 @@ export class KnowledgeManager {
           continue
         }
         if (st.isDirectory()) {
-          walk(full)
+          walk(full, depth + 1)
         } else if (TEXT_EXTS.has(extname(name).toLowerCase()) && st.size < 1024 * 1024) {
           try {
             const text = readFileSync(full, 'utf-8')
@@ -107,7 +118,7 @@ export class KnowledgeManager {
         }
       }
     }
-    walk(root)
+    walk(root, 0)
     return count
   }
 

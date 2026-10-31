@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import hljs from 'highlight.js'
@@ -10,7 +10,7 @@ import type {
   SkillMeta,
   SkillTrashItem
 } from '@shared/types'
-import { useProject, useStore } from '../store'
+import { useActiveProject, useStore } from '../store'
 import { api } from '../api'
 import { Empty, Page } from './views'
 import {
@@ -159,7 +159,7 @@ function SkillMarkdown({ text }: { text: string }): React.JSX.Element {
 }
 
 export function SkillsView(): React.JSX.Element {
-  const project = useProject(useStore())
+  const project = useActiveProject()
   const projectId = project?.id ?? ''
   const [tab, setTab] = useState<TabId>('project')
   const [skills, setSkills] = useState<SkillMeta[]>([])
@@ -173,15 +173,21 @@ export function SkillsView(): React.JSX.Element {
   const [importing, setImporting] = useState<ImportState | null>(null)
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set())
 
+  const refreshSeq = useRef(0)
   const refresh = useCallback((): void => {
+    const seq = ++refreshSeq.current
     setLoading(true)
     Promise.all([api.listSkills(), api.listSkillTrash()])
       .then(([nextSkills, nextTrash]) => {
+        // 切项目后旧请求晚到会覆盖新项目的技能列表
+        if (seq !== refreshSeq.current) return
         setSkills(nextSkills)
         setTrash(nextTrash)
       })
       .catch((e) => useStore.getState().notice(`加载技能失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
-      .finally(() => setLoading(false))
+      .finally(() => {
+        if (seq === refreshSeq.current) setLoading(false)
+      })
   }, [])
 
   useEffect(() => {
@@ -239,17 +245,23 @@ export function SkillsView(): React.JSX.Element {
       .catch((e) => useStore.getState().notice(`打开目录失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
   }
 
+  const detailSeq = useRef(0)
   const openDetail = (skill: SkillMeta): void => {
+    const seq = ++detailSeq.current
     void api
       .readSkill(skill.path)
-      .then((content) => setDetail({ skill, content }))
+      .then((content) => {
+        if (seq === detailSeq.current) setDetail({ skill, content })
+      })
       .catch((e) => useStore.getState().notice(`读取技能失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
   }
 
   const startEdit = (skill: SkillMeta): void => {
+    const seq = ++detailSeq.current
     void api
       .readSkill(skill.path)
       .then((content) => {
+        if (seq !== detailSeq.current) return
         const parsed = splitSkillContent(content, skill)
         setDetail(null)
         setEditor({ mode: 'edit', scope: skill.scope, path: skill.path, category: skill.category ?? '', ...parsed })
@@ -285,6 +297,8 @@ export function SkillsView(): React.JSX.Element {
     try {
       if (editor.mode === 'create') await api.createSkill(draft)
       else if (editor.path) await api.updateSkill(editor.path, draft)
+      // 新建到用户级时切到用户 tab，否则列表看起来“没创建成功”
+      if (editor.mode === 'create') setTab(editor.scope === 'project' ? 'project' : 'user')
       setEditor(null)
       await refresh()
       useStore.getState().notice(editor.mode === 'create' ? '技能已创建' : '技能已保存')
@@ -295,18 +309,26 @@ export function SkillsView(): React.JSX.Element {
     }
   }
 
+  // 连点开关/恢复/删除会重复发请求：同一时间只允许一个动作
+  const [pendingAction, setPendingAction] = useState('')
   const toggleSkill = async (skill: SkillMeta): Promise<void> => {
+    if (pendingAction) return
+    setPendingAction(skill.path)
     try {
       const next = await api.setSkillEnabled(skill.path, skill.enabled === false)
       setSkills(next)
       useStore.getState().notice(skill.enabled === false ? '技能已启用' : '技能已禁用')
     } catch (e) {
       useStore.getState().notice(`切换失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setPendingAction('')
     }
   }
 
   const moveToTrash = async (skill: SkillMeta): Promise<void> => {
+    if (pendingAction) return
     if (!window.confirm(`将技能「${skill.name}」移入回收站？`)) return
+    setPendingAction(skill.path)
     try {
       await api.trashSkill(skill.path)
       setDetail(null)
@@ -314,32 +336,48 @@ export function SkillsView(): React.JSX.Element {
       useStore.getState().notice('已移入回收站')
     } catch (e) {
       useStore.getState().notice(`删除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setPendingAction('')
     }
   }
 
   const restoreFromTrash = async (item: SkillTrashItem): Promise<void> => {
+    if (pendingAction) return
+    setPendingAction(item.id)
     try {
       await api.restoreSkillTrash(item.id)
       await refresh()
       useStore.getState().notice('技能已恢复')
     } catch (e) {
       useStore.getState().notice(`恢复失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setPendingAction('')
     }
   }
 
   const purgeFromTrash = async (item: SkillTrashItem): Promise<void> => {
+    if (pendingAction) return
     if (!window.confirm(`永久删除「${item.name}」？此操作不可恢复。`)) return
+    setPendingAction(item.id)
     try {
       await api.purgeSkillTrash(item.id)
       await refresh()
       useStore.getState().notice('已从回收站永久删除')
     } catch (e) {
       useStore.getState().notice(`删除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+    } finally {
+      setPendingAction('')
     }
   }
 
   const openInstall = (): void => {
-    setInstall({ url: '', scope: project ? 'project' : 'user', category: '', busy: false })
+    setInstall({
+      url: '',
+      // 跟随当前 tab：在用户技能页安装时默认用户级
+      scope: tab === 'project' && project ? 'project' : 'user',
+      category: '',
+      busy: false
+    })
   }
 
   const openImport = (): void => {
@@ -347,7 +385,7 @@ export function SkillsView(): React.JSX.Element {
     setImporting({
       skills: [],
       selected: new Set(),
-      scope: project ? 'project' : 'user',
+      scope: tab === 'project' && project ? 'project' : 'user',
       category: '',
       busy: false,
       loading: true

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useProject, useStore } from '../store'
+import { useActiveProject, useStore } from '../store'
 import { api } from '../api'
 import type {
   AgentMeta,
@@ -749,12 +749,11 @@ function TreeNodes({
 }
 
 export function FilesView(): React.JSX.Element {
-  const projects = useStore((s) => s.projects)
-  const activeProjectId = useStore((s) => s.activeProjectId)
   const fileTree = useStore((s) => s.fileTree)
   const selectedFile = useStore((s) => s.selectedFile)
   const setView = useStore((s) => s.setView)
-  const project = projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null
+  // 只认活动项目：兜底 projects[0] 会在没选项目时展示另一个项目的文件
+  const project = useActiveProject()
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
   const toggleDir = (path: string): void => {
     setCollapsedDirs((prev) => {
@@ -779,9 +778,20 @@ export function FilesView(): React.JSX.Element {
     return `file:///${encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F')}`
   }
 
+  // 异步文件树/预览必须带序号：快速切项目或连点文件时，旧响应会覆盖新状态
+  const treeSeq = useRef(0)
+  const previewSeq = useRef(0)
   const refresh = (): void => {
-    if (project)
-      void api.readFileTree(project.id, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
+    if (!project) return
+    const seq = ++treeSeq.current
+    const pid = project.id
+    void api
+      .readFileTree(pid, '', 3)
+      .then((tree) => {
+        if (seq === treeSeq.current && useStore.getState().activeProjectId === pid)
+          useStore.setState({ fileTree: tree })
+      })
+      .catch(() => undefined)
   }
   const prevProjectId = useRef<string | null>(null)
   useEffect(() => {
@@ -791,8 +801,16 @@ export function FilesView(): React.JSX.Element {
       prevProjectId.current = project.id
       useStore.setState({ selectedFile: null })
     }
-    void api.readFileTree(project.id, '', 3).then((tree) => useStore.setState({ fileTree: tree }))
-  }, [project])
+    const seq = ++treeSeq.current
+    const pid = project.id
+    void api
+      .readFileTree(pid, '', 3)
+      .then((tree) => {
+        if (seq === treeSeq.current && useStore.getState().activeProjectId === pid)
+          useStore.setState({ fileTree: tree })
+      })
+      .catch(() => undefined)
+  }, [project?.id, project?.root])
 
   const countFiles = (nodes: typeof fileTree): number =>
     nodes.reduce(
@@ -861,10 +879,14 @@ export function FilesView(): React.JSX.Element {
                   selected={selectedFile?.path}
                   collapsed={collapsedDirs}
                   onToggle={toggleDir}
-                  onOpen={(p) =>
+                  onOpen={(p) => {
+                    const seq = ++previewSeq.current
+                    const pid = project.id
                     void api
-                      .readFilePreview(project.id, p)
-                      .then((r) =>
+                      .readFilePreview(pid, p)
+                      .then((r) => {
+                        if (seq !== previewSeq.current) return
+                        if (useStore.getState().activeProjectId !== pid) return
                         useStore.setState({
                           selectedFile: {
                             path: p,
@@ -875,7 +897,7 @@ export function FilesView(): React.JSX.Element {
                             size: r.size
                           }
                         })
-                      )
+                      })
                       .catch((e) =>
                         useStore
                           .getState()
@@ -884,7 +906,7 @@ export function FilesView(): React.JSX.Element {
                             'error'
                           )
                       )
-                  }
+                  }}
                 />
               )}
             </div>
@@ -1040,7 +1062,8 @@ export function TasksView(): React.JSX.Element {
             className="btn btn-sm btn-outline"
             disabled={doneCount === 0}
             onClick={() => {
-              if (window.confirm('清理所有已完成任务？')) void api.clearDoneTodos().then(refresh)
+              if (window.confirm('清理所有已完成任务？'))
+                void api.clearDoneTodos().then(refresh).catch(() => undefined)
             }}
           >
             清理已完成
@@ -1065,11 +1088,15 @@ export function TasksView(): React.JSX.Element {
           value={newTitle}
           onChange={(e) => setNewTitle(e.target.value)}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return
             if (e.key === 'Enter' && newTitle.trim()) {
-              void api.addTodo(newTitle.trim()).then((t) => {
-                useStore.setState({ todos: t })
-                setNewTitle('')
-              })
+              void api
+                .addTodo(newTitle.trim())
+                .then((t) => {
+                  useStore.setState({ todos: t })
+                  setNewTitle('')
+                })
+                .catch(() => undefined)
             }
           }}
         />
@@ -1078,10 +1105,13 @@ export function TasksView(): React.JSX.Element {
           disabled={!newTitle.trim()}
           onClick={() => {
             if (!newTitle.trim()) return
-            void api.addTodo(newTitle.trim()).then((t) => {
-              useStore.setState({ todos: t })
-              setNewTitle('')
-            })
+            void api
+              .addTodo(newTitle.trim())
+              .then((t) => {
+                useStore.setState({ todos: t })
+                setNewTitle('')
+              })
+              .catch(() => undefined)
           }}
         >
           <IconPlus size={13} /> 添加
@@ -1107,7 +1137,10 @@ export function TasksView(): React.JSX.Element {
                   style={{ color: 'var(--text-dim)' }}
                   value={t.status}
                   onChange={(e) =>
-                    void api.setTodoStatus(t.id, e.target.value as TaskItem['status']).then(refresh)
+                    void api
+                      .setTodoStatus(t.id, e.target.value as TaskItem['status'])
+                      .then(refresh)
+                      .catch(() => undefined)
                   }
                 >
                   {TODO_STATUS.map((s) => (
@@ -1161,15 +1194,22 @@ export function PluginsView(): React.JSX.Element {
   const [tab, setTab] = useState<'installed' | 'builtin' | 'market'>('installed')
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
+  const [installingId, setInstallingId] = useState('')
   const [coverage, setCoverage] = useState<{
     total: number
     implemented: string[]
     missing: string[]
   } | null>(null)
   const refresh = (): void => {
-    void api.listInstalledPlugins().then((p) => useStore.setState({ installedPlugins: p }))
-    void api.listBuiltinPlugins().then((p) => useStore.setState({ builtinPlugins: p }))
-    void api.dshCoverage().then(setCoverage)
+    void api
+      .listInstalledPlugins()
+      .then((p) => useStore.setState({ installedPlugins: p }))
+      .catch(() => undefined)
+    void api
+      .listBuiltinPlugins()
+      .then((p) => useStore.setState({ builtinPlugins: p }))
+      .catch(() => undefined)
+    void api.dshCoverage().then(setCoverage).catch(() => undefined)
   }
   useEffect(refresh, [])
 
@@ -1187,9 +1227,18 @@ export function PluginsView(): React.JSX.Element {
       .finally(() => setSearching(false))
   }
   const installMarket = (m: MarketPlugin): void => {
+    if (installingId) return
+    setInstallingId(`${m.source}:${m.id}`)
     void api
       .installPlugin(`${m.source}:${m.id}`)
-      .then(() => {
+      .then((list) => {
+        useStore.setState({
+          installedPlugins: list,
+          // 市场列表里的卡片也要变成「已安装」，否则再点会报“已安装”
+          marketResults: useStore
+            .getState()
+            .marketResults.map((x) => (x.id === m.id ? { ...x, installed: true } : x))
+        })
         useStore.getState().notice('插件已安装并加载生效')
         refresh()
       })
@@ -1198,11 +1247,20 @@ export function PluginsView(): React.JSX.Element {
           .getState()
           .notice(`安装失败：${e instanceof Error ? e.message : String(e)}`, 'error')
       )
+      .finally(() => setInstallingId(''))
   }
   const installBuiltin = (id: string): void => {
+    if (installingId) return
+    setInstallingId(`builtin:${id}`)
     void api
       .installPlugin(`builtin:${id}`)
-      .then(() => {
+      .then((list) => {
+        useStore.setState({
+          installedPlugins: list,
+          builtinPlugins: useStore
+            .getState()
+            .builtinPlugins.map((x) => (x.id === id ? { ...x, installed: true } : x))
+        })
         useStore.getState().notice('插件已安装并加载生效')
         refresh()
       })
@@ -1211,13 +1269,35 @@ export function PluginsView(): React.JSX.Element {
           .getState()
           .notice(`安装失败：${e instanceof Error ? e.message : String(e)}`, 'error')
       )
+      .finally(() => setInstallingId(''))
   }
   const toggle = (p: InstalledPlugin): void => {
-    void api.togglePlugin(p.id, !p.enabled).then(refresh)
+    void api
+      .togglePlugin(p.id, !p.enabled)
+      .then((list) => useStore.setState({ installedPlugins: list }))
+      .catch((e) =>
+        useStore.getState().notice(`切换失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      )
   }
   const uninstall = (p: InstalledPlugin): void => {
     if (!window.confirm(`卸载插件「${p.name}」？`)) return
-    void api.uninstallPlugin(p.id).then(refresh)
+    void api
+      .uninstallPlugin(p.id)
+      .then((list) => {
+        useStore.setState({
+          installedPlugins: list,
+          marketResults: useStore
+            .getState()
+            .marketResults.map((x) => (x.id === p.id ? { ...x, installed: false } : x)),
+          builtinPlugins: useStore
+            .getState()
+            .builtinPlugins.map((x) => (x.id === p.id ? { ...x, installed: false } : x))
+        })
+        refresh()
+      })
+      .catch((e) =>
+        useStore.getState().notice(`卸载失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      )
   }
   const tabBtn = (id: typeof tab, label: string, count: number): React.JSX.Element => (
     <button
@@ -1350,7 +1430,10 @@ export function PluginsView(): React.JSX.Element {
                 placeholder="搜索市场（GitHub / Gitee），回车搜索"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && search()}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return
+                  if (e.key === 'Enter') search()
+                }}
               />
             </div>
             <button
@@ -1420,15 +1503,30 @@ export function MemoryView(): React.JSX.Element {
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
   const [query, setQuery] = useState('')
-  const refresh = (): void =>
-    void api.listMemory().then((m) => useStore.setState({ memoryList: m }))
+  const refresh = (): void => {
+    void api
+      .listMemory()
+      .then((m) => useStore.setState({ memoryList: m }))
+      .catch(() => undefined)
+  }
+  // 记忆只在 boot/切项目时全量拉取：直接进入本页时必须自己加载一次
+  useEffect(() => {
+    refresh()
+  }, [])
   const add = (): void => {
     if (!title || !content) return
-    void api.addMemory(title, content, []).then(() => {
-      setTitle('')
-      setContent('')
-      refresh()
-    })
+    void api
+      .addMemory(title, content, [])
+      .then(() => {
+        setTitle('')
+        setContent('')
+        refresh()
+      })
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`保存失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      })
   }
   const filtered = memoryList.filter(
     (m) =>
@@ -1465,7 +1563,10 @@ export function MemoryView(): React.JSX.Element {
             placeholder="内容"
             value={content}
             onChange={(e) => setContent(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && add()}
+            onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing) return
+              if (e.key === 'Enter') add()
+            }}
           />
           <button className="btn btn-primary shrink-0" disabled={!title || !content} onClick={add}>
             <IconPlus size={13} /> 新增
@@ -1532,7 +1633,7 @@ export function MemoryView(): React.JSX.Element {
                 style={{ color: 'var(--danger)' }}
                 onClick={() => {
                   if (!window.confirm(`删除记忆「${m.title}」？`)) return
-                  void api.deleteMemory(m.id).then(refresh)
+                  void api.deleteMemory(m.id).then(refresh).catch(() => undefined)
                 }}
               >
                 <IconTrash size={13} />
@@ -1552,22 +1653,42 @@ export function KnowledgeView(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [kbId, setKbId] = useState('')
   const [hits, setHits] = useState<{ path: string; score: number; snippet: string }[]>([])
-  const refresh = (): void =>
-    void api.listKnowledgeBases().then((k) => useStore.setState({ kbs: k }))
+  const searchSeq = useRef(0)
+  const refresh = (): void => {
+    void api
+      .listKnowledgeBases()
+      .then((k) => useStore.setState({ kbs: k }))
+      .catch(() => undefined)
+  }
   useEffect(refresh, [])
 
   const search = (): void => {
-    if (kbId) void api.searchKnowledge(kbId, query).then(setHits)
+    if (!kbId) return
+    const seq = ++searchSeq.current
+    void api
+      .searchKnowledge(kbId, query)
+      .then((next) => {
+        // 切库后旧库的检索结果不能写进新库
+        if (seq === searchSeq.current) setHits(next)
+      })
+      .catch((e) =>
+        useStore.getState().notice(`检索失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      )
   }
   const removeKb = (id: string, name: string): void => {
     if (!window.confirm(`移除知识库「${name}」？不会删除磁盘上的文件。`)) return
-    void api.removeKnowledgeBase(id).then(() => {
-      if (kbId === id) {
-        setKbId('')
-        setHits([])
-      }
-      refresh()
-    })
+    void api
+      .removeKnowledgeBase(id)
+      .then(() => {
+        if (kbId === id) {
+          setKbId('')
+          setHits([])
+        }
+        refresh()
+      })
+      .catch((e) =>
+        useStore.getState().notice(`移除失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      )
   }
 
   return (
@@ -1671,7 +1792,10 @@ export function KnowledgeView(): React.JSX.Element {
                 placeholder="查询内容，回车检索"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && search()}
+                onKeyDown={(e) => {
+                  if (e.nativeEvent.isComposing) return
+                  if (e.key === 'Enter') search()
+                }}
               />
               <button
                 className="btn btn-primary shrink-0"
@@ -1690,8 +1814,8 @@ export function KnowledgeView(): React.JSX.Element {
             />
           ) : (
             <div className="space-y-1.5">
-              {hits.map((h) => (
-                <div key={h.path} className="card px-4 py-3">
+              {hits.map((h, i) => (
+                <div key={`${h.path}:${i}`} className="card px-4 py-3">
                   <div className="mb-1.5 flex items-center gap-2">
                     <span
                       className="truncate font-mono text-[11px]"
@@ -1795,8 +1919,20 @@ export function AuditView(): React.JSX.Element {
                 <button
                   className="btn btn-sm btn-outline shrink-0"
                   onClick={() => {
-                    if (window.confirm('用备份覆盖当前文件？当前未保存的改动会丢失。'))
-                      void api.revertAudit(a.id).then(refresh)
+                    if (!window.confirm('用备份覆盖当前文件？当前未保存的改动会丢失。')) return
+                    void api
+                      .revertAudit(a.id)
+                      .then((ok) => {
+                        useStore
+                          .getState()
+                          .notice(ok ? '已回滚到备份版本' : '回滚失败：备份文件可能已被删除', ok ? 'info' : 'warn')
+                        refresh()
+                      })
+                      .catch((e) =>
+                        useStore
+                          .getState()
+                          .notice(`回滚失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+                      )
                   }}
                 >
                   回滚
@@ -1815,7 +1951,7 @@ export function AuditView(): React.JSX.Element {
 // ---------------------------------------------------------------- 技能 / 子代理 / MCP / 快捷指令
 
 export function AgentsView(): React.JSX.Element {
-  const project = useStore((s) => useProject(s))
+  const project = useActiveProject()
   const projectId = project?.id
   const [agents, setAgents] = useState<AgentMeta[]>([])
   const refresh = (): void => void api.listAgents().then(setAgents)
@@ -2515,8 +2651,6 @@ function AddPlatformDialog({
 export function SettingsView(): React.JSX.Element {
   const settings = useStore((s) => s.settings)
   const providers = useStore((s) => s.providers)
-  const projects = useStore((s) => s.projects)
-  const activeProjectId = useStore((s) => s.activeProjectId)
   const mcpServers = useStore((s) => s.mcpServers)
   const mcpTools = useStore((s) => s.mcpTools)
   const appVersion = useStore((s) => s.version)
@@ -2525,7 +2659,15 @@ export function SettingsView(): React.JSX.Element {
   const downloadUpdate = useStore((s) => s.downloadUpdate)
   const s = settings
   const apiCfg = s.apiServer ?? { enabled: false, host: '127.0.0.1', port: 6080, token: '' }
-  const patchApi = (p: Partial<typeof apiCfg>): void => patch({ apiServer: { ...apiCfg, ...p } })
+  // 嵌套设置必须基于「当前最新值」合并：用渲染时闭包里的 s 会把同一屏
+  // 其它控件刚保存的字段覆盖回旧值（输入框 blur 与开关 click 很容易撞车）
+  const patchLatest = (fn: (cur: AppSettings) => Partial<AppSettings>): void => {
+    patch(fn(useStore.getState().settings))
+  }
+  const patchApi = (p: Partial<typeof apiCfg>): void => {
+    const cur = useStore.getState().settings.apiServer ?? apiCfg
+    patch({ apiServer: { ...cur, ...p } })
+  }
   const genToken = (): string => (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '')
   const [apiStatus, setApiStatus] = useState<Awaited<ReturnType<typeof api.getApiStatus>> | null>(
     null
@@ -2547,71 +2689,77 @@ export function SettingsView(): React.JSX.Element {
   }, [s.apiServer])
 
   const patch = (p: Parameters<typeof api.updateSettings>[0]): void => {
-    void api.updateSettings(p).then((next) => {
-      useStore.setState({ settings: next })
-      useStore.getState().applyTheme(next)
-    })
+    void api
+      .updateSettings(p)
+      .then((next) => {
+        useStore.setState({ settings: next })
+        useStore.getState().applyTheme(next)
+      })
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`保存设置失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      })
   }
-  const project = projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null
+  // 账号/平台管理只作用于当前活动项目，不能兜底到 projects[0]
+  const project = useActiveProject()
   const refreshProviders = (): void => {
-    if (project) void api.listProviders(project.id).then((p) => useStore.setState({ providers: p }))
+    if (project)
+      void api
+        .listProviders(project.id)
+        .then((p) => useStore.setState({ providers: p }))
+        .catch(() => undefined)
   }
   const removeAccount = (providerId: string, accountId: string, label: string): void => {
     if (!project) return
     if (!window.confirm(`移除账号「${label || '未命名'}」？登录态分区会保留，只从列表中移除。`))
       return
-    void api.removeAccount(project.id, providerId, accountId).then(async () => {
-      const st = useStore.getState()
-      const closing = st.tabs.filter(
-        (t) => t.providerId === providerId && t.accountId === accountId
-      )
-      const activeClosed = closing.some((t) => t.id === st.activeTabId)
-      for (const t of closing) st.closeTab(t.id)
-      if (activeClosed) {
-        useStore.setState({
-          activeSession: null,
-          plan: null,
-          streamingText: '',
-          streamingTps: 0,
-          thinkingText: '',
-          pendingReplySessionId: '',
-          confirmRequest: null
-        })
-      }
-      await refreshProviders()
-    })
+    void api
+      .removeAccount(project.id, providerId, accountId)
+      .then(async () => {
+        const st = useStore.getState()
+        const closing = st.tabs.filter(
+          (t) => t.providerId === providerId && t.accountId === accountId
+        )
+        // closeTab 会同步 activeSession；不要再额外置空，否则会留下「有标签无会话」
+        for (const t of closing) st.closeTab(t.id)
+        await refreshProviders()
+      })
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`移除账号失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      })
   }
   const setDefaultAccount = (providerId: string, accountId: string | null): void => {
     if (!project) return
-    void api.setDefaultAccount(project.id, providerId, accountId).then(() => {
-      refreshProviders()
-      useStore
-        .getState()
-        .notice(accountId ? '已设为默认账号' : '已恢复隐式默认账号')
-    })
+    void api
+      .setDefaultAccount(project.id, providerId, accountId)
+      .then(() => {
+        refreshProviders()
+        useStore
+          .getState()
+          .notice(accountId ? '已设为默认账号' : '已恢复隐式默认账号')
+      })
+      .catch(() => undefined)
   }
   const removeProvider = (providerId: string, name: string): void => {
     if (!project) return
     if (!window.confirm(`移除自定义平台「${name}」？已登录的分区会保留，不会删除账号数据。`))
       return
-    void api.removeProvider(project.id, providerId).then(async () => {
-      const st = useStore.getState()
-      const closing = st.tabs.filter((t) => t.providerId === providerId)
-      const activeClosed = closing.some((t) => t.id === st.activeTabId)
-      for (const t of closing) st.closeTab(t.id)
-      if (activeClosed) {
-        useStore.setState({
-          activeSession: null,
-          plan: null,
-          streamingText: '',
-          streamingTps: 0,
-          thinkingText: '',
-          pendingReplySessionId: '',
-          confirmRequest: null
-        })
-      }
-      await refreshProviders()
-    })
+    void api
+      .removeProvider(project.id, providerId)
+      .then(async () => {
+        const st = useStore.getState()
+        const closing = st.tabs.filter((t) => t.providerId === providerId)
+        for (const t of closing) st.closeTab(t.id)
+        await refreshProviders()
+      })
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`移除平台失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      })
   }
   const [activeSection, setActiveSection] = useState('appearance')
   const [addPlatformOpen, setAddPlatformOpen] = useState(false)
@@ -2847,13 +2995,13 @@ export function SettingsView(): React.JSX.Element {
               label="安全 MOD"
               desc="识别并改写 AI 的拒绝回复"
               checked={s.securityMod.enabled}
-              onChange={(v) => patch({ securityMod: { ...s.securityMod, enabled: v } })}
+              onChange={(v) => patchLatest((cur) => ({ securityMod: { ...cur.securityMod, enabled: v } }))}
             />
             <ToggleRow
               label="CTF / 安全研究模式"
               desc="在系统提示词中附加授权测试上下文"
               checked={s.securityMod.ctfInject}
-              onChange={(v) => patch({ securityMod: { ...s.securityMod, ctfInject: v } })}
+              onChange={(v) => patchLatest((cur) => ({ securityMod: { ...cur.securityMod, ctfInject: v } }))}
             />
 
             <div className="mt-3">
@@ -2866,15 +3014,15 @@ export function SettingsView(): React.JSX.Element {
                 placeholder={'例如：\n请提供.*支付凭证'}
                 defaultValue={(s.securityMod.customPatterns ?? []).join('\n')}
                 onBlur={(e) =>
-                  patch({
+                  patchLatest((cur) => ({
                     securityMod: {
-                      ...s.securityMod,
+                      ...cur.securityMod,
                       customPatterns: e.target.value
                         .split('\n')
                         .map((x) => x.trim())
                         .filter(Boolean)
                     }
-                  })
+                  }))
                 }
               />
             </div>
@@ -2928,7 +3076,7 @@ export function SettingsView(): React.JSX.Element {
               label="看门狗（自动催继续）"
               desc="SSE 流长时间无数据说明 AI 卡住，自动发提示词让它接着写"
               checked={s.watchdog.enabled}
-              onChange={(v) => patch({ watchdog: { ...s.watchdog, enabled: v } })}
+              onChange={(v) => patchLatest((cur) => ({ watchdog: { ...cur.watchdog, enabled: v } }))}
             />
             {s.watchdog.enabled && (
               <div className="mb-3 ml-[44px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
@@ -2939,7 +3087,9 @@ export function SettingsView(): React.JSX.Element {
                     type="number"
                     value={Math.round(s.watchdog.idleMs / 1000)}
                     onChange={(e) =>
-                      patch({ watchdog: { ...s.watchdog, idleMs: Number(e.target.value) * 1000 } })
+                      patchLatest((cur) => ({
+                        watchdog: { ...cur.watchdog, idleMs: Number(e.target.value) * 1000 }
+                      }))
                     }
                   />
                   秒
@@ -2951,7 +3101,9 @@ export function SettingsView(): React.JSX.Element {
                     type="number"
                     value={s.watchdog.maxRetries}
                     onChange={(e) =>
-                      patch({ watchdog: { ...s.watchdog, maxRetries: Number(e.target.value) } })
+                      patchLatest((cur) => ({
+                        watchdog: { ...cur.watchdog, maxRetries: Number(e.target.value) }
+                      }))
                     }
                   />
                   次
@@ -2961,7 +3113,9 @@ export function SettingsView(): React.JSX.Element {
                   <input
                     className="field flex-1"
                     value={s.watchdog.prompt}
-                    onChange={(e) => patch({ watchdog: { ...s.watchdog, prompt: e.target.value } })}
+                    onChange={(e) =>
+                      patchLatest((cur) => ({ watchdog: { ...cur.watchdog, prompt: e.target.value } }))
+                    }
                   />
                 </label>
               </div>
@@ -2971,7 +3125,7 @@ export function SettingsView(): React.JSX.Element {
               label="失败自动重试"
               desc="回复中断或平台限流时按退避策略自动重发；429 用更长的等待"
               checked={s.retry.enabled}
-              onChange={(v) => patch({ retry: { ...s.retry, enabled: v } })}
+              onChange={(v) => patchLatest((cur) => ({ retry: { ...cur.retry, enabled: v } }))}
             />
             {s.retry.enabled && (
               <div className="mb-3 ml-[44px] flex flex-wrap items-center gap-x-4 gap-y-2 text-[12px]">
@@ -2982,7 +3136,9 @@ export function SettingsView(): React.JSX.Element {
                     type="number"
                     value={Math.round(s.retry.delayMinMs / 1000)}
                     onChange={(e) =>
-                      patch({ retry: { ...s.retry, delayMinMs: Number(e.target.value) * 1000 } })
+                      patchLatest((cur) => ({
+                        retry: { ...cur.retry, delayMinMs: Number(e.target.value) * 1000 }
+                      }))
                     }
                   />
                   秒
@@ -2994,7 +3150,9 @@ export function SettingsView(): React.JSX.Element {
                     type="number"
                     value={s.retry.maxRetries}
                     onChange={(e) =>
-                      patch({ retry: { ...s.retry, maxRetries: Number(e.target.value) } })
+                      patchLatest((cur) => ({
+                        retry: { ...cur.retry, maxRetries: Number(e.target.value) }
+                      }))
                     }
                   />
                   次
@@ -3006,7 +3164,9 @@ export function SettingsView(): React.JSX.Element {
                     type="number"
                     value={Math.round(s.retry.delay429Ms / 1000)}
                     onChange={(e) =>
-                      patch({ retry: { ...s.retry, delay429Ms: Number(e.target.value) * 1000 } })
+                      patchLatest((cur) => ({
+                        retry: { ...cur.retry, delay429Ms: Number(e.target.value) * 1000 }
+                      }))
                     }
                   />
                   秒
@@ -3048,7 +3208,9 @@ export function SettingsView(): React.JSX.Element {
               label="上下文耗尽自动继续"
               desc="平台提示上下文用完时，压缩当前会话并自动开新会话携带摘要继续"
               checked={s.autoContinue.enabled}
-              onChange={(v) => patch({ autoContinue: { ...s.autoContinue, enabled: v } })}
+              onChange={(v) =>
+                patchLatest((cur) => ({ autoContinue: { ...cur.autoContinue, enabled: v } }))
+              }
             />
           </SettingGroup>
 
@@ -3163,6 +3325,7 @@ export function SettingsView(): React.JSX.Element {
                                 void api
                                   .switchAccount(project.id, p.id, a.id)
                                   .then(refreshProviders)
+                                  .catch(() => undefined)
                               }
                             >
                               <span className="flex items-center gap-1.5">
@@ -3225,7 +3388,10 @@ export function SettingsView(): React.JSX.Element {
                           color: 'var(--text-dim)'
                         }}
                         onClick={() =>
-                          void api.addAccount(project.id, p.id, '').then(refreshProviders)
+                          void api
+                            .addAccount(project.id, p.id, '')
+                            .then(refreshProviders)
+                            .catch(() => undefined)
                         }
                       >
                         <IconPlus size={11} className="inline" /> 添加账号
@@ -3296,12 +3462,15 @@ export function SettingsView(): React.JSX.Element {
                       className="relative ml-auto h-[18px] w-[32px] shrink-0 rounded-full transition-colors duration-[150ms]"
                       style={{ background: enabled ? 'var(--accent)' : 'var(--border-strong)' }}
                       onClick={() =>
-                        patch({
+                        patchLatest((cur) => ({
                           sync: {
-                            ...s.sync,
-                            [ch.id]: { webhookUrl: cfg?.webhookUrl ?? '', enabled: !enabled }
+                            ...cur.sync,
+                            [ch.id]: {
+                              webhookUrl: cur.sync[ch.id]?.webhookUrl ?? '',
+                              enabled: !(cur.sync[ch.id]?.enabled ?? false)
+                            }
                           }
-                        })
+                        }))
                       }
                     >
                       <span
@@ -3319,12 +3488,15 @@ export function SettingsView(): React.JSX.Element {
                     placeholder={ch.placeholder}
                     defaultValue={cfg?.webhookUrl ?? ''}
                     onBlur={(e) =>
-                      patch({
+                      patchLatest((cur) => ({
                         sync: {
-                          ...s.sync,
-                          [ch.id]: { webhookUrl: e.target.value, enabled: cfg?.enabled ?? false }
+                          ...cur.sync,
+                          [ch.id]: {
+                            webhookUrl: e.target.value,
+                            enabled: cur.sync[ch.id]?.enabled ?? false
+                          }
                         }
-                      })
+                      }))
                     }
                   />
                 </div>
@@ -3407,7 +3579,8 @@ export function SettingsView(): React.JSX.Element {
                       Math.min(65535, Math.round(Number(e.target.value) || 6080))
                     )
                     e.currentTarget.value = String(n)
-                    if (n !== apiCfg.port) patchApi({ port: n })
+                    const curPort = useStore.getState().settings.apiServer?.port ?? apiCfg.port
+                    if (n !== curPort) patchApi({ port: n })
                   }}
                 />
               </div>
@@ -3421,7 +3594,8 @@ export function SettingsView(): React.JSX.Element {
                   placeholder="启用后自动生成，也可自己填"
                   onBlur={(e) => {
                     const v = e.target.value.trim()
-                    if (v !== apiCfg.token) patchApi({ token: v })
+                    const curToken = useStore.getState().settings.apiServer?.token ?? apiCfg.token
+                    if (v !== curToken) patchApi({ token: v })
                   }}
                 />
                 <button

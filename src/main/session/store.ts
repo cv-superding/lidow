@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
 import { nanoid } from 'nanoid'
 import type { ChatTurn, Session, SessionMeta } from '@shared/types'
 
@@ -24,8 +24,9 @@ export class SessionStore {
   private loadIndex(): void {
     try {
       const raw: unknown = JSON.parse(readFileSync(this.indexPath, 'utf-8'))
-      const arr = Array.isArray(raw) ? (raw as SessionMeta[]) : []
-      this.index = new Map(arr.map((m) => [m.id, m]))
+      if (!Array.isArray(raw)) throw new Error('index.json 不是数组')
+      const arr = raw as SessionMeta[]
+      this.index = new Map(arr.filter((m) => m && typeof m.id === 'string').map((m) => [m.id, m]))
       // 回填：早期版本的 update() 只把 title/时间写进索引，providerUrl 只落在会话文件里。
       // 不回填的话老会话切回来时永远找不到导航目标（表现为「切回旧会话上下文是空的」）。
       let repaired = false
@@ -42,9 +43,65 @@ export class SessionStore {
         }
       }
       if (repaired) this.saveIndex()
-    } catch {
+    } catch (e) {
+      // 新项目还没有 index.json：正常空索引，不需要告警/重建
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        this.index = new Map()
+        return
+      }
+      // 索引损坏时绝不能直接清空：会话文件还在，必须重建索引，
+      // 否则下次 saveIndex 会把只含新会话的索引写回去，旧会话永久消失。
+      try {
+        renameSync(this.indexPath, `${this.indexPath}.corrupt-${Date.now()}`)
+      } catch {
+        /* 文件不可移动 */
+      }
       this.index = new Map()
+      this.rebuildIndexFromFiles()
+      console.warn('[lidow:session] index.json 损坏，已从会话文件重建:', String(e))
     }
+  }
+
+  /** Session → 索引元数据（只剔除 turns，避免漏同步字段） */
+  private static metaOf(s: Session): SessionMeta {
+    return {
+      id: s.id,
+      projectId: s.projectId,
+      title: s.title,
+      providerId: s.providerId,
+      accountId: s.accountId,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      parentSessionId: s.parentSessionId,
+      compactedTurns: s.compactedTurns,
+      systemPromptSent: s.systemPromptSent,
+      archived: s.archived,
+      // 写空串而不是 undefined：JSON 会丢 undefined，启动回填逻辑会为每个
+      // 没有网页地址的会话重读整份历史文件（大会话启动明显变慢）
+      providerUrl: s.providerUrl ?? '',
+      titleLocked: s.titleLocked
+    }
+  }
+
+  /** 从 sessions/*.json 重建内存索引（跳过 index.json 自身） */
+  private rebuildIndexFromFiles(): void {
+    let files: string[]
+    try {
+      files = readdirSync(this.dir)
+    } catch {
+      return
+    }
+    for (const file of files) {
+      if (!file.endsWith('.json') || file === 'index.json') continue
+      try {
+        const s = JSON.parse(readFileSync(join(this.dir, file), 'utf-8')) as Session
+        if (!s || typeof s.id !== 'string') continue
+        this.index.set(s.id, SessionStore.metaOf(s))
+      } catch {
+        /* 损坏的会话文件跳过 */
+      }
+    }
+    if (this.index.size > 0) this.saveIndex()
   }
 
   private saveIndex(): void {
@@ -78,9 +135,10 @@ export class SessionStore {
       systemPromptSent: false
     }
     const session: Session = { ...meta, turns: [] }
+    // 先落会话文件再写索引：写文件失败时不要留下指向空会话的索引项
+    this.writeSession(session)
     this.index.set(meta.id, meta)
     this.saveIndex()
-    this.writeSession(session)
     return session
   }
 
@@ -110,20 +168,11 @@ export class SessionStore {
     if (!current) throw new Error(`会话不存在: ${sessionId}`)
     const next = fn(structuredClone(current))
     next.updatedAt = Date.now()
-    const meta = this.index.get(sessionId)
-    if (meta) {
-      meta.title = next.title
-      meta.updatedAt = next.updatedAt
-      meta.compactedTurns = next.compactedTurns
-      meta.archived = next.archived
-      // providerUrl 必须同步进索引：list() 读的是 index，
-      // 漏了它切会话时就拿不到「回到原对话」的导航目标
-      meta.providerUrl = next.providerUrl
-      meta.titleLocked = next.titleLocked
-      meta.systemPromptSent = next.systemPromptSent
-      this.saveIndex()
-    }
+    // 先写会话文件，再整体同步索引：漏字段（如 accountId）会让网页监听/分区
+    // 在重启后按旧账号去错位置；写文件失败时索引也保持旧值。
     this.writeSession(next)
+    this.index.set(sessionId, SessionStore.metaOf(next))
+    this.saveIndex()
     return next
   }
 

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useStore } from '../store'
 import { IconClose, IconDownload, IconRefresh } from './icons'
 
@@ -24,8 +25,30 @@ export function UpdatePrompt(): React.JSX.Element | null {
   const downloading = state.phase === 'downloading'
   const downloaded = state.phase === 'downloaded'
   const modal = state.phase === 'available' || (state.phase === 'error' && Boolean(state.manual))
+  const uiKey = `${state.phase}:${state.version ?? ''}`
+  // 失败弹窗的 version 常常为空，store 里的 dismissedVersion 无法区分「关过」与「新失败」
+  const [closedKey, setClosedKey] = useState('')
+  useEffect(() => {
+    // 新一轮检查/下载开始后重新允许展示
+    setClosedKey('')
+  }, [state.phase, state.version])
+  useEffect(() => {
+    if (!modal) return
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      setClosedKey(uiKey)
+      dismiss()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [modal, uiKey, dismiss])
+  const closeModal = (): void => {
+    setClosedKey(uiKey)
+    dismiss()
+  }
   if (!modal && !downloading && !downloaded) return null
   // 点「稍后」后隐藏同一版本；下载/下载完成/失败仍要展示状态
+  if (modal && closedKey === uiKey) return null
   if (state.phase === 'available' && dismissed && dismissed === state.version) return null
 
   const percent = Math.max(0, Math.min(100, Math.round(state.percent ?? 0)))
@@ -98,7 +121,7 @@ export function UpdatePrompt(): React.JSX.Element | null {
                 className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
                 style={{ color: 'var(--text-hint)' }}
                 title="稍后提醒"
-                onClick={dismiss}
+                onClick={closeModal}
               >
                 <IconClose size={11} />
               </button>
@@ -136,7 +159,7 @@ export function UpdatePrompt(): React.JSX.Element | null {
             className="flex items-center justify-end gap-2 border-t px-5 py-3"
             style={{ borderColor: 'var(--border-soft)', background: 'var(--surface-sunken)' }}
           >
-            <button className="btn btn-sm btn-ghost" onClick={dismiss}>
+            <button className="btn btn-sm btn-ghost" onClick={closeModal}>
               稍后
             </button>
             {state.phase === 'error' ? (

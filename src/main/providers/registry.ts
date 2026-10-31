@@ -563,13 +563,14 @@ export class ProviderRegistry {
     if (!provider) return
     const account = provider.accounts.find((a) => a.id === accountId)
     if (!account) return
-    const label =
-      patch.label !== undefined && account.labelAuto !== false ? patch.label : account.label
+    // labelAuto=false 表示用户手动命名过：登录态变化不能把命名锁重置回自动
+    const auto = account.labelAuto !== false
+    const label = patch.label !== undefined && auto ? patch.label : account.label
     const loggedIn = patch.loggedIn !== undefined ? patch.loggedIn : account.loggedIn
     if (label === account.label && loggedIn === account.loggedIn) return
     this.update(providerId, {
       accounts: provider.accounts.map((a) =>
-        a.id === accountId ? { ...a, label, loggedIn, labelAuto: true } : a
+        a.id === accountId ? { ...a, label, loggedIn, labelAuto: auto } : a
       )
     })
   }
@@ -591,10 +592,12 @@ export class ProviderRegistry {
     const provider = this.get(providerId)
     if (!provider) return
     const remaining = provider.accounts.filter((a) => a.id !== accountId)
-    // 移除的是当前账号时，回退到隐式默认分区，而不是随便选另一个未登录账号
+    // 移除的是当前/默认账号时，回退到隐式默认分区，而不是随便选另一个未登录账号。
+    // defaultAccountId 也要清：否则下次新建会话会继续指向一个已删除的账号 id。
     this.update(providerId, {
       accounts: remaining,
-      ...(provider.activeAccountId === accountId ? { activeAccountId: undefined } : {})
+      ...(provider.activeAccountId === accountId ? { activeAccountId: undefined } : {}),
+      ...(provider.defaultAccountId === accountId ? { defaultAccountId: undefined } : {})
     })
   }
 

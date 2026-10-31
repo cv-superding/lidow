@@ -71,6 +71,12 @@ export interface LoopDeps {
   ) => Promise<string>
   /** 中断网页侧生成 */
   interruptPage: (sessionId: string) => void
+  /** 用户停止：立即 reject 当前等待，不能指望网页一定响应停止按钮 */
+  abortReply?: (sessionId: string) => void
+  /** 用户停止：压制网页后续 chunk/最终回答，避免又接管或把 UI 变回“生成中” */
+  suppressPage?: (sessionId: string) => void
+  /** 看门狗兜底：页面已静默但有正文时，按当前正文直接收尾（不再发“请继续”） */
+  finishReply?: (sessionId: string, text: string) => boolean
   /** 放弃当前等待（看门狗判死/超时后清理，避免下一轮报「已有等待中的回复请求」） */
   abandonReply?: (sessionId: string) => void
   /** 工具执行遮罩（网页内横幅 + 停止按钮，cuckoo tool-mask 同款） */
@@ -219,8 +225,20 @@ export class AgentLoop {
   }
 
   stop(sessionId: string, level: StopLevel): void {
+    if (level === 'generate' || level === 'all') {
+      // 先压制网页事件，再拒绝等待，最后点网页停止：
+      // 即使平台停止按钮无效，本地界面也必须立刻退出“生成中”，且不再接管后续回复。
+      this.deps.suppressPage?.(sessionId)
+      this.pendingExternal.delete(sessionId)
+      this.deps.abortReply?.(sessionId)
+      // 即使主进程里没有这个任务的 running 记录（旧窗口/重载），也要让 UI 退出忙碌
+      this.deps.emit({ type: 'loop-state', sessionId, running: false })
+    }
     const r = this.running.get(sessionId)
-    if (!r) return
+    if (!r) {
+      Logger.info('loop', `停止请求（当前无运行任务）session=${sessionId} level=${level}`)
+      return
+    }
     r.stopped.add(level)
     Logger.info('loop', `停止请求 session=${sessionId} level=${level}`)
     if (level === 'generate' || level === 'all') this.deps.interruptPage(sessionId)
@@ -233,8 +251,18 @@ export class AgentLoop {
   private rekeyRunning(state: RunningLoop, from: string, to: string): void {
     if (from === to) return
     if (this.running.get(from) === state) this.running.delete(from)
+    // 网页侧的最终回答可能按旧会话 id 缓存：迁移到续接后的新会话，
+    // 否则 run() 收尾只查新 id，旧缓存永远留到下一次运行
+    const pending = this.pendingExternal.get(from)
+    if (pending !== undefined) {
+      this.pendingExternal.delete(from)
+      this.pendingExternal.set(to, pending)
+    }
     state.sessionId = to
     this.running.set(to, state)
+    // 渲染层把“运行中”从旧会话迁到续接后的新会话
+    this.deps.emit({ type: 'loop-state', sessionId: from, running: false })
+    this.deps.emit({ type: 'loop-state', sessionId: to, running: true })
   }
 
   /** 从 running 表移除（键可能已经迁移，按对象匹配而不是按最初 id） */
@@ -284,6 +312,7 @@ export class AgentLoop {
     }
     const state: RunningLoop = { sessionId, stopped: new Set() }
     this.running.set(sessionId, state)
+    this.deps.emit({ type: 'loop-state', sessionId, running: true })
 
     try {
       // 丢弃初始化提示/网页直发遗留的思考缓冲，避免挂到新任务的第一轮
@@ -337,9 +366,13 @@ export class AgentLoop {
       this.handleLoopError(state.sessionId, err)
     } finally {
       this.finishRunning(state)
+      // 任务真正结束：UI 才从“停止生成”切回发送箭头
+      this.deps.emit({ type: 'loop-state', sessionId: state.sessionId, running: false })
       const pending = this.pendingExternal.get(state.sessionId)
       if (pending) {
         this.pendingExternal.delete(state.sessionId)
+        // 收尾阶段到达的「外部回复」通常只是同一轮的重复上报（DOM + 网络双通道）。
+        // 只补文本，绝不重新接管执行工具：否则工具会跑第二遍（实测 snake.html 被写两次）。
         this.syncExternalReply(state.sessionId, pending)
       }
       // 任务收尾才是自动压缩的正确时机：此刻没有在途的发送/等待，
@@ -364,21 +397,26 @@ export class AgentLoop {
     // 压缩正在等摘要回复：不能再起一轮发送/等待，否则两边互相抢
     if (this.compacting.has(sessionId)) return
     if (!text.trim()) return
+    const parsed = parseToolCalls(text)
     // 去重：同一条回复会经两条路到达（DOM stream-end 兜底 + 网络层 net-response），
     // 重复接管会弹两遍提示、执行两遍工具。按「会话 + 归一化文本指纹 + 时间窗」拦掉。
-    const normalized = normalizeExternalText(text)
+    // 入库/比对都使用去掉工具块后的正文：循环自己落盘的 assistant.text 也是 cleanText，
+    // 用带工具块的原文比较会永远对不上。
+    const normalized = normalizeExternalText(parsed.cleanText || text)
     if (!normalized) return
-    // 网络层通常先落盘；DOM 结束事件晚到时内容其实已经写进最后一条 assistant 回合
-    const lastAssistant = [...(this.deps.store.get(sessionId)?.turns ?? [])]
-      .reverse()
-      .find((t) => t.role === 'assistant')
+    // 网络层通常先落盘；DOM 结束事件晚到时内容其实已经写进 assistant 回合。
+    // 不能只看最后一条：循环自己的最终摘要可能已经追加在后面，
+    // 而带工具块的上一段回答才是重复上报的那一条。
+    const turns = this.deps.store.get(sessionId)?.turns ?? []
+    const recentDuplicate = turns.some(
+      (t) =>
+        t.role === 'assistant' &&
+        Date.now() - t.ts < 60_000 &&
+        normalizeExternalText(t.text) === normalized
+    )
     // 只拦「刚刚落盘」的同一条回复（网络层先到、DOM 晚到）；很久以前问过同样问题
     // 得到相同回答时，这是新一轮，不能吞掉。
-    if (
-      lastAssistant &&
-      Date.now() - lastAssistant.ts < 60_000 &&
-      normalizeExternalText(lastAssistant.text) === normalized
-    ) {
+    if (recentDuplicate) {
       Logger.info('loop', `忽略已落盘的重复网页回复 session=${sessionId}`)
       return
     }
@@ -398,10 +436,10 @@ export class AgentLoop {
     }
     const state: RunningLoop = { sessionId, stopped: new Set() }
     this.running.set(sessionId, state)
+    this.deps.emit({ type: 'loop-state', sessionId, running: true })
     try {
       // 网页直发的回复也可能带思考流：取走后随本轮落盘（无工具调用时自然丢弃）
       const think = this.deps.takeThinking(sessionId)
-      const parsed = parseToolCalls(text)
       if (parsed.calls.length === 0) {
         // 没有标准工具块。但如果是「有工具意图、格式野了」（XML/DSML/裸 JSON），
         // 补一轮带系统提示词的发送，把它拉回 lidow 协议 —— 否则用户会看到
@@ -489,8 +527,8 @@ export class AgentLoop {
       const turn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'assistant',
-        // 入库用清理后的文本：方言标签不进转录（与 toolLoop 口径一致）
-        text: parsed.cleanText || text,
+        // 入库用清理后的文本：方言标签/工具块不进转录（与 toolLoop 口径一致）
+        text: parsed.calls.length > 0 ? parsed.cleanText : parsed.cleanText || text,
         ts: Date.now(),
         status: 'streaming',
         think: think || undefined
@@ -529,12 +567,15 @@ export class AgentLoop {
         state,
         formatObservations(
           results.map((r) => ({ name: r.name, ok: r.ok, output: r.output, error: r.error }))
-        )
+        ),
+        // 这是网页直发回复执行完工具后的第一轮：同样要有发送间隔
+        true
       )
     } catch (err) {
       this.handleLoopError(state.sessionId, err)
     } finally {
       this.finishRunning(state)
+      this.deps.emit({ type: 'loop-state', sessionId: state.sessionId, running: false })
       const pending = this.pendingExternal.get(state.sessionId)
       if (pending) {
         this.pendingExternal.delete(state.sessionId)
@@ -679,7 +720,9 @@ export class AgentLoop {
   private async toolLoop(
     sessionId: string,
     state: RunningLoop,
-    initialPrompt: string
+    initialPrompt: string,
+    /** 首轮之前也等待发送间隔：网页直发任务执行完工具后由调用方补这一轮 */
+    pauseBeforeFirst = false
   ): Promise<void> {
     const store = this.deps.store
     let prompt = initialPrompt
@@ -703,6 +746,12 @@ export class AgentLoop {
     let summaryNudged = false
     for (let round = 0; round < MAX_TURNS; round++) {
       if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
+      // 工具结果/重试/催促都是自动发送：每轮之间显式等待设置的网页发送间隔。
+      // 仅靠“回复结束后多久”会被工具执行时间吃掉（实测 1 秒间隔看起来完全没生效）。
+      if (round > 0 || (round === 0 && pauseBeforeFirst)) {
+        await this.waitSendInterval(activeSid, `第 ${round + 1} 轮自动发送`)
+        if (state.stopped.has('auto-loop')) throw new Error('用户中止了自动循环')
+      }
 
       // 1. 发送并收集回复（含流式 chunk 上报 + 看门狗 + 拒绝改写）
       let reply = await collect(prompt)
@@ -763,7 +812,9 @@ export class AgentLoop {
       const turn: ChatTurn = {
         id: `turn_${nanoid(8)}`,
         role: 'assistant',
-        text: parsed.cleanText || reply,
+        // 只有工具块时不要回退到原文：否则工具块会进入会话转录/HTTP API 输出。
+        // 纯文本回复才使用 cleanText/reply。
+        text: parsed.calls.length > 0 ? parsed.cleanText : parsed.cleanText || reply,
         ts: Date.now(),
         // 有工具调用时先标记 streaming：UI 据此显示「正在执行中 · Ns」计时；
         // 工具批次结束后再改回 done。
@@ -957,6 +1008,7 @@ export class AgentLoop {
     })
     let text = ''
     try {
+      await this.waitSendInterval(sessionId, '收尾摘要')
       // 收尾只允许一次重试，避免摘要请求本身又把用户拖住
       const r = await this.collectReply(sessionId, WRAP_UP_PROMPT, {
         retries: 1,
@@ -1082,6 +1134,7 @@ export class AgentLoop {
     let continueCount = 0
 
     for (;;) {
+      if (runState?.stopped.has('generate')) throw new Error('用户中止了生成')
       try {
         return { text: await this.awaitWithWatchdog(sid, cur, wdCfg), sessionId: sid }
       } catch (err) {
@@ -1200,6 +1253,18 @@ export class AgentLoop {
       if (idleTimer) clearTimeout(idleTimer)
       idleTimer = setTimeout(() => {
         if (settled) return
+        // 页面已经静默、但正文其实已经生成：按当前正文收尾。
+        // 继续发“请继续”会在网页里留下一条像用户亲手发的消息，还会触发新回复。
+        if (latestPartial.trim().length >= 20 && this.deps.finishReply?.(sessionId, latestPartial)) {
+          Logger.info('loop', '看门狗：页面静默但已有正文，按当前内容收尾')
+          this.deps.emit({
+            type: 'notice',
+            sessionId,
+            level: 'info',
+            message: '网页已停止输出，已按当前内容收尾'
+          })
+          return
+        }
         if (wd.maxRetries >= 0 && nudges >= wd.maxRetries) {
           Logger.warn('loop', `看门狗已达上限 ${wd.maxRetries} 次，判定任务中断`)
           // 催了这么多次仍然没动静 = 这一轮确实死了。必须抛错交给上层重试，
@@ -1234,6 +1299,9 @@ export class AgentLoop {
     // 先等上一轮真正停下来，再注册等待器：否则上一轮的 stream-end 会把
     // 本次等待误判为“已回复”，重试提示也可能被插进正在生成的回复里。
     await this.deps.waitPageIdle?.(sessionId)
+    const isStopped = (): boolean =>
+      this.running.get(sessionId)?.stopped.has('generate') === true
+    if (isStopped()) throw new Error('用户中止了生成')
 
     const chunkPromise = this.deps.awaitReply(sessionId, (partial, tps) => {
       latestPartial = partial
@@ -1250,6 +1318,11 @@ export class AgentLoop {
     armWatchdog()
     try {
       await this.deps.sendToPage(sessionId, prompt)
+      // 停止可能发生在发送期间：此时等待器已经注册，直接摘掉并退出
+      if (isStopped()) {
+        this.deps.abortReply?.(sessionId)
+        throw new Error('用户中止了生成')
+      }
       // 看门狗判死与正常回复竞速（看门狗只在静默超限时 reject，其余时候永远 pending）
       const reply = await Promise.race([chunkPromise, watchdogPromise])
       settled = true
@@ -1275,6 +1348,20 @@ export class AgentLoop {
 
   private sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms))
+  }
+
+  /** 自动发送之间的最小间隔（设置值；0 表示不额外等待） */
+  private async waitSendInterval(sessionId: string, label: string): Promise<void> {
+    const raw = Number(this.deps.settings().webSendIntervalMs ?? 0)
+    const ms = Number.isFinite(raw) ? Math.max(0, Math.min(60_000, Math.round(raw))) : 0
+    if (ms <= 0) return
+    Logger.info('loop', `发送间隔：${label}前等待 ${ms}ms`)
+    this.deps.emit({ type: 'send-wait', sessionId, waiting: true })
+    try {
+      await this.sleep(ms)
+    } finally {
+      this.deps.emit({ type: 'send-wait', sessionId, waiting: false })
+    }
   }
 
   /**

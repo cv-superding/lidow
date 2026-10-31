@@ -169,6 +169,21 @@ export function createOpenAiHandler(
   host: OpenAiHost
 ): (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean> {
   const queues = new Map<string, Promise<void>>()
+  /** 同一会话可能有多个流式消费者：先断开的那个不能停掉别人的任务 */
+  const streamConsumers = new Map<string, number>()
+  const acquireStream = (sessionId: string): void => {
+    streamConsumers.set(sessionId, (streamConsumers.get(sessionId) ?? 0) + 1)
+  }
+  /** 返回 true 表示这是最后一个消费者 */
+  const releaseStream = (sessionId: string): boolean => {
+    const n = streamConsumers.get(sessionId) ?? 0
+    if (n <= 1) {
+      streamConsumers.delete(sessionId)
+      return true
+    }
+    streamConsumers.set(sessionId, n - 1)
+    return false
+  }
 
   const enqueue = <T>(key: string, task: () => Promise<T>): Promise<T> => {
     const prev = queues.get(key) ?? Promise.resolve()
@@ -321,15 +336,22 @@ export function createOpenAiHandler(
     })
     let closed = false
     let ended = false
-    res.on('close', () => {
-      closed = true
-      if (!ended) {
+    let released = false
+    acquireStream(sessionId)
+    const releaseConsumer = (): void => {
+      if (released) return
+      released = true
+      if (releaseStream(sessionId)) {
         try {
           host.stop(sessionId)
         } catch {
           /* 页面已关闭 */
         }
       }
+    }
+    res.on('close', () => {
+      closed = true
+      releaseConsumer()
     })
     const write = (text: string): void => {
       // ended 只用于防止重复收尾；结束帧本身还要写出去
@@ -352,6 +374,7 @@ export function createOpenAiHandler(
       send({}, 'stop')
       write('data: [DONE]\n\n')
       if (!closed) res.end()
+      releaseConsumer()
     }
     const fail = (err: unknown): void => {
       if (ended) return
@@ -360,6 +383,7 @@ export function createOpenAiHandler(
       write(`data: ${JSON.stringify(errorBody(err))}\n\n`)
       write('data: [DONE]\n\n')
       if (!closed) res.end()
+      releaseConsumer()
     }
 
     send({ role: 'assistant', content: '' })

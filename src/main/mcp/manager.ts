@@ -28,6 +28,8 @@ const SDK_TIMEOUT = 10_000
 export class McpManager {
   private store: JsonStore<McpStoreData>
   private connections = new Map<string, McpConnection>()
+  /** 同一服务的并发 connect 必须合并，否则会起两个子进程并把其中一个泄漏 */
+  private connecting = new Map<string, Promise<void>>()
 
   constructor(userDataDir: string) {
     this.store = new JsonStore<McpStoreData>(join(userDataDir, 'mcp.json'), { servers: [] })
@@ -44,16 +46,30 @@ export class McpManager {
     return this.listServers()
   }
 
-  removeServer(name: string): McpServerConfig[] {
-    void this.disconnect(name)
+  async removeServer(name: string): Promise<McpServerConfig[]> {
+    // 先删配置，再断开：连接中的任务完成后会发现配置已删除并自行关闭
     this.store.update((d) => ({ servers: d.servers.filter((s) => s.name !== name) }))
+    await this.disconnect(name)
     return this.listServers()
   }
 
   /** 连接单个服务并拉取三组件清单 */
   async connect(name: string): Promise<void> {
+    if (this.connections.has(name)) return
+    const inflight = this.connecting.get(name)
+    if (inflight) return inflight
+    const run = this.doConnect(name)
+    const cleanup = (): void => {
+      if (this.connecting.get(name) === run) this.connecting.delete(name)
+    }
+    run.then(cleanup, cleanup)
+    this.connecting.set(name, run)
+    return run
+  }
+
+  private async doConnect(name: string): Promise<void> {
     const cfg = this.listServers().find((s) => s.name === name)
-    if (!cfg || this.connections.has(name)) return
+    if (!cfg) return
     try {
       const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
       const client = new Client({ name: 'lidow', version: '0.1.0' })
@@ -74,24 +90,29 @@ export class McpManager {
       const conn: McpConnection = { name, client, tools: [], resources: [], prompts: [] }
 
       try {
-        const tools = (await Promise.race([client.listTools(), timeout(SDK_TIMEOUT)])) as { tools?: { name: string; description?: string }[] }
+        const tools = (await withTimeout(client.listTools(), SDK_TIMEOUT, `MCP ${name} 拉取工具超时`)) as { tools?: { name: string; description?: string }[] }
         conn.tools = (tools.tools ?? []).map((t) => ({ server: name, name: t.name, description: t.description ?? '' }))
       } catch {
         /* 服务可能不支持 tools */
       }
       try {
-        const res = (await Promise.race([client.listResources(), timeout(SDK_TIMEOUT)])) as { resources?: { name: string; uri: string; description?: string }[] }
+        const res = (await withTimeout(client.listResources(), SDK_TIMEOUT, `MCP ${name} 拉取资源超时`)) as { resources?: { name: string; uri: string; description?: string }[] }
         conn.resources = res.resources ?? []
       } catch {
         /* ignore */
       }
       try {
-        const pr = (await Promise.race([client.listPrompts(), timeout(SDK_TIMEOUT)])) as { prompts?: { name: string; description?: string }[] }
+        const pr = (await withTimeout(client.listPrompts(), SDK_TIMEOUT, `MCP ${name} 拉取提示超时`)) as { prompts?: { name: string; description?: string }[] }
         conn.prompts = pr.prompts ?? []
       } catch {
         /* ignore */
       }
 
+      // 连接期间服务被移除：不要留下孤儿连接
+      if (!this.listServers().some((s) => s.name === name)) {
+        await (client as { close?: () => Promise<void> }).close?.().catch(() => undefined)
+        return
+      }
       this.connections.set(name, conn)
       Logger.info('mcp', `已连接 ${name}：${conn.tools.length} 工具 / ${conn.resources.length} 资源 / ${conn.prompts.length} 提示`)
     } catch (e) {
@@ -141,7 +162,7 @@ export class McpManager {
     const conn = this.connections.get(server)
     if (!conn) throw new Error(`MCP 服务未连接: ${server}`)
     const client = conn.client as { readResource: (a: unknown) => Promise<unknown> }
-    const res = (await Promise.race([client.readResource({ uri }), timeout(30_000)])) as {
+    const res = (await withTimeout(client.readResource({ uri }), 30_000, 'MCP 读取资源超时')) as {
       contents?: { uri: string; mimeType?: string; text?: string; blob?: string }[]
     }
     return (res.contents ?? [])
@@ -155,15 +176,16 @@ export class McpManager {
     const conn = this.connections.get(server)
     if (!conn) throw new Error(`MCP 服务未连接: ${server}`)
     const client = conn.client as { callTool: (a: unknown) => Promise<unknown> }
-    const res = (await Promise.race([client.callTool({ name: toolName, arguments: args }), timeout(60_000)])) as {
+    const res = (await withTimeout(client.callTool({ name: toolName, arguments: args }), 60_000, 'MCP 工具调用超时')) as {
       content?: { type: string; text?: string }[]
       isError?: boolean
     }
-    if (res.isError) throw new Error('MCP 工具返回错误')
-    return (res.content ?? [])
+    const text = (res.content ?? [])
       .map((c) => c.text ?? '')
       .join('\n')
       .slice(0, 8000)
+    if (res.isError) throw new Error(text || 'MCP 工具返回错误')
+    return text
   }
 
   disposeAll(): void {
@@ -171,6 +193,14 @@ export class McpManager {
   }
 }
 
-function timeout<T>(ms: number): Promise<T> {
-  return new Promise((_, reject) => setTimeout(() => reject(new Error(`MCP 操作超时 ${ms}ms`)), ms))
+/** 超时竞速并清理定时器：原实现的 setTimeout 成功后仍挂着（最长 60s） */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms)
+    timer.unref?.()
+  })
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }

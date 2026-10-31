@@ -44,6 +44,8 @@ export interface LidowApi {
     activeProjectId: string | null
     settings: AppSettings
     version: string
+    /** 主进程正在执行 Agent 循环的会话（窗口重载后恢复“停止生成”状态） */
+    runningSessionIds: string[]
   }>
   /** 内置 HTTP API 运行状态（桌面版按设置启停，Web 版常驻） */
   getApiStatus(): Promise<{
@@ -370,6 +372,10 @@ export type LidowEvent =
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }
+  /** Agent 任务整体开始/结束：UI 用它保持“停止生成”直到最后一轮真正收尾 */
+  | { type: 'loop-state'; sessionId: string; running: boolean }
+  /** 正在等待网页发送间隔（工具结果即将自动发送） */
+  | { type: 'send-wait'; sessionId: string; waiting: boolean }
   | { type: 'tool-start'; sessionId: string; result: ToolResult }
   | {
       type: 'tool-confirm-required'

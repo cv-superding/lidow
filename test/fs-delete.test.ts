@@ -1,8 +1,16 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { deleteFileTool, writeTool } from '@main/tools/fs'
+import { deleteFileTool, editTool, writeTool } from '@main/tools/fs'
 import type { ToolContext } from '@main/tools/types'
 
 function makeCtx(
@@ -13,6 +21,7 @@ function makeCtx(
     threshold?: number
     batch?: { count: number; approved: boolean }
     onConfirm?: (reason: string) => void
+    permissionMode?: ToolContext['settings']['permissionMode']
   } = {}
 ): ToolContext {
   return {
@@ -25,7 +34,7 @@ function makeCtx(
       dangerConfirm: true,
       deleteProtection: opts.protection ?? false,
       batchDeleteThreshold: opts.threshold ?? 200,
-      permissionMode: 'autonomous'
+      permissionMode: opts.permissionMode ?? 'autonomous'
     },
     deleteBatch: opts.batch,
     confirm: async (reason) => {
@@ -146,5 +155,34 @@ describe('deleteFile 安全边界', () => {
       expect(r.display.patch).toContain('+new line')
       expect(r.display.patch).toContain('-old line')
     }
+  })
+
+  it('plan/ask 模式每次删除都要确认，不能走批量阈值静默删除', async () => {
+    const root = tmp()
+    writeFileSync(join(root, 'a.txt'), 'a')
+    writeFileSync(join(root, 'b.txt'), 'b')
+    const confirms: string[] = []
+    const batch = { count: 0, approved: false }
+    const ctx = makeCtx(root, true, {
+      protection: true,
+      threshold: 200,
+      batch,
+      permissionMode: 'plan',
+      onConfirm: (reason) => confirms.push(reason)
+    })
+    expect((await deleteFileTool.run({ path: 'a.txt' }, ctx)).ok).toBe(true)
+    expect((await deleteFileTool.run({ path: 'b.txt' }, ctx)).ok).toBe(true)
+    expect(confirms).toHaveLength(2)
+  })
+
+  it('edit 的替换内容不会被当成 $& / $1 展开', async () => {
+    const root = tmp()
+    writeFileSync(join(root, 'code.txt'), 'hello TARGET')
+    const r = await editTool.run(
+      { path: 'code.txt', oldText: 'TARGET', newText: 'a$&b $1 $$' },
+      makeCtx(root)
+    )
+    expect(r.ok).toBe(true)
+    expect(readFileSync(join(root, 'code.txt'), 'utf-8')).toBe('hello a$&b $1 $$')
   })
 })

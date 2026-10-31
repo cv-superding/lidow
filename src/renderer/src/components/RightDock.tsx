@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
-import { useProject, useStore, type AuxPanel } from '../store'
+import { useActiveProject, useStore, type AuxPanel } from '../store'
 import { ResizeHandle } from './ResizeHandle'
 import { TerminalPanel } from './TerminalPanel'
 import {
   IconCheck,
+  IconChevronRight,
   IconClose,
   IconDiff,
   IconFile,
@@ -94,7 +95,10 @@ export function RightDock(): React.JSX.Element | null {
       <div className="min-h-0 flex-1 overflow-hidden">
         {panel === 'files' && <FilesPanel />}
         {panel === 'tasks' && <TasksPanel />}
-        {panel === 'terminal' && <TerminalPanel embedded onClose={closeAux} />}
+        {/* 终端常驻挂载：切到文件/任务面板时不能丢执行中的输出与历史 */}
+        <div className={panel === 'terminal' ? 'h-full' : 'hidden'}>
+          <TerminalPanel embedded active={panel === 'terminal'} onClose={closeAux} />
+        </div>
         {panel === 'review' && <ReviewPanel />}
       </div>
     </div>
@@ -117,7 +121,7 @@ function EmptyHint({ title, hint }: { title: string; hint?: string }): React.JSX
 }
 
 function FilesPanel(): React.JSX.Element {
-  const project = useProject(useStore())
+  const project = useActiveProject()
   const fileTree = useStore((s) => s.fileTree)
   const selectedFile = useStore((s) => s.selectedFile)
   const [loading, setLoading] = useState(false)
@@ -152,38 +156,82 @@ function FilesPanel(): React.JSX.Element {
     setLoading(true)
     void api
       .readFileTree(pid, '', 3)
-      .then((tree) => useStore.setState({ fileTree: tree }))
+      .then((tree) => {
+        if (useStore.getState().activeProjectId === pid) useStore.setState({ fileTree: tree })
+      })
       .catch(() => undefined)
       .finally(() => setLoading(false))
   }
 
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
+  useEffect(() => {
+    setCollapsedDirs(new Set())
+  }, [pid])
+  const toggleDir = (path: string): void => {
+    setCollapsedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const openSeq = useRef(0)
   const openFile = (path: string): void => {
     if (!pid) return
+    const seq = ++openSeq.current
     void api
       .readFileContent(pid, path)
-      .then((content) => useStore.setState({ selectedFile: { path, content } }))
+      .then((content) => {
+        // 快速连点两个文件时，旧响应不能覆盖新预览
+        if (seq !== openSeq.current) return
+        if (useStore.getState().activeProjectId !== pid) return
+        useStore.setState({ selectedFile: { path, content } })
+      })
       .catch((e) => useStore.getState().notice(`读取失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
   }
 
   const renderNodes = (items: typeof fileTree, depth: number): React.JSX.Element[] =>
-    items.map((n) => (
-      <div key={n.path}>
-        <button
-          className={`flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[4px] pr-2 text-left text-[11.5px] transition-colors duration-[110ms] ${
-            selectedFile?.path === n.path ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
-          }`}
-          style={{
-            paddingLeft: 6 + depth * 12,
-            color: selectedFile?.path === n.path ? 'var(--text)' : n.type === 'dir' ? 'var(--text-body)' : 'var(--text-dim)'
-          }}
-          onClick={() => n.type === 'file' && openFile(n.path)}
-        >
-          <span className="shrink-0">{n.type === 'dir' ? <IconFolderColor size={13} /> : <IconFile size={12} />}</span>
-          <span className="min-w-0 flex-1 truncate">{n.name}</span>
-        </button>
-        {n.children && renderNodes(n.children, depth + 1)}
-      </div>
-    ))
+    items.map((n) => {
+      const isDir = n.type === 'dir'
+      const collapsed = collapsedDirs.has(n.path)
+      return (
+        <div key={n.path}>
+          <button
+            className={`flex w-full items-center gap-1 truncate rounded-[var(--r-sm)] py-[4px] pr-2 text-left text-[11.5px] transition-colors duration-[110ms] ${
+              selectedFile?.path === n.path
+                ? 'bg-[var(--bg-active)]'
+                : 'hover:bg-[var(--bg-hover)]'
+            }`}
+            style={{
+              paddingLeft: 6 + depth * 12,
+              color:
+                selectedFile?.path === n.path
+                  ? 'var(--text)'
+                  : isDir
+                    ? 'var(--text-body)'
+                    : 'var(--text-dim)'
+            }}
+            aria-expanded={isDir ? !collapsed : undefined}
+            onClick={() => (isDir ? toggleDir(n.path) : openFile(n.path))}
+          >
+            <span className="flex w-3 shrink-0 justify-center">
+              {isDir && (
+                <IconChevronRight
+                  size={10}
+                  className={`transition-transform duration-150 ${collapsed ? '' : 'rotate-90'}`}
+                />
+              )}
+            </span>
+            <span className="shrink-0">
+              {isDir ? <IconFolderColor size={13} /> : <IconFile size={12} />}
+            </span>
+            <span className="min-w-0 flex-1 truncate">{n.name}</span>
+          </button>
+          {isDir && !collapsed && n.children && renderNodes(n.children, depth + 1)}
+        </div>
+      )
+    })
 
   if (!project) {
     return <EmptyHint title="先打开一个项目" hint="项目打开后可在这里浏览工作区文件" />
@@ -253,22 +301,44 @@ function TasksPanel(): React.JSX.Element {
       useStore.setState({ todos: [] })
       return
     }
+    let alive = true
     void api
       .listTodos()
-      .then((t) => useStore.setState({ todos: t }))
+      .then((t) => {
+        // 切项目后旧项目的任务列表可能晚到
+        if (alive && useStore.getState().activeProjectId === projectId)
+          useStore.setState({ todos: t })
+      })
       .catch(() => undefined)
+    return () => {
+      alive = false
+    }
   }, [projectId])
 
   const add = (): void => {
     const text = title.trim()
     if (!text) return
-    void api.addTodo(text).then((t) => {
-      useStore.setState({ todos: t })
-      setTitle('')
-    })
+    void api
+      .addTodo(text)
+      .then((t) => {
+        useStore.setState({ todos: t })
+        setTitle('')
+      })
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`添加任务失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      })
   }
   const setStatus = (t: TaskItem, status: TaskItem['status']): void => {
-    void api.setTodoStatus(t.id, status).then((list) => useStore.setState({ todos: list }))
+    void api
+      .setTodoStatus(t.id, status)
+      .then((list) => useStore.setState({ todos: list }))
+      .catch((e) => {
+        useStore
+          .getState()
+          .notice(`更新任务失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      })
   }
   const done = todos.filter((t) => t.status === 'done').length
 
@@ -291,7 +361,12 @@ function TasksPanel(): React.JSX.Element {
         <button
           className="btn btn-sm btn-ghost"
           disabled={done === 0}
-          onClick={() => void api.clearDoneTodos().then((t) => useStore.setState({ todos: t }))}
+          onClick={() =>
+            void api
+              .clearDoneTodos()
+              .then((t) => useStore.setState({ todos: t }))
+              .catch(() => undefined)
+          }
         >
           清理已完成
         </button>
@@ -303,6 +378,7 @@ function TasksPanel(): React.JSX.Element {
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing) return
             if (e.key === 'Enter') add()
           }}
         />

@@ -86,6 +86,15 @@ export function useProject(s: LidowState): ProjectInfo | null {
   return s.projects.find((p) => p.id === s.activeProjectId) ?? null
 }
 
+/**
+ * 订阅当前项目的 hook：必须带选择器。
+ * `useProject(useStore())` 会订阅整个 store，流式回复每个 token 都重渲染整个面板
+ * （历史 Markdown 反复解析，长会话直接卡死）。
+ */
+export function useActiveProject(): ProjectInfo | null {
+  return useStore((s) => s.projects.find((p) => p.id === s.activeProjectId) ?? null)
+}
+
 interface WebTab {
   id: string
   providerId: string
@@ -145,6 +154,10 @@ interface LidowState {
   sessionDelete: SessionDeleteRequest | null
   streamingText: string
   streamingTps: number
+  /** 主进程 Agent 循环正在执行的会话（贯穿整个任务，不因工具轮间隙闪回空闲） */
+  runningSessionIds: string[]
+  /** 正在等待网页发送间隔的会话（工具结果尚未发出） */
+  sendWaiting: string[]
   /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
   thinkingText: string
   /** 已发送、等待网页开始回复的会话（用于“正在思考”加载态） */
@@ -208,7 +221,7 @@ interface LidowState {
   openProject(root: string): Promise<void>
   refreshProviders(): Promise<void>
   refreshSessions(): Promise<void>
-  createSession(providerId: string, accountId?: string): Promise<void>
+  createSession(providerId: string, accountId?: string): Promise<Session | null>
   openSession(id: string): Promise<void>
   openProviderTab(providerId: string, sessionId?: string, accountId?: string): Promise<void>
   closeTab(id: string): void
@@ -306,6 +319,8 @@ export const useStore = create<LidowState>((set, get) => ({
   sessionDelete: null,
   streamingText: '',
   streamingTps: 0,
+  runningSessionIds: [],
+  sendWaiting: [],
   thinkingText: '',
   pendingReplySessionId: '',
   pendingSince: 0,
@@ -352,7 +367,8 @@ export const useStore = create<LidowState>((set, get) => ({
         activeTabId: null,
         activeSession: null,
         projects: state.projects,
-        activeProjectId: state.activeProjectId
+        activeProjectId: state.activeProjectId,
+        runningSessionIds: state.runningSessionIds ?? []
       })
       get().applyTheme(state.settings)
       api.onEvent((e) => get().handleEvent(e))
@@ -524,13 +540,20 @@ export const useStore = create<LidowState>((set, get) => ({
       : (s.activeSession?.id ?? '')
     const sessionId = matched?.id || tab?.sessionId || fallbackId
     // 确保有后台 webview 承载（webview 是对话驱动通道）
-    void s.openProviderTab(providerId, sessionId, tab?.accountId ?? s.activeSession?.accountId)
+    void s.openProviderTab(
+      providerId,
+      sessionId,
+      tab?.accountId ?? s.activeSession?.accountId ?? DEFAULT_ACCOUNT_ID
+    )
     if (!sessionId) return
+    const seq = sessionSeq
     // 拉全量 turns：store 里的会话可能只有元信息或落后于落盘内容
     void api
       .getSession(sessionId)
       .then((sess) => {
         if (!sess || !get().pureMode) return
+        // 期间用户切了会话/标签/项目：旧响应不能覆盖新的 activeSession
+        if (seq !== sessionSeq) return
         const cur = get().tabs.find((t) => t.id === get().activeTabId)
         if (cur?.sessionId && cur.sessionId !== sessionId) return // 期间又切了标签
         set({ activeSession: sess })
@@ -617,11 +640,11 @@ export const useStore = create<LidowState>((set, get) => ({
       // 没有项目就没有工作目录，会话无法落盘、工具无根可执行。
       // 之前这里静默 return，用户点平台只看到网页、AI 也拿不到工具上下文。
       get().notice('请先初始化项目（选择工作目录），再开始对话', 'warn')
-      return
+      return null
     }
     if (project.missing) {
       get().notice('项目目录不存在，请到「工作区」重新选择目录', 'warn')
-      return
+      return null
     }
     // 优先用调用方给出的账号；否则沿用当前平台标签的账号（多账号下新建任务
     // 不应悄悄跳回默认账号的页面）。
@@ -639,13 +662,16 @@ export const useStore = create<LidowState>((set, get) => ({
           provider?.defaultAccountId ?? provider?.activeAccountId ?? DEFAULT_ACCOUNT_ID
       }
     }
+    // 新建请求本身也带序号：请求期间用户若点了别的会话/标签，以用户后点的为准
+    const seq = ++sessionSeq
     let s: Session
     try {
       s = await api.createSession(project.id, providerId, undefined, account)
     } catch (e) {
       get().notice(`创建会话失败：${e instanceof Error ? e.message : String(e)}`, 'error')
-      return
+      return null
     }
+    if (seq !== sessionSeq) return null
     // 关键：新建后必须把新会话设为 activeSession，
     // 否则纯净模式发送时 activeSession 为 null（历史上导致每次点击都新建一个空会话）。
     set({
@@ -664,9 +690,10 @@ export const useStore = create<LidowState>((set, get) => ({
     if (WEB_MODE) {
       const ok = await api.hostAttachSession(s.id)
       if (!ok) get().notice('服务端网页宿主未就绪，AI 页面可能还未打开', 'warn')
-      return
+      return s
     }
     await get().openProviderTab(providerId, s.id, account)
+    return s
   },
 
   async openSession(id) {
@@ -789,7 +816,29 @@ export const useStore = create<LidowState>((set, get) => ({
   closeTab(id) {
     const { tabs, activeTabId } = get()
     const next = tabs.filter((t) => t.id !== id)
-    set({ tabs: next, activeTabId: activeTabId === id ? (next[0]?.id ?? null) : activeTabId })
+    if (activeTabId !== id) {
+      set({ tabs: next })
+      return
+    }
+    set({ tabs: next })
+    const nextId = next[0]?.id ?? null
+    if (nextId) {
+      // 活动标签关了必须同步 activeSession：否则纯净模式显示已关闭会话、
+      // 下一次发送还会把旧会话重新绑到剩下的页面
+      get().setActiveTab(nextId)
+      return
+    }
+    sessionSeq++
+    set({
+      activeTabId: null,
+      activeSession: null,
+      plan: null,
+      streamingText: '',
+      streamingTps: 0,
+      thinkingText: '',
+      pendingReplySessionId: '',
+      confirmRequest: null
+    })
   },
 
   setActiveTab(id) {
@@ -825,12 +874,12 @@ export const useStore = create<LidowState>((set, get) => ({
       reviewFiles: [],
       reviewActivePath: ''
     })
-    void Promise.all([api.getSession(sid), api.getActivePlan(sid).catch(() => null)]).then(
-      ([sess, plan]) => {
+    void Promise.all([api.getSession(sid), api.getActivePlan(sid).catch(() => null)])
+      .then(([sess, plan]) => {
         if (seq !== sessionSeq || get().activeTabId !== id) return // 期间又切走了
         set({ activeSession: sess, plan: sess ? plan : null })
-      }
-    )
+      })
+      .catch(() => undefined)
   },
 
   async bindTabSession(tabId, sessionId, webContentsId) {
@@ -848,7 +897,19 @@ export const useStore = create<LidowState>((set, get) => ({
     if (webContentsId > 0) {
       // 主进程 bindSession 会解除同一 webview 上的旧会话绑定（单绑定不变量），
       // 并在首次绑定/换绑时负责 landSession（落到新对话或会话自己的 URL）。
-      await api.bindSession(sessionId, webContentsId)
+      try {
+        await api.bindSession(sessionId, webContentsId)
+      } catch (e) {
+        // 绑定失败要把 store 回滚，否则幂等守卫会挡住后续补绑
+        set((s) => ({
+          tabs: s.tabs.map((t) =>
+            t.id === tabId && t.sessionId === sessionId
+              ? { ...t, sessionId: '', wcId: t.wcId === webContentsId ? undefined : t.wcId }
+              : t
+          )
+        }))
+        get().notice(`网页绑定失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+      }
     } else {
       // 没有 wcId 就等于没绑定：主进程收不到 bindSession，hook 不注入，
       // 网页里无论发什么都到不了 lidow（AI 会说「我没有工作目录」）。
@@ -864,10 +925,9 @@ export const useStore = create<LidowState>((set, get) => ({
 
   async sendPrompt(text) {
     // 没有项目就没有工作目录：AI 只会答「我没有文件系统访问」，工具也无根可落。
-    // 在发送前拦住并引导初始化，比让用户看到一条误导性回复更好。
+    // 抛错而不是静默 return：调用方（输入框）据此恢复草稿并提示，不能吞掉消息。
     if (!get().projects.length) {
-      get().notice('请先初始化项目（选择工作目录），AI 才有可以操作的文件系统', 'warn')
-      return
+      throw new Error('请先初始化项目（选择工作目录），AI 才有可以操作的文件系统')
     }
     // 新一轮任务开始：清掉上一轮可能迟到的思考/流式残留，避免旧内容显示在新任务下
     set({ thinkingText: '', streamingText: '', streamingTps: 0 })
@@ -875,13 +935,10 @@ export const useStore = create<LidowState>((set, get) => ({
     // 没有活动会话：自动新建（纯净模式直接发送的兜底）
     if (!activeSession) {
       const pid = get().providers[0]?.id
-      if (!pid) {
-        get().notice('请先选择一个 AI 平台', 'warn')
-        return
-      }
+      if (!pid) throw new Error('请先选择一个 AI 平台')
       await get().createSession(pid)
       activeSession = get().activeSession
-      if (!activeSession) return
+      if (!activeSession) throw new Error('创建会话失败，请稍后重试')
     }
     if (WEB_MODE) {
       // 服务端宿主已在 createSession/openSession 时绑定好网页，直接交给主进程循环
@@ -912,10 +969,7 @@ export const useStore = create<LidowState>((set, get) => ({
       ;({ activeTabId, tabs } = get())
       tab = tabs.find((t) => t.id === activeTabId)
     }
-    if (!tab) {
-      get().notice('没有可用的网页标签（平台未配置或被关闭）', 'warn')
-      return
-    }
+    if (!tab) throw new Error('没有可用的网页标签（平台未配置或被关闭）')
     const tabId = tab.id
     // 关键兜底：webview 已存在但从未成功绑定（wcId<=0 时 bindTabSession 静默跳过）
     // → 从该标签自己的 webview 补绑，否则 loop 永远「网页未连接」。
@@ -928,10 +982,10 @@ export const useStore = create<LidowState>((set, get) => ({
       }))
       await api.bindSession(activeSession.id, wcId)
     } else {
-      get().notice('网页尚未就绪，未能绑定会话（请稍后重试发送）', 'warn')
+      throw new Error('网页尚未就绪，未能绑定会话（请稍后重试发送）')
     }
     // 首包到达前显示「正在思考」；turn-chunk/think-chunk/tool-start 会清掉
-    if (wcId > 0) set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
+    set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
     // 网页可能被用户切到了别的对话/新对话：发送前先落回本会话的网页 URL，
     // 否则这条消息会进错上下文，网页窗口和纯净窗口的历史也会分叉。
     if (activeSession.providerUrl) {
@@ -946,9 +1000,15 @@ export const useStore = create<LidowState>((set, get) => ({
   },
 
   async stop(level) {
-    set({ pendingReplySessionId: '' })
+    // 立即清掉本地的“生成中/思考中”，不要等主进程/网页确认：
+    // 平台停止按钮不响应时，用户点停止必须马上看到按钮恢复成发送。
+    set({ pendingReplySessionId: '', streamingText: '', streamingTps: 0, thinkingText: '' })
     // 只停当前会话：之前没有 sessionId，会连带停掉另一个标签的任务
-    await api.stop(get().activeSession?.id ?? '', level)
+    try {
+      await api.stop(get().activeSession?.id ?? '', level)
+    } catch (e) {
+      get().notice(`停止失败：${e instanceof Error ? e.message : String(e)}`, 'warn')
+    }
   },
 
   async answerConfirm(ok) {
@@ -1085,6 +1145,8 @@ export const useStore = create<LidowState>((set, get) => ({
         // 网页侧删除对话 → 主进程删除本地会话后广播：纯净模式/会话列表同步移除
         set((st) => ({
           sessions: st.sessions.filter((m) => m.id !== e.sessionId),
+          runningSessionIds: st.runningSessionIds.filter((id) => id !== e.sessionId),
+          sendWaiting: st.sendWaiting.filter((id) => id !== e.sessionId),
           sessionDelete: st.sessionDelete?.id === e.sessionId ? null : st.sessionDelete,
           tabs: st.tabs.map((t) => (t.sessionId === e.sessionId ? { ...t, sessionId: '' } : t)),
           ...(st.activeSession?.id === e.sessionId
@@ -1101,7 +1163,7 @@ export const useStore = create<LidowState>((set, get) => ({
               }
             : {})
         }))
-        void get().refreshSessions()
+        void get().refreshSessions().catch(() => undefined)
         break
       }
       case 'ui-pure-suggestion': {
@@ -1151,7 +1213,10 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'providers-changed': {
         // 网页侧检测到账号名/登录态：刷新平台卡片与账号选择器
         if (e.projectId === get().activeProjectId) {
-          void api.listProviders(e.projectId).then((providers) => set({ providers }))
+          void api
+            .listProviders(e.projectId)
+            .then((providers) => set({ providers }))
+            .catch(() => undefined)
         }
         break
       }
@@ -1161,25 +1226,30 @@ export const useStore = create<LidowState>((set, get) => ({
         if (e.sessionId === get().activeSession?.id) {
           set({ streamingText: '', streamingTps: 0, thinkingText: '' })
         }
-        void api.getSession(e.sessionId).then((sess) => {
-          if (sess && sess.id === get().activeSession?.id) {
-            set({ activeSession: sess })
-            // 回复轮已落盘（assistant），清掉「等待首包」加载态
-            if (sess.turns[sess.turns.length - 1]?.role === 'assistant') {
-              set({ pendingReplySessionId: '' })
+        void api
+          .getSession(e.sessionId)
+          .then((sess) => {
+            if (sess && sess.id === get().activeSession?.id) {
+              set({ activeSession: sess })
+              // 回复轮已落盘（assistant），清掉「等待首包」加载态
+              if (sess.turns[sess.turns.length - 1]?.role === 'assistant') {
+                set({ pendingReplySessionId: '' })
+              }
             }
-          }
-        })
-        void get().refreshSessions()
+          })
+          .catch(() => undefined)
+        void get().refreshSessions().catch(() => undefined)
         break
       }
       case 'web-session-activated': {
         // 用户在网页侧栏点了另一个项目的对话：主进程已完成项目切换与 webview 重绑
+        const seq = ++sessionSeq
         void (async () => {
           const sess = await api.getSession(e.sessionId).catch(() => null)
           if (!sess) return
           const app = await api.getAppState()
           const sessions = await api.listSessions(e.projectId)
+          if (seq !== sessionSeq) return // 期间用户又切了会话
           set((st) => ({
             projects: app.projects,
             activeProjectId: app.activeProjectId,
@@ -1221,11 +1291,14 @@ export const useStore = create<LidowState>((set, get) => ({
             t.sessionId === e.fromSessionId ? { ...t, sessionId: e.sessionId } : t
           )
         }))
-        void api.getSession(e.sessionId).then((sess) => {
-          if (sess && get().activeSession?.id === e.fromSessionId)
-            set({ activeSession: sess, plan: null })
-        })
-        void get().refreshSessions()
+        void api
+          .getSession(e.sessionId)
+          .then((sess) => {
+            if (sess && get().activeSession?.id === e.fromSessionId)
+              set({ activeSession: sess, plan: null })
+          })
+          .catch(() => undefined)
+        void get().refreshSessions().catch(() => undefined)
         break
       }
       case 'think-chunk':
@@ -1237,11 +1310,35 @@ export const useStore = create<LidowState>((set, get) => ({
         if (e.sessionId !== s.activeSession?.id) break
         set({ streamingText: e.text, streamingTps: e.tps ?? 0, pendingReplySessionId: '' })
         break
+      case 'loop-state':
+        set((st) => {
+          const ids = new Set(st.runningSessionIds)
+          if (e.running) ids.add(e.sessionId)
+          else ids.delete(e.sessionId)
+          return {
+            runningSessionIds: [...ids],
+            // 循环结束后不可能还在等发送间隔
+            ...(e.running ? {} : { sendWaiting: st.sendWaiting.filter((id) => id !== e.sessionId) })
+          }
+        })
+        break
+      case 'send-wait':
+        set((st) => {
+          const ids = new Set(st.sendWaiting)
+          if (e.waiting) ids.add(e.sessionId)
+          else ids.delete(e.sessionId)
+          return { sendWaiting: [...ids] }
+        })
+        break
       case 'tool-start':
         if (e.sessionId === s.pendingReplySessionId) set({ pendingReplySessionId: '' })
-        void api.getSession(e.sessionId).then((sess) => {
-          if (sess && sess.id === s.activeSession?.id) set({ activeSession: sess })
-        })
+        void api
+          .getSession(e.sessionId)
+          .then((sess) => {
+            // 必须取最新 activeSession：事件入口的 s 快照在 await 后已经过期
+            if (sess && sess.id === get().activeSession?.id) set({ activeSession: sess })
+          })
+          .catch(() => undefined)
         break
       case 'tool-confirm-required':
         // 只记录待确认项，不切视图：纯净模式自带内联确认卡（ChatPanel 内），
@@ -1287,7 +1384,7 @@ export const useStore = create<LidowState>((set, get) => ({
         // 全局热键：用当前会话的平台新建任务（没有会话时用第一个平台）
         const st = get()
         const pid = st.activeSession?.providerId ?? st.providers[0]?.id
-        if (pid) void st.createSession(pid)
+        if (pid) void st.createSession(pid).catch(() => undefined)
         else get().notice('请先在「工作台」选择一个 AI 平台', 'warn')
         break
       }
@@ -1299,6 +1396,8 @@ export const useStore = create<LidowState>((set, get) => ({
           const before = get().activeProjectId
           const st = await api.getAppState()
           const changed = before !== st.activeProjectId
+          // 切项目要作废在途的 getSession，否则旧项目会话会被写回 activeSession
+          if (changed) sessionSeq++
           set((s) => ({
             projects: st.projects,
             activeProjectId: st.activeProjectId,
@@ -1311,8 +1410,8 @@ export const useStore = create<LidowState>((set, get) => ({
                 }
               : {})
           }))
-          await s.refreshAll()
-        })()
+          await s.refreshAll().catch(() => undefined)
+        })().catch(() => undefined)
         break
       }
       default:

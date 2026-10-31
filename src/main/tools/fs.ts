@@ -1,8 +1,11 @@
 import {
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmdirSync,
   statSync,
@@ -11,9 +14,38 @@ import {
 } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import fg from 'fast-glob'
+import { nanoid } from 'nanoid'
 import { createTwoFilesPatch } from 'diff'
 import type { ToolContext, ToolDef } from './types'
 import { clampOutput, num, str } from './types'
+
+/** 单次 read 的内存上限：避免 1GB 日志把主进程读爆 */
+const READ_HARD_CAP = 16 * 1024 * 1024
+
+/** 备份文件必须唯一：同一毫秒内两个工具写同一文件时不能互相覆盖 */
+function backupPathFor(abs: string): string {
+  return `${abs}.lidow-bak-${Date.now()}-${nanoid(4)}`
+}
+
+/** 有上限地读文本：超过上限只返回前 READ_HARD_CAP 字节 */
+export function readTextCapped(abs: string): { text: string; truncated: boolean } {
+  const st = statSync(abs)
+  if (!st.isFile()) throw new Error(`不是文件：${abs}`)
+  const size = Math.min(st.size, READ_HARD_CAP)
+  const fd = openSync(abs, 'r')
+  try {
+    const buf = Buffer.alloc(size)
+    let read = 0
+    while (read < size) {
+      const n = readSync(fd, buf, read, size - read, read)
+      if (n <= 0) break
+      read += n
+    }
+    return { text: buf.subarray(0, read).toString('utf-8'), truncated: st.size > READ_HARD_CAP }
+  } finally {
+    closeSync(fd)
+  }
+}
 
 /** 路径安全：强制限制在项目根内，拒绝越界（目录隔离） */
 export function safePath(root: string, p: string): string {
@@ -42,13 +74,14 @@ export const readTool: ToolDef = {
   dangerLevel: 'safe',
   async run(input, ctx) {
     const abs = safePath(ctx.projectRoot, str(input, 'path'))
-    const raw = readFileSync(abs, 'utf-8')
+    const { text: raw, truncated } = readTextCapped(abs)
     const lines = raw.split('\n')
     const offset = Math.max(1, num(input, 'offset', 1))
-    const limit = num(input, 'limit', 2000)
+    const limit = Math.max(1, Math.min(50_000, num(input, 'limit', 2000)))
     const slice = lines.slice(offset - 1, offset - 1 + limit)
     const numbered = slice.map((l, i) => `${offset + i}\t${l}`).join('\n')
-    return { ok: true, output: clampOutput(numbered, ctx.settings.outputBufferLimit) }
+    const note = truncated ? '\n…[文件超过 16MB，仅读取了前 16MB]' : ''
+    return { ok: true, output: clampOutput(numbered + note, ctx.settings.outputBufferLimit) }
   }
 }
 
@@ -71,7 +104,7 @@ export const writeTool: ToolDef = {
     try {
       if (statSync(abs).isFile()) {
         oldContent = readFileSync(abs, 'utf-8')
-        backupPath = `${abs}.lidow-bak-${Date.now()}`
+        backupPath = backupPathFor(abs)
         writeFileSync(backupPath, oldContent)
       }
     } catch {
@@ -120,10 +153,11 @@ export const editTool: ToolDef = {
     if (count > 1) {
       return { ok: false, output: '', error: `oldText 匹配 ${count} 处，要求唯一；请扩大上下文` }
     }
-    const next = raw.replace(normOld, normNew)
+    // 第二参必须是函数：字符串替换会展开 $& / $' / $1，含这些字符的代码会被写坏
+    const next = raw.replace(normOld, () => normNew)
     let backupPath: string | undefined
     try {
-      backupPath = `${abs}.lidow-bak-${Date.now()}`
+      backupPath = backupPathFor(abs)
       writeFileSync(backupPath, raw)
     } catch {
       /* ignore */
@@ -142,6 +176,10 @@ export const globTool: ToolDef = {
   dangerLevel: 'safe',
   async run(input, ctx) {
     const pattern = str(input, 'pattern')
+    // fast-glob 会接受绝对路径与 .. 模式并枚举项目外文件：只允许项目内相对模式
+    if (isAbsolute(pattern) || pattern.split(/[\\/]+/).includes('..')) {
+      return { ok: false, output: '', error: 'glob 只允许项目内的相对模式（不能以 / 盘符开头或包含 ..）' }
+    }
     const files = await fg(pattern, {
       cwd: ctx.projectRoot,
       ignore: EXCLUDED_DIRS.map((d) => `**/${d}/**`),
@@ -241,7 +279,15 @@ export const deleteFileTool: ToolDef = {
 
     const protection = ctx.settings.deleteProtection === true
     const threshold = Math.max(1, Math.floor(ctx.settings.batchDeleteThreshold || 200))
-    if (protection) {
+    const mode = ctx.settings.permissionMode ?? 'autonomous'
+    // plan/ask 的语义是「每个改动都问」：删除不能借批量阈值跳过确认
+    const askEvery = mode === 'plan' || mode === 'ask'
+    if (askEvery) {
+      const ok = await ctx.confirm(
+        `删除${isDir ? '空目录' : '文件'}：${relPath}${protection ? '（将移入回收站）' : '（永久删除）'}`
+      )
+      if (!ok) return { ok: false, output: '', error: '用户拒绝删除' }
+    } else if (protection) {
       if (ctx.deleteBatch) {
         const next = ctx.deleteBatch.count + 1
         if (next >= threshold && !ctx.deleteBatch.approved) {
@@ -263,7 +309,7 @@ export const deleteFileTool: ToolDef = {
     let backupPath: string | undefined
     if (!isDir) {
       try {
-        backupPath = `${abs}.lidow-bak-${Date.now()}`
+        backupPath = backupPathFor(abs)
         writeFileSync(backupPath, readFileSync(abs))
       } catch {
         /* 文件不可读（权限）时仍尝试删除 */

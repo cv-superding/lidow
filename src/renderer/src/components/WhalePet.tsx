@@ -524,9 +524,17 @@ export function WhalePet(): React.JSX.Element | null {
           savePos(lastPos.current)
           if (!d.moved) react()
         }}
-        onPointerCancel={() => {
+        onPointerCancel={(e) => {
+          const d = drag.current
           drag.current = null
           setDragging(false)
+          try {
+            e.currentTarget.releasePointerCapture(e.pointerId)
+          } catch {
+            /* ignore */
+          }
+          // 取消也要落盘当前位置，否则下次启动会回到旧坐标
+          if (d) savePos(lastPos.current)
         }}
       >
         <video

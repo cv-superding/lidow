@@ -153,6 +153,18 @@ function listSkillEntries(dir: string): { path: string; fallback: string; catego
           out.push({ path: full, fallback: basename(ent.name, '.md') })
           continue
         }
+        // 分类目录下的扁平 .md 也是技能（导入的扁平技能会落在 category/xxx.md）；
+        // 只排除 README，避免分类说明被当成技能。
+        if (
+          isFile(full, ent) &&
+          ent.name.endsWith('.md') &&
+          depth === 1 &&
+          !/^readme\.md$/i.test(ent.name)
+        ) {
+          const category = relative(dir, current).split(/[\\/]/).filter(Boolean).join('/')
+          out.push({ path: full, fallback: basename(ent.name, '.md'), category: category || undefined })
+          continue
+        }
         if (!isDir(full, ent) || depth >= 2) continue
         const skillMd = join(full, 'SKILL.md')
         if (existsSync(skillMd) && statSync(skillMd).isFile()) {
@@ -228,6 +240,28 @@ function formatSkillFile(input: SkillDraft): string {
   const description = oneLine(input.description)
   const body = String(input.body ?? '').replace(/\r\n/g, '\n').trim()
   return `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`
+}
+
+/**
+ * 编辑保存时保留 frontmatter 里 name/description 之外的字段
+ * （allowed-tools / license / version 等第三方技能常见字段），
+ * 否则用户在编辑器里改个描述就把它们整段抹掉了。
+ */
+function formatSkillFilePreserving(existing: string, input: SkillDraft): string {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(existing)
+  if (!m) return formatSkillFile(input)
+  const oneLine = (s: string): string => String(s ?? '').replace(/\r?\n/g, ' ').trim()
+  const extra = m[1]!
+    .split(/\r?\n/)
+    .filter((line) => !/^(name|description)\s*:/i.test(line))
+    .filter((line) => line.trim() !== '')
+  const body = String(input.body ?? '').replace(/\r\n/g, '\n').trim()
+  const header = [
+    `name: ${oneLine(input.name)}`,
+    `description: ${oneLine(input.description)}`,
+    ...extra
+  ].join('\n')
+  return `---\n${header}\n---\n\n${body}\n`
 }
 
 /** 校验技能文件位于项目/用户 skills 目录内；返回所属 base/scope */
@@ -381,7 +415,11 @@ export function importExternalSkills(
       result.skipped.push(`${rawPath}：技能文件不存在`)
       continue
     }
-    const skillRoot = basename(entry.path).toLowerCase() === 'skill.md' ? dirname(entry.path) : entry.path
+    const isSkillMd = basename(entry.path).toLowerCase() === 'skill.md'
+    // 平铺导入的技能是单个 xxx.md 文件，不是目录：导入后必须保留 .md 后缀，
+    // 否则 listSkillEntries（只收 *.md / SKILL.md）永远扫不到它。
+    const isFlatFile = !isSkillMd
+    const skillRoot = isSkillMd ? dirname(entry.path) : entry.path
     if (!existsSync(skillRoot)) {
       result.skipped.push(`${rawPath}：技能目录不存在`)
       continue
@@ -390,18 +428,19 @@ export function importExternalSkills(
       const { meta } = parseSkillFile(entry.path)
       const categoryName = safeSkillSegment(category?.trim() || root.sourceId, 'imported')
       let slug = safeSkillSegment(meta.name || entry.fallback, 'skill')
-      let dest = join(destRoot, categoryName, slug)
+      let dest = join(destRoot, categoryName, isFlatFile ? `${slug}.md` : slug)
       for (let i = 2; existsSync(dest) && i < 100; i++) {
         slug = `${slug.replace(/-\d+$/, '')}-${i}`
-        dest = join(destRoot, categoryName, slug)
+        dest = join(destRoot, categoryName, isFlatFile ? `${slug}.md` : slug)
       }
       const relDest = relative(resolve(destRoot), resolve(dest))
       if (!relDest || relDest.startsWith('..') || isAbsolute(relDest)) throw new Error('目标路径越界')
       mkdirSync(dirname(dest), { recursive: true })
-      cpSync(skillRoot, dest, { recursive: true, dereference: true })
+      if (isFlatFile) cpSync(entry.path, dest, { dereference: true })
+      else cpSync(skillRoot, dest, { recursive: true, dereference: true })
       result.imported.push({
         name: meta.name || entry.fallback,
-        path: basename(entry.path).toLowerCase() === 'skill.md' ? join(dest, 'SKILL.md') : dest
+        path: isFlatFile ? dest : join(dest, 'SKILL.md')
       })
     } catch (e) {
       result.skipped.push(`${metaFallback(rawPath)}：${e instanceof Error ? e.message : String(e)}`)
@@ -454,9 +493,15 @@ export function updateSkill(path: string, input: SkillDraft, projectRoot?: strin
   const located = locateSkill(path, projectRoot)
   if (!existsSync(path)) throw new Error('技能文件不存在')
   if (!/\.md$/i.test(path)) throw new Error('只能编辑 Markdown 技能文件')
-  writeFileSync(path, formatSkillFile(input), 'utf-8')
+  const name = String(input.name ?? '').trim()
+  if (!name) throw new Error('技能名称不能为空')
+  // 同名技能会被 listSkills 去重成一条：保存前直接拒绝，避免技能从列表里消失
+  const dup = listSkills(projectRoot).find((s) => s.name === name && resolve(s.path) !== resolve(path))
+  if (dup) throw new Error(`技能名称已存在：${name}`)
+  const existing = readFileSync(path, 'utf-8')
+  writeFileSync(path, formatSkillFilePreserving(existing, { ...input, name }), 'utf-8')
   const rel = relative(resolve(located.skillsDir), resolve(path)).split(/[\\/]/).filter(Boolean)
-  const category = rel.length > 2 ? rel[0] : undefined
+  const category = rel.length > 2 || (rel.length === 2 && rel[1]?.toLowerCase() !== 'skill.md') ? rel[0] : undefined
   return {
     name: String(input.name ?? '').trim(),
     description: String(input.description ?? '').trim(),

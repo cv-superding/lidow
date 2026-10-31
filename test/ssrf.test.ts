@@ -18,6 +18,26 @@ describe('isPrivateIp', () => {
     }
     expect(isPrivateIp('2606:4700::1')).toBe(false)
   })
+
+  it('识别 IPv4-mapped 的十六进制写法（URL 会规范化成这种形式）', () => {
+    // new URL('http://[::ffff:127.0.0.1]/').hostname === '[::ffff:7f00:1]'
+    for (const ip of ['::ffff:7f00:1', '::ffff:a9fe:a9fe', '::ffff:c0a8:101']) {
+      expect(isPrivateIp(ip), ip).toBe(true)
+    }
+    expect(isPrivateIp('::ffff:808:808')).toBe(false) // 8.8.8.8
+  })
+
+  it('识别展开/兼容写法的回环、链路本地与 NAT64', () => {
+    for (const ip of [
+      '0:0:0:0:0:0:0:1',
+      'fe90::1',
+      'fec0::1',
+      '::127.0.0.1',
+      '64:ff9b::c0a8:101'
+    ]) {
+      expect(isPrivateIp(ip), ip).toBe(true)
+    }
+  })
 })
 
 describe('assertSafeUrl', () => {
