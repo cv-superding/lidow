@@ -965,12 +965,29 @@ body:has(.fixed.inset-0) [data-pet-menu] {
   pointer-events: none !important;
 }
 
-/* 输入区聚焦：只加一层柔和的品牌色光环 */
+/* 输入卡片：基础描边 + 聚焦时豆包同款蓝色发光（发光贴着卡片，不再外扩出格） */
+[data-composer='true'] {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  transition:
+    border-color 160ms var(--ease),
+    box-shadow 160ms var(--ease);
+}
 [data-composer='true']:focus-within {
-  border-color: var(--accent-ring);
+  border-color: color-mix(in srgb, var(--accent) 82%, var(--border-strong));
   box-shadow:
     var(--shadow),
-    0 0 0 3px var(--accent-soft);
+    0 0 0 1px color-mix(in srgb, var(--accent) 48%, transparent),
+    0 8px 26px color-mix(in srgb, var(--accent) 14%, transparent);
+}
+/* 聚焦效果由整张输入卡片表达，文本框自身不要再画一圈蓝框 */
+[data-composer='true'] textarea:focus,
+[data-composer='true'] textarea:focus-visible,
+[data-composer='true'] input:focus,
+[data-composer='true'] input:focus-visible {
+  outline: none !important;
+  box-shadow: none;
 }
 
 /* 命令面板输入框：焦点由面板自身表达，不再叠加全局轮廓 */

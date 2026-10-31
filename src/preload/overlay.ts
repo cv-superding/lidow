@@ -100,13 +100,20 @@ function setNativeValue(el: HTMLTextAreaElement | HTMLInputElement, value: strin
 }
 
 /** contenteditable（ProseMirror/tiptap）：execCommand insertText 与真实键入等价 */
-function fillEditable(el: HTMLElement, text: string): boolean {
+async function fillEditable(el: HTMLElement, text: string): Promise<boolean> {
   el.focus()
+  // 必须用 Range 覆盖编辑器内容再 insertText（等价于“全选后粘贴”）。
+  // selectAllChildren + execCommand('selectAll') 在 Kimi 的 Lexical 编辑器里
+  // 会丢选区，变成在旧文本后面追加，重试后出现 2 份/6 份提示词。
+  const range = document.createRange()
+  range.selectNodeContents(el)
   const sel = window.getSelection()
-  sel?.selectAllChildren(el)
-  document.execCommand('selectAll', false)
+  sel?.removeAllRanges()
+  sel?.addRange(range)
+  await new Promise((r) => setTimeout(r, 80))
   const ok = document.execCommand('insertText', false, text)
-  el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }))
+  // execCommand 已经触发原生 input；再手动补发会让 Lexical 再插一遍，
+  // 实测 Kimi 编辑器因此出现两份完全相同的系统提示词。
   return ok && (el.textContent?.length ?? 0) > 0
 }
 
@@ -117,29 +124,42 @@ function fillEditable(el: HTMLElement, text: string): boolean {
  * AI 收到的就是半句话（实测表现：AI 回「你的消息在'在'之后中断了」）。
  * 改为先比"去空白后完全相等"，再退一步容忍编辑器对换行/空行的归一化（99% 且仅差空白）。
  */
-function fillVerified(el: Element, text: string): boolean {
+async function fillVerified(el: Element, text: string): Promise<boolean> {
   if (el instanceof HTMLTextAreaElement) {
     el.focus()
     setNativeValue(el, text)
     el.dispatchEvent(new Event('change', { bubbles: true }))
   } else if (el instanceof HTMLElement && el.isContentEditable) {
-    fillEditable(el, text)
+    await fillEditable(el, text)
   } else if (el instanceof HTMLInputElement) {
     el.focus()
     setNativeValue(el, text)
   } else {
     return false
   }
-  const current =
-    el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
-      ? el.value
-      : ((el as HTMLElement).textContent ?? '')
-  if (current === text) return true
-  // 编辑器可能改写空白/换行（ProseMirror 把 \n 变 <p>），比紧凑形式
+  // Kimi 的 Lexical 编辑器异步渲染长文本：立刻读会只看到前半段。
+  // 轮询最多 2 秒，渲染完成就通过，避免误判为「填入失败」反复重试。
   const compact = (s: string): string => s.replace(/\s+/g, '')
   const want = compact(text)
   if (!want) return false
-  return compact(current) === want
+  for (let i = 0; i < 10; i++) {
+    await new Promise((r) => setTimeout(r, i === 0 ? 250 : 200))
+    const current =
+      el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement
+        ? el.value
+        : ((el as HTMLElement).textContent ?? '')
+    if (current === text) return true
+    if (compact(current) === want) return true
+    // Kimi 等富文本编辑器会边输入边渲染 Markdown（吃掉 #、```、** 等标记），
+    // 超长系统提示词无法逐字相等。去掉所有标点后再比全量内容：渲染只改变
+    // 格式不会改变文字，真截断（少一段）仍然不相等，短消息沿用上面的严格比较。
+    if (want.length > 500) {
+      const canonical = (s: string): string =>
+        s.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '')
+      if (canonical(current) === canonical(text)) return true
+    }
+  }
+  return false
 }
 
 function pressEnter(el: Element): void {
@@ -186,6 +206,22 @@ function click(el: Element): void {
   el.dispatchEvent(ev)
 }
 
+/** 真实指针悬停：二级菜单（元宝「模型…」）是 hover 展开的，只 click 不会出子菜单 */
+function hover(el: Element): void {
+  const rect = el.getBoundingClientRect()
+  const base: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2
+  }
+  el.dispatchEvent(new PointerEvent('pointerover', { ...base, pointerId: 1, isPrimary: true }))
+  el.dispatchEvent(new PointerEvent('pointerenter', { ...base, pointerId: 1, isPrimary: true }))
+  el.dispatchEvent(new MouseEvent('mouseover', base))
+  el.dispatchEvent(new MouseEvent('mouseenter', base))
+  el.dispatchEvent(new MouseEvent('mousemove', base))
+}
+
 // ---------- 消息/流式监听 ----------
 
 let observer: MutationObserver | null = null
@@ -221,6 +257,63 @@ function markOutgoing(text: string): void {
   lastOutgoing = { text: normalizePromptText(text), ts: Date.now() }
 }
 
+/**
+ * 取渲染文本。不能挂在离屏宿主上读 innerText：ChatGPT 的 React 页面会对外来
+ * 节点做全局观察，插入克隆会把整个 webview 卡死（实测整页 JS 无响应）。
+ * 这里按 DOM 结构自行补换行：<br>、段落/列表/标题等块级元素前后加 \n。
+ */
+function renderedText(el: HTMLElement): string {
+  const BLOCKS = new Set([
+    'P',
+    'DIV',
+    'LI',
+    'UL',
+    'OL',
+    'TR',
+    'TABLE',
+    'H1',
+    'H2',
+    'H3',
+    'H4',
+    'H5',
+    'H6',
+    'PRE',
+    'BLOCKQUOTE',
+    'SECTION',
+    'ARTICLE'
+  ])
+  const walk = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.nodeValue ?? ''
+    if (node.nodeType !== Node.ELEMENT_NODE) return ''
+    const tag = (node as Element).tagName
+    if (tag === 'BR') return '\n'
+    if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'SVG') return ''
+    let inner = ''
+    node.childNodes.forEach((c) => {
+      inner += walk(c)
+    })
+    return BLOCKS.has(tag) ? '\n' + inner + '\n' : inner
+  }
+  return walk(el)
+    .replace(/\u00a0/g, ' ')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+|\n+$/g, '')
+}
+
+/** 新版 ChatGPT 代码块没有 pre/code.language：语言名在工具栏，正文在 <code> 里 */
+function codeBlockFence(codeEl: HTMLElement): string {
+  const codeNode = codeEl.querySelector('code')
+  const actionBar = codeEl.querySelector<HTMLElement>('[class*="ActionBar"]')
+  const rawLang =
+    actionBar?.textContent?.trim() ||
+    (codeEl.className || '').match(/language-([\w+#.-]+)/i)?.[1] ||
+    ''
+  const lang = rawLang.match(/[\w+#.-]+/)?.[0] ?? ''
+  const text = codeNode?.textContent ?? codeEl.textContent ?? ''
+  return '\n```' + lang + '\n' + text + '\n```\n'
+}
+
 /** 把渲染后的 markdown DOM 还原成可解析文本（代码块补围栏、去掉思考/按钮） */
 function cleanRenderedText(el: HTMLElement): string {
   const clone = el.cloneNode(true) as HTMLElement
@@ -236,17 +329,17 @@ function cleanRenderedText(el: HTMLElement): string {
     if (t.length <= 32 && /^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(t)) n.remove()
   })
   clone
-    .querySelectorAll('pre, code[class*="language"], [class*="code-block"]')
+    .querySelectorAll<HTMLElement>(
+      '[data-code-block="true"], pre, code[class*="language" i], [class*="code-block" i]'
+    )
     .forEach((codeEl) => {
-      const lang = (codeEl.className || '').match(/language-(\w+)/)?.[1] ?? ''
-      const text = codeEl.textContent ?? ''
       const wrap = document.createElement('div')
-      wrap.textContent = '\n```' + lang + '\n' + text + '\n```\n'
+      wrap.textContent = codeBlockFence(codeEl)
       codeEl.replaceWith(wrap)
     })
   // 移除 UI 按钮文字污染（复制/下载等）
   clone.querySelectorAll('button, [class*="copy"], [class*="download"]').forEach((b) => b.remove())
-  let text = clone.innerText ?? ''
+  let text = renderedText(clone)
   // 兜底：折叠条文字不一定是独立节点，从整段开头再剥一次
   text = text.replace(/^\s*已(?:深度)?思考[（(]用时[^）)]*[）)]\s*/, '')
   // 补未闭合围栏：奇数个 ``` 说明尾部代码块未渲染完/被截
@@ -259,8 +352,25 @@ function isChatGptPage(): boolean {
   return /(^|.)chatgpt.com$/i.test(location.hostname)
 }
 
-/** ChatGPT 分享页/新版 UI 的兜底：按「ChatGPT 说：」标记截取最后一条回答 */
+/** 新版 Workspace 每条 assistant 回复的正文容器（h4 的紧邻兄弟节点） */
+function chatGptAssistantBodies(): HTMLElement[] {
+  return [
+    ...document.querySelectorAll<HTMLElement>('[data-conversation-role="assistant"]')
+  ]
+    .map((h) => h.nextElementSibling as HTMLElement | null)
+    .filter((el): el is HTMLElement => Boolean(el && (el.innerText ?? '').trim()))
+}
+
+/** ChatGPT 分享页/新版 UI 的兜底：取最后一条 assistant 回合，再退回「ChatGPT 说：」文本 */
 function chatGptReplyFromText(): string {
+  // 新版 Workspace 每条回复的标题 h4 带 data-conversation-role="assistant"，
+  // 相邻兄弟节点是完整正文。直接 cleanRenderedText 才能保住代码块围栏和换行；
+  // 整页 innerText 拿不到 ```，工具块会被解析成普通文本。
+  const bodies = chatGptAssistantBodies()
+  if (bodies.length > 0) {
+    const text = cleanRenderedText(bodies[bodies.length - 1]!).trim()
+    if (text) return text
+  }
   const root = (document.querySelector('main') as HTMLElement | null) ?? document.body
   const text = root?.innerText ?? ''
   const marker = 'ChatGPT 说：'
@@ -300,6 +410,8 @@ function chatGptReplyNodes(): HTMLElement[] {
   const marks = [...document.querySelectorAll<HTMLElement>('[class*="markdown" i]')].filter(visible)
   const outer = outermost(marks)
   if (outer.length > 0) return outer
+  const bodies = chatGptAssistantBodies()
+  if (bodies.length > 0) return bodies
   return [
     ...document.querySelectorAll<HTMLElement>(
       '[data-message-author-role="assistant"], article, [data-testid*="conversation-turn"]'
@@ -389,6 +501,8 @@ function lastBubbleText(): string {
     if (nodeText) return nodeText
   }
   if (!bubble) {
+    // 元宝首页没有气泡，整页文案会被误当成新回复（实测没发送就落两条 assistant）
+    if (adapter?.strictBubble) return ''
     if (!container) return ''
     return (container as HTMLElement).innerText ?? ''
   }
@@ -402,6 +516,13 @@ function lastBubbleText(): string {
  */
 function lastMessageText(): string {
   if (isChatGptPage()) return lastBubbleText().trim()
+  if (isYuanbaoPage()) {
+    const marks = [
+      ...document.querySelectorAll<HTMLElement>('.hyc-content-md, .hyc-common-markdown')
+    ].filter(visible)
+    if (marks.length > 0) return cleanRenderedText(marks[marks.length - 1]!).trim()
+    return lastBubbleText().trim()
+  }
   const msgs = [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
   const blocks = [...document.querySelectorAll<HTMLElement>('div.ds-markdown--block')].filter(
     visible
@@ -433,7 +554,42 @@ function isStreaming(): boolean {
  * 网络层思考流往往只覆盖前半段；DeepSeek 页面上的思考块（含搜索步骤）才是
  * 用户在网页版看到的完整过程，快照时一并同步给纯净模式。
  */
-function lastThinkText(): string {
+async function lastThinkText(): Promise<string> {
+  if (isYuanbaoPage()) {
+    // 元宝的「已处理 / 工具步骤」和最终 Markdown 同在一个 AI 气泡里；
+    // 克隆气泡、去掉正文节点，剩下的就是处理过程。
+    // 步骤默认是折叠的，需要临时展开读取，再恢复折叠。
+    const bubbles = [
+      ...document.querySelectorAll<HTMLElement>(
+        '.agent-chat__bubble--ai, [class*="agent-chat__bubble--ai"]'
+      )
+    ].filter(visible)
+    const bubble = bubbles[bubbles.length - 1]
+    if (!bubble) return ''
+    const read = (): string => {
+      const clone = bubble.cloneNode(true) as HTMLElement
+      clone
+        .querySelectorAll(
+          '.hyc-content-md, .hyc-common-markdown, button, [class*="copy"], [class*="download"]'
+        )
+        .forEach((el) => el.remove())
+      return (clone.innerText || '').trim().replace(/^已处理\s*/, '')
+    }
+    let text = read()
+    if (!text) {
+      const header = [...bubble.querySelectorAll<HTMLElement>('div, span')].find(
+        (el) => el.children.length === 0 && (el.innerText || '').trim() === '已处理' && visible(el)
+      )
+      if (header) {
+        click(header)
+        await pause(260)
+        text = read()
+        click(header)
+        await pause(120)
+      }
+    }
+    return text.length > 0 ? text.slice(0, 20_000) : ''
+  }
   const msgs = [...document.querySelectorAll<HTMLElement>('.ds-message')].filter(visible)
   const scopes = msgs.length > 0 ? [msgs[msgs.length - 1]!] : [document.body]
   let best = ''
@@ -448,7 +604,7 @@ function lastThinkText(): string {
       clone
         .querySelectorAll('button, [class*="copy"], [class*="download"]')
         .forEach((b) => b.remove())
-      const text = (clone.innerText || '').trim()
+      const text = (renderedText(clone) || '').trim()
       if (!text) continue
       if (/^已(?:深度)?思考[（(]用时[^）)]*[）)]$/.test(text)) continue
       if (text.length > best.length) best = text
@@ -477,7 +633,18 @@ function finishStream(): void {
   }
   streaming = false
   // ChatGPT 用「发送后新建节点」的文本，严禁回落到上一轮页面文本
-  const finalText = isChatGptPage() ? chatGptFreshReplyText() || lastText : lastBubbleText()
+  let finalText: string
+  if (isChatGptPage()) {
+    const fresh = chatGptFreshReplyText()
+    // 新版 Workspace 没有 markdown/author-role 节点，网络 hook 的补丁可能只拿到
+    // 残缺片段；收尾时用「ChatGPT 说：」文本块里的完整正文校正。
+    const domText = chatGptReplyFromText()
+    const hookText = lastText.trim()
+    finalText =
+      fresh || (domText && (!hookText || domText.length >= hookText.length) ? domText : hookText)
+  } else {
+    finalText = lastBubbleText()
+  }
   if (!finalText.trim()) {
     // 正文没同步到（节点重渲染/平台延迟）：让网络层或等待器兜底，绝不发空结束触发重试
     return
@@ -633,7 +800,7 @@ async function doSend(text: string): Promise<void> {
     for (let attempt = 0; attempt < 3 && !filled; attempt++) {
       input = findFirst(adapter.input, (_el, i) => i >= attempt)
       if (!input) break
-      filled = fillVerified(input, text)
+      filled = await fillVerified(input, text)
       if (!filled) await new Promise((r) => setTimeout(r, 200))
     }
     if (!input || !filled) throw new Error('输入框填入失败（选择器可能过期或页面未就绪）')
@@ -687,10 +854,37 @@ async function doSend(text: string): Promise<void> {
   }
 }
 
+/** Gemini 等平台在当前对话有内容时会弹「要清除当前对话并创建新的对话吗？」 */
+function confirmNewChatDialog(): boolean {
+  const dialogs = [
+    ...document.querySelectorAll<HTMLElement>(
+      '[role="dialog"], mat-dialog-container, [class*="dialog" i]'
+    )
+  ].filter(visible)
+  for (const d of dialogs) {
+    const btn = [...d.querySelectorAll<HTMLElement>('button')].find((b) => {
+      const t = ((b.innerText || b.textContent || '') + ' ' + (b.getAttribute('aria-label') || ''))
+        .replace(/\s+/g, ' ')
+        .trim()
+      return /发起新对话|新建对话|新建聊天|开始新对话|(^|\s)(确定|确认|继续)(\s|$)/.test(t)
+    })
+    if (btn) {
+      click(btn)
+      return true
+    }
+  }
+  return false
+}
+
 function doNewChat(): void {
+  // 弹窗已经开着：直接确认，否则再点新对话按钮也不会生效
+  if (confirmNewChatDialog()) return
   const btn = adapter ? findFirst(adapter.newChat) : null
   if (btn) click(btn)
   else window.location.href = window.location.origin
+  // 确认框通常延迟几百毫秒出现；两次兜底，避免它留在页面上挡住后续发送
+  window.setTimeout(confirmNewChatDialog, 400)
+  window.setTimeout(confirmNewChatDialog, 1200)
 }
 
 function doStop(): void {
@@ -897,11 +1091,11 @@ let pageSnapshotTries = 0
  * 主进程：重启会中断在途的流，之后页面上已生成的最终回答不会再有网络事件。
  */
 function schedulePageSnapshot(delay = 2200): void {
-  if (!isDeepSeekPage()) return
+  if (!isDeepSeekPage() && !isYuanbaoPage()) return
   if (pageSnapshotTimer !== undefined) window.clearTimeout(pageSnapshotTimer)
-  pageSnapshotTimer = window.setTimeout(() => {
+  pageSnapshotTimer = window.setTimeout(async () => {
     pageSnapshotTimer = undefined
-    if (!isDeepSeekPage()) return
+    if (!isDeepSeekPage() && !isYuanbaoPage()) return
     // 还在生成/搜索时先等，避免把中间态当最终回答
     if (isStreaming() || streaming) {
       schedulePageSnapshot(1200)
@@ -913,7 +1107,7 @@ function schedulePageSnapshot(delay = 2200): void {
       if (pageSnapshotTries++ < 5) schedulePageSnapshot(1500)
       return
     }
-    const think = lastThinkText()
+    const think = await lastThinkText()
     const sig = text + '\n---lidow-think---\n' + think
     if (sig === lastPageSnapshot) return
     lastPageSnapshot = sig
@@ -941,6 +1135,10 @@ let suppressChatKey = ''
 
 function isDeepSeekPage(): boolean {
   return /(^|\.)deepseek\.com$/i.test(location.hostname)
+}
+
+function isYuanbaoPage(): boolean {
+  return /(^|\.)yuanbao\.tencent\.com$/i.test(location.hostname)
 }
 
 // ---------- 长会话自动折叠（参考 Voyager collapse-long-messages） ----------
@@ -1030,6 +1228,7 @@ function ensureDeepSeekStyles(): void {
   const style = document.createElement('style')
   style.id = 'lidow-deepseek-style'
   style.textContent = `
+    #lidow-project-folders,#lidow-project-folders *{box-sizing:border-box}
     #lidow-project-folders{
       --lpf-text:#0f1115;
       --lpf-muted:color-mix(in srgb, var(--lpf-text) 52%, transparent);
@@ -1549,6 +1748,21 @@ function watchChatDeletion(): void {
  * 用户打开页面/登录成功那一刻必须马上弹初始化模态 —— 依赖轮询最多晚 4 秒，
  * 实测体验就是「等了一会儿才弹」。DOM 变化、页面加载、路由切换都主动调它。
  */
+/** 页面明确显示「未登录」文案（元宝侧栏底部） */
+function hasLogoutMarker(): boolean {
+  if (!adapter) return false
+  const texts = adapter.logoutText ?? []
+  if (texts.length === 0) return false
+  return [...document.querySelectorAll<HTMLElement>('p, span, button, a')].some((el) => {
+    if (el.children.length > 0 || !visible(el)) return false
+    if (el.closest('#lidow-ball, #lidow-menu, #lidow-first-run, #lidow-first-run-banner, #lidow-project-folders')) {
+      return false
+    }
+    const t = (el.innerText ?? el.textContent ?? '').trim()
+    return texts.includes(t)
+  })
+}
+
 function evaluateLoginNow(): void {
   if (!adapter) return
   const url = String(location.href)
@@ -1588,14 +1802,27 @@ function evaluateLoginNow(): void {
     }
     return false
   })
+  // 腾讯元宝的登录按钮在独立 iframe/组件里，DOM 扫描找不到；侧栏底部会显示
+  // 「未登录」文案。适配器声明 logoutText 时，命中任意可见文案即明确未登录。
+  const logoutHit = hasLogoutMarker()
   const nowLoggedIn = onLoginPage
     ? false
-    : loginBtn
+    : logoutHit
       ? false
-      : findFirst(adapter.input) !== null ||
-        (adapter.loginFlag.length > 0 && findFirst(adapter.loginFlag) !== null)
+      : loginBtn
+        ? false
+        : findFirst(adapter.input) !== null ||
+          (adapter.loginFlag.length > 0 && findFirst(adapter.loginFlag) !== null)
   if (nowLoggedIn !== loggedIn) {
+    const wasLoggedIn = loggedIn
     loggedIn = nowLoggedIn
+    // 登录成功是新的开始：未登录时用户可能已经点过关闭（或引导被登录页压掉），
+    // 登录后应重新给一次初始化入口；已初始化的会话仍会被 projectInitialized 压住。
+    if (nowLoggedIn && !wasLoggedIn) {
+      firstRunDismissed = false
+      firstRunCollapsed = false
+      clearFirstRunPersisted()
+    }
     renderFirstRun()
   }
 }
@@ -1607,7 +1834,7 @@ function extractProfileName(el: Element): string {
     .trim()
   const aria = (el.getAttribute('aria-label') || '').trim()
   const GENERIC =
-    /^(打开个人资料菜单|个人资料|个人资料菜单|账户菜单|账号菜单|Google 账号|账号|账户|设置|帮助|登录|注册|更多|菜单)$/
+    /^(打开个人资料菜单|个人资料|个人资料菜单|账户菜单|账号菜单|Google 账号|账号|账户|设置|帮助|登录|未登录|注册|更多|菜单)$/
   // 优先可见文案（ChatGPT 侧栏是“liding li + 套餐”）；头像按钮没有文字时用 aria-label
   let raw = text && !GENERIC.test(text) ? text : aria || text
   if (!raw) return ''
@@ -1623,8 +1850,10 @@ function extractProfileName(el: Element): string {
   let name = raw.split(/[\n|]/)[0]?.trim() ?? ''
   name = name.replace(/(免费版|Plus|Pro|Team|Enterprise|Free|升级|套餐|会员)$/i, '').trim()
   if (!name || name.length > 60) return ''
+  // 元宝未登录时会给访客生成占位名（如“用户f0a8”），不是真实账号名
+  if (/^用户[0-9a-z]{4,}$/i.test(name)) return ''
   if (
-    /^(设置|帮助|登录|注册|新聊天|新对话|搜索|探索|账户|账号|个人|菜单|更多|头像|切换账号|退出登录|升级|免费版|套餐)$/.test(
+    /^(设置|帮助|登录|未登录|立即登录|注册|新聊天|新对话|新建对话|开启新对话|搜索|探索|账户|账号|个人|菜单|更多|头像|切换账号|退出登录|升级|免费版|套餐|我知道了|前往下载中心|安装电脑版|下载电脑版|安装元宝电脑版|创建分组|AI 创作|显示全部|收起|展开|添加|上传|附件|发送|停止生成)$/.test(
       name
     )
   ) {
@@ -1636,7 +1865,8 @@ function extractProfileName(el: Element): string {
 /** 网页侧账号显示名：适配器选择器优先，退化为左下角侧栏底部的账号按钮 */
 function detectProfileName(): string {
   if (!adapter) return ''
-  for (const sel of adapter.profileName ?? []) {
+  const explicitSelectors = adapter.profileName ?? []
+  for (const sel of explicitSelectors) {
     try {
       const list = [...document.querySelectorAll<HTMLElement>(sel)].filter(visible)
       // 文档顺序优先：页面通常把用户名放在套餐/状态文案前面（豆包实测）
@@ -1648,6 +1878,9 @@ function detectProfileName(): string {
       /* 无效选择器跳过 */
     }
   }
+  // 已经配置了明确的用户名选择器：没命中就当作“没有名字”，绝不退回左下角猜。
+  // 否则网页输入框的“添加”、教程按钮等都会被当成账号名（元宝实测多次）。
+  if (explicitSelectors.length > 0) return ''
   const bottom: { name: string; y: number; avatar: boolean }[] = []
   const consider = (el: HTMLElement): void => {
     if (!visible(el)) return
@@ -1696,6 +1929,9 @@ function detectProfileName(): string {
 
 function reportProfileName(): void {
   if (!adapter || !loggedIn) return
+  // 登录态切换的瞬间 loggedIn 可能短暂为 true（页面先渲染输入框、后渲染未登录文案）；
+  // 只要页面还有「未登录」标记，绝不把占位/引导文案写成账号名。
+  if (hasLogoutMarker()) return
   const name = detectProfileName()
   if (!name || name === lastProfileName) return
   lastProfileName = name
@@ -1896,6 +2132,8 @@ let loggedIn = false
 let lastLoginSent: boolean | null = null
 /** 上一次上报的网页账号名 */
 let lastProfileName = ''
+/** 当前网页绑定的会话：初始化忽略状态按会话存储，避免不同平台互相压制 */
+let currentSessionId = ''
 /** 是否已收到过主进程的明确 projectRoot 下发（区分"还没收到"与"确实没有项目"） */
 let projectKnown = false
 /** 主进程告知：当前会话/项目已有对话记录（已初始化，重载后不再弹引导） */
@@ -1980,7 +2218,8 @@ const FIRST_RUN_KEY_PREFIX = 'lidow:firstRunDismissed:'
 const FIRST_RUN_TTL_MS = 5 * 60_000
 
 function firstRunKey(root: string): string {
-  return FIRST_RUN_KEY_PREFIX + root.toLowerCase()
+  // 按会话隔离：同一项目下不同平台/会话要各自看到初始化入口
+  return FIRST_RUN_KEY_PREFIX + (currentSessionId || root.toLowerCase())
 }
 
 function isFirstRunPersisted(root: string | null): boolean {
@@ -2378,16 +2617,31 @@ function renderGoogleLoginNotice(): void {
  * 平台可能用 button、div[role=button]，文案也可能带括号后缀。
  */
 function findToggleButton(keywords: string[]): HTMLElement | null {
-  const candidates = document.querySelectorAll<HTMLElement>(
-    'button, div[role="button"], [class*="button"]'
-  )
+  const candidates = [
+    ...document.querySelectorAll<HTMLElement>(
+      'button, div[role="button"], [class*="button"], [aria-pressed]'
+    )
+  ].filter(visible)
   for (const kw of keywords) {
+    const hits: HTMLElement[] = []
     for (const el of candidates) {
       const t = [el.textContent ?? '', el.getAttribute('aria-label') ?? '', el.title ?? '']
         .join(' ')
         .trim()
-      if (t === kw || t.startsWith(kw) || t.includes(kw)) return el
+      if (t === kw || t.startsWith(kw) || t.includes(kw)) hits.push(el)
     }
+    if (hits.length === 0) continue
+    // 平台自己的开关优先：DeepSeek 是 div.ds-toggle-button[aria-pressed]；
+    // 直接取外层容器（class 也含 button）点击不会触发切换。
+    const explicit = hits.find(
+      (el) =>
+        el.hasAttribute('aria-pressed') ||
+        /(^|[\s_-])(toggle|switch)([\s_-]|$)/i.test((el.className || '').toString())
+    )
+    if (explicit) return explicit
+    // 其次取最内层：外层包裹文字也匹配，点它没有事件处理
+    const innermost = hits.find((el) => !hits.some((other) => other !== el && el.contains(other)))
+    return innermost ?? hits[0]!
   }
   return null
 }
@@ -2395,9 +2649,14 @@ function findToggleButton(keywords: string[]): HTMLElement | null {
 /** 平台按钮是否处于「已激活」态：查常见标记（选中类、aria-pressed、高亮背景） */
 function isToggleActive(el: HTMLElement | null): boolean {
   if (!el) return false
+  // aria-pressed 是显式状态，优先且正反都采信（DeepSeek 未激活时也有浅色底，
+  // 只靠背景色会把关闭态误判成开启）
+  const pressed = el.getAttribute('aria-pressed')
+  if (pressed === 'true') return true
+  if (pressed === 'false') return false
   const cls = el.className || ''
-  if (/active|selected|checked|on/i.test(cls)) return true
-  if (el.getAttribute('aria-pressed') === 'true') return true
+  // 必须按“独立词”匹配：ds-toggle-button 里的 button 含 on，简单 /on/ 会全部误判
+  if (/(^|[\s_-])(active|selected|checked|on)([\s_-]|$)/i.test(cls)) return true
   const bg = getComputedStyle(el).backgroundColor
   // 激活态通常带浅色底（非透明、非纯白）
   return bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent' && bg !== 'rgb(255, 255, 255)'
@@ -2560,13 +2819,26 @@ function modelButtonLabel(btn: Element): string {
   return quoted?.[1]?.trim() || aria
 }
 
-/** 菜单项名称：优先取 .model-name（Kimi 这类名称内部有 <span>，innerText 会被拆成多行） */
+/** 菜单项名称：优先取 .model-name / 第一行名称 span（Kimi、元宝的名称会被拆成多行） */
 function modelItemLabel(el: HTMLElement): string {
-  const nameEl = el.querySelector<HTMLElement>('.model-name')
+  const custom = adapter?.model?.itemLabel?.join(',') || ''
+  const nameEl = el.querySelector<HTMLElement>(custom || '.model-name')
+  // 用 textContent 而不是 innerText：元宝的「Hy4 preview」在 innerText 里会断成两行
   const raw = nameEl
-    ? (nameEl.innerText || nameEl.textContent || '').replace(/\s+/g, ' ')
+    ? (nameEl.textContent || '').replace(/\s+/g, ' ')
     : (el.innerText || el.textContent || '').split(/\r?\n/)[0] || ''
   return raw.trim()
+}
+
+/** 菜单项是否被平台标记为不可用（Gemini 免费账号的付费模型、部分锁定项） */
+function modelItemDisabled(el: HTMLElement): boolean {
+  const inner = el.firstElementChild as HTMLElement | null
+  return (
+    el.getAttribute('aria-disabled') === 'true' ||
+    inner?.getAttribute('aria-disabled') === 'true' ||
+    /(^|\s)disabled(\s|$)/i.test((el.className || '').toString()) ||
+    /(^|\s)disabled(\s|$)/i.test((inner?.className || '').toString())
+  )
 }
 
 function modelMenuItems(): { btn: Element; items: HTMLElement[] } | null {
@@ -2598,6 +2870,33 @@ async function openModelMenu(): Promise<{ btn: Element; items: HTMLElement[] } |
   return { btn, items: [] }
 }
 
+/** 打开二级模型菜单（元宝「模型 Hy3 → Hy4/Hy3/DeepSeek」） */
+async function openModelSubmenu(
+  mainItems: HTMLElement[]
+): Promise<{ trigger: Element; items: HTMLElement[]; current: string } | null> {
+  if (!adapter?.model?.submenu) return null
+  const trigger = findFirst(adapter.model.submenu.trigger)
+  if (!trigger) return null
+  hover(trigger)
+  await pause(280)
+  // 子菜单打开后 items 选择器会同时命中父菜单，过滤掉已读过的思考模式项
+  let all = modelMenuItems()?.items ?? []
+  let items = all.filter((el) => !mainItems.includes(el) && visible(el))
+  if (items.length === 0) {
+    // 少数平台是 click 展开
+    click(trigger)
+    await pause(320)
+    all = modelMenuItems()?.items ?? []
+    items = all.filter((el) => !mainItems.includes(el) && visible(el))
+  }
+  if (items.length === 0) return null
+  const raw = ((trigger as HTMLElement).innerText || trigger.textContent || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const current = raw.replace(/^模型\s*/, '').trim()
+  return { trigger, items, current }
+}
+
 /** Escape 关不掉的自定义弹层（通义/智谱）：再点一次触发器收起 */
 async function closeModelMenu(): Promise<void> {
   document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
@@ -2619,35 +2918,64 @@ async function reportModelOptions(): Promise<void> {
     send({ type: 'model-options', current: '', options: [] })
     return
   }
-  const current = modelButtonLabel(btn)
+  const modeCurrent = modelButtonLabel(btn)
   const opened = await openModelMenu()
-  const items = opened?.items ?? []
-  const options: { label: string; desc?: string; selected?: boolean }[] = []
-  for (const el of items) {
-    if (el.getBoundingClientRect().height < 20) continue
-    const label = modelItemLabel(el)
-    if (!label || /^思考(等级|强度)$|thinking level/i.test(label)) continue
-    if (options.some((o) => o.label === label)) continue
-    const full = ((el.innerText || el.textContent || '') as string).replace(/\s+/g, ' ').trim()
-    const desc = (full.startsWith(label) ? full.slice(label.length) : '').trim()
-    options.push({
-      label,
-      desc: desc || undefined,
-      selected:
-        /(^|\s)selected(\s|$)/.test((el.className || '').toString()) ||
-        el.getAttribute('aria-checked') === 'true'
-    })
+  const mainItems = opened?.items ?? []
+  // 元宝的模型版本在二级菜单里（模型 Hy3 → Hy4/Hy3/DeepSeek）
+  let modelCurrent = ''
+  let subItems: HTMLElement[] = []
+  if (adapter.model.submenu) {
+    const sub = await openModelSubmenu(mainItems)
+    if (sub) {
+      modelCurrent = sub.current
+      subItems = sub.items
+    }
   }
+  const current = [modelCurrent, modeCurrent].filter(Boolean).join(' · ')
+  const options: { label: string; desc?: string; selected?: boolean; group?: string; disabled?: boolean }[] = []
+  const pushOptions = (list: HTMLElement[], group?: string): void => {
+    for (const el of list) {
+      if (el.getBoundingClientRect().height < 20) continue
+      const label = modelItemLabel(el)
+      if (!label || /^思考(等级|强度)$|thinking level/i.test(label)) continue
+      // 登录/升级引导不是模型，混进列表会让用户点到“登录即可使用所有模型”
+      if (/登录即可使用|登录以使用|登录后使用|升级至|升级到|订阅/.test(label)) continue
+      if (options.some((o) => o.label === label)) continue
+      const inner = el.firstElementChild as HTMLElement | null
+      const disabled = modelItemDisabled(el)
+      const full = ((el.innerText || el.textContent || '') as string).replace(/\s+/g, ' ').trim()
+      const desc = (full.startsWith(label) ? full.slice(label.length) : '').trim()
+      options.push({
+        label,
+        desc: desc || undefined,
+        group,
+        disabled: disabled || undefined,
+        selected:
+          /(^|\s)selected(\s|$)/.test((el.className || '').toString()) ||
+          /(^|\s)selected(\s|$)/.test((inner?.className || '').toString()) ||
+          el.getAttribute('aria-checked') === 'true'
+      })
+    }
+  }
+  pushOptions(subItems, '模型')
+  pushOptions(mainItems, adapter.model.submenu ? '思考模式' : undefined)
   // 有些平台（豆包/通义）菜单项不带选中属性，用当前按钮文案兜底匹配
   if (!options.some((o) => o.selected)) {
-    const exact = options.find((o) => o.label === current)
-    const prefix = exact
-      ? undefined
-      : [...options]
-          .sort((a, b) => b.label.length - a.label.length)
-          .find((o) => current.startsWith(o.label + ' '))
-    if (exact) exact.selected = true
-    else if (prefix) prefix.selected = true
+    if (adapter.model.submenu) {
+      const modelOpt = options.find((o) => o.group === '模型' && o.label === modelCurrent)
+      const modeOpt = options.find((o) => o.group === '思考模式' && o.label === modeCurrent)
+      if (modelOpt) modelOpt.selected = true
+      if (modeOpt) modeOpt.selected = true
+    } else {
+      const exact = options.find((o) => o.label === modeCurrent)
+      const prefix = exact
+        ? undefined
+        : [...options]
+            .sort((a, b) => b.label.length - a.label.length)
+            .find((o) => modeCurrent.startsWith(o.label + ' '))
+      if (exact) exact.selected = true
+      else if (prefix) prefix.selected = true
+    }
   }
   await closeModelMenu()
   send({ type: 'model-options', current, options })
@@ -2664,10 +2992,20 @@ async function selectModel(label: string): Promise<void> {
     send({ type: 'model-selected', ok: false, error: '没有打开模型菜单' })
     return
   }
-  const target = opened.items.find((el) => {
+  const match = (el: HTMLElement): boolean => {
     const first = modelItemLabel(el)
     return first === label || first.endsWith(label) || label.endsWith(first)
-  })
+  }
+  let target = opened.items.find(match)
+  if (!target && adapter.model.submenu) {
+    const sub = await openModelSubmenu(opened.items)
+    target = sub?.items.find(match)
+  }
+  if (target && modelItemDisabled(target)) {
+    await closeModelMenu()
+    send({ type: 'model-selected', ok: false, error: '该模型在当前账号不可用' })
+    return
+  }
   if (!target) {
     await closeModelMenu()
     send({ type: 'model-selected', ok: false, error: '菜单中没有该模型' })
@@ -2688,6 +3026,7 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       if (cmd.adapter) {
         adapter = cmd.adapter
         overlayConfigured = true
+        currentSessionId = cmd.sessionId ?? ''
         lastProfileName = ''
         lastLoginSent = null
         if (readyTimer) {
@@ -2778,6 +3117,28 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       if (kws.length > 0) {
         const hit = findToggleButton(kws)
         if (hit) click(hit)
+      }
+      break
+    }
+    case 'remove-attachment': {
+      // 纯模式删除缩略图 → 点掉网页输入区里同名附件的移除按钮
+      const name = (cmd.attachmentName ?? '').trim()
+      if (!name) break
+      const imgs = [...document.querySelectorAll<HTMLImageElement>('img[alt]')].filter(visible)
+      const img = imgs.find((i) => {
+        const alt = (i.alt || '').trim()
+        return Boolean(alt) && (alt === name || alt.includes(name) || name.includes(alt))
+      })
+      if (!img) break
+      let p: HTMLElement | null = img.parentElement
+      for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+        const closer = p.querySelector<HTMLElement>(
+          '[class*="c8b3f8a6"], [aria-label*="删除"], [aria-label*="移除"], [aria-label*="remove" i], [class*="remove" i], [class*="close" i]'
+        )
+        if (closer) {
+          click(closer)
+          break
+        }
       }
       break
     }

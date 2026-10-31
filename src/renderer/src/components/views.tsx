@@ -23,8 +23,10 @@ import {
   IconGlobe,
   IconCopy,
   IconSpark,
-  IconStar
+  IconStar,
+  IconChevronRight
 } from './icons'
+import { PdfPreview } from './PdfPreview'
 
 /** 统一页面骨架：标题区 + 滚动内容
  *  只做纯淡入、不做位移：此前 anim-view（fadeUp 上移 6px）叠外层淡入，
@@ -668,50 +670,80 @@ function TreeNodes({
   nodes,
   depth,
   onOpen,
-  selected
+  selected,
+  collapsed,
+  onToggle
 }: {
   nodes: Awaited<ReturnType<typeof api.readFileTree>>
   depth: number
   onOpen: (p: string) => void
   selected?: string
+  collapsed: Set<string>
+  onToggle: (p: string) => void
 }): React.JSX.Element {
   const sorted = [...nodes].sort((a, b) =>
     a.type === b.type ? a.name.localeCompare(b.name, 'zh-CN') : a.type === 'dir' ? -1 : 1
   )
   return (
     <>
-      {sorted.map((n) => (
-        <div key={n.path}>
-          <button
-            className={`flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[5px] pr-2 text-left text-[12.5px] transition-colors duration-[130ms] ${
-              selected === n.path ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
-            }`}
-            style={{
-              paddingLeft: 7 + depth * 14,
-              color:
-                n.type === 'dir'
+      {sorted.map((n) => {
+        const isDir = n.type === 'dir'
+        const hasChildren = Boolean(n.children?.length)
+        const open = !collapsed.has(n.path)
+        return (
+          <div key={n.path}>
+            <button
+              className={`flex w-full items-center gap-1.5 truncate rounded-[var(--r-sm)] py-[5px] pr-2 text-left text-[12.5px] transition-colors duration-[130ms] ${
+                selected === n.path ? 'bg-[var(--bg-active)]' : 'hover:bg-[var(--bg-hover)]'
+              }`}
+              style={{
+                paddingLeft: 7 + depth * 14,
+                color: isDir
                   ? 'var(--text-body)'
                   : selected === n.path
                     ? 'var(--text)'
                     : 'var(--text-dim)'
-            }}
-            onClick={() => n.type === 'file' && onOpen(n.path)}
-          >
-            <span
-              style={{
-                color: n.type === 'dir' ? 'var(--accent)' : 'var(--text-hint)',
-                opacity: 0.85
+              }}
+              title={isDir && hasChildren ? (open ? '折叠文件夹' : '展开文件夹') : n.name}
+              onClick={() => {
+                if (isDir && hasChildren) onToggle(n.path)
+                else if (!isDir) onOpen(n.path)
               }}
             >
-              {n.type === 'dir' ? <IconFolder size={12} /> : <IconFile size={12} />}
-            </span>
-            <span className="truncate">{n.name}</span>
-          </button>
-          {n.children && (
-            <TreeNodes nodes={n.children} depth={depth + 1} onOpen={onOpen} selected={selected} />
-          )}
-        </div>
-      ))}
+              <span
+                className="flex w-3 shrink-0 justify-center"
+                style={{ color: 'var(--text-hint)' }}
+              >
+                {isDir && hasChildren && (
+                  <IconChevronRight
+                    size={10}
+                    className={`transition-transform duration-[120ms] ${open ? 'rotate-90' : ''}`}
+                  />
+                )}
+              </span>
+              <span
+                style={{
+                  color: isDir ? 'var(--accent)' : 'var(--text-hint)',
+                  opacity: 0.85
+                }}
+              >
+                {isDir ? <IconFolder size={12} /> : <IconFile size={12} />}
+              </span>
+              <span className="min-w-0 flex-1 truncate">{n.name}</span>
+            </button>
+            {isDir && hasChildren && open && (
+              <TreeNodes
+                nodes={n.children!}
+                depth={depth + 1}
+                onOpen={onOpen}
+                selected={selected}
+                collapsed={collapsed}
+                onToggle={onToggle}
+              />
+            )}
+          </div>
+        )
+      })}
     </>
   )
 }
@@ -723,6 +755,29 @@ export function FilesView(): React.JSX.Element {
   const selectedFile = useStore((s) => s.selectedFile)
   const setView = useStore((s) => s.setView)
   const project = projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set())
+  const toggleDir = (path: string): void => {
+    setCollapsedDirs((prev) => {
+      const next = new Set(prev)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+  useEffect(() => {
+    setCollapsedDirs(new Set())
+  }, [project?.id])
+  const formatSize = (size?: number): string => {
+    if (size === undefined) return ''
+    if (size < 1024) return `${size} B`
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+    return `${(size / 1024 / 1024).toFixed(1)} MB`
+  }
+  const toFileUrl = (rel: string): string => {
+    if (!project) return ''
+    const p = `${project.root}/${rel}`.replace(/\\/g, '/')
+    return `file:///${encodeURI(p).replace(/#/g, '%23').replace(/\?/g, '%3F')}`
+  }
 
   const refresh = (): void => {
     if (project)
@@ -804,10 +859,31 @@ export function FilesView(): React.JSX.Element {
                   nodes={fileTree}
                   depth={0}
                   selected={selectedFile?.path}
+                  collapsed={collapsedDirs}
+                  onToggle={toggleDir}
                   onOpen={(p) =>
                     void api
-                      .readFileContent(project.id, p)
-                      .then((content) => useStore.setState({ selectedFile: { path: p, content } }))
+                      .readFilePreview(project.id, p)
+                      .then((r) =>
+                        useStore.setState({
+                          selectedFile: {
+                            path: p,
+                            content: r.content ?? '',
+                            kind: r.kind,
+                            dataUrl: r.dataUrl,
+                            mime: r.mime,
+                            size: r.size
+                          }
+                        })
+                      )
+                      .catch((e) =>
+                        useStore
+                          .getState()
+                          .notice(
+                            `读取失败：${e instanceof Error ? e.message : String(e)}`,
+                            'error'
+                          )
+                      )
                   }
                 />
               )}
@@ -820,19 +896,75 @@ export function FilesView(): React.JSX.Element {
                     style={{ borderColor: 'var(--border-soft)', color: 'var(--text-hint)' }}
                   >
                     <span className="min-w-0 flex-1 truncate">{selectedFile.path}</span>
+                    {selectedFile.kind === 'html' && (
+                      <button
+                        className="btn btn-sm btn-outline shrink-0"
+                        title="在系统默认浏览器中打开"
+                        onClick={() =>
+                          void api.openPathInSystem(`${project.root}/${selectedFile.path}`)
+                        }
+                      >
+                        <IconGlobe size={12} /> 在浏览器中打开
+                      </button>
+                    )}
                     <button
-                      className="btn btn-sm btn-ghost shrink-0"
+                      className="btn btn-sm btn-outline shrink-0"
                       onClick={() => void api.revealPath(`${project.root}/${selectedFile.path}`)}
                     >
                       在系统中查看
                     </button>
                   </div>
-                  <pre
-                    className="whitespace-pre-wrap font-mono text-[12px] leading-[1.65]"
-                    style={{ color: 'var(--text-body)' }}
-                  >
-                    {selectedFile.content}
-                  </pre>
+                  {selectedFile.kind === 'image' && selectedFile.dataUrl ? (
+                    <div
+                      className="flex h-[calc(100vh-250px)] items-center justify-center rounded-[var(--r-md)]"
+                      style={{ background: 'var(--surface-sunken)' }}
+                    >
+                      <img
+                        src={selectedFile.dataUrl}
+                        alt={selectedFile.path}
+                        className="max-h-full max-w-full object-contain"
+                      />
+                    </div>
+                  ) : selectedFile.kind === 'pdf' && selectedFile.dataUrl ? (
+                    <PdfPreview
+                      dataUrl={selectedFile.dataUrl}
+                      onOpenSystem={() =>
+                        void api.revealPath(`${project.root}/${selectedFile.path}`)
+                      }
+                    />
+                  ) : selectedFile.kind === 'html' ? (
+                    <webview
+                      src={toFileUrl(selectedFile.path)}
+                      className="h-[calc(100vh-250px)] w-full rounded-[var(--r-md)]"
+                      style={{ border: '1px solid var(--border)', background: '#fff' }}
+                    />
+                  ) : selectedFile.kind === 'binary' ? (
+                    <div
+                      className="flex h-[calc(100vh-250px)] flex-col items-center justify-center gap-3 text-center"
+                      style={{ color: 'var(--text-hint)' }}
+                    >
+                      <IconFile size={28} />
+                      <div className="text-[12px]">
+                        该文件暂不支持内置预览
+                        {selectedFile.size !== undefined
+                          ? `（${formatSize(selectedFile.size)}）`
+                          : ''}
+                      </div>
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => void api.revealPath(`${project.root}/${selectedFile.path}`)}
+                      >
+                        在系统中查看
+                      </button>
+                    </div>
+                  ) : (
+                    <pre
+                      className="whitespace-pre-wrap font-mono text-[12px] leading-[1.65]"
+                      style={{ color: 'var(--text-body)' }}
+                    >
+                      {selectedFile.content}
+                    </pre>
+                  )}
                 </>
               ) : (
                 <div
@@ -2939,7 +3071,16 @@ export function SettingsView(): React.JSX.Element {
                     <IconPlus size={12} /> 添加平台
                   </button>
                 </div>
-                {providers.map((p) => (
+                {providers.map((p) => {
+                  // 有命名账号且默认分区没登录时，隐式默认分区只是空壳；
+                  // 再和命名账号并列展示会让人以为登录了两个账号。
+                  const showImplicit =
+                    p.accounts.length === 0 ||
+                    (!p.defaultAccountId && p.defaultLoggedIn === true)
+                  const effectiveDefaultId =
+                    p.defaultAccountId ??
+                    (!showImplicit && p.accounts.length === 1 ? (p.accounts[0]?.id ?? null) : null)
+                  return (
                   <div
                     key={p.id}
                     className="rounded-[var(--r-md)] p-3"
@@ -2964,42 +3105,44 @@ export function SettingsView(): React.JSX.Element {
                       )}
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <span
-                        className="inline-flex items-center overflow-hidden rounded-[var(--r-sm)]"
-                        style={{
-                          background: 'var(--surface)',
-                          border: '1px solid var(--border)'
-                        }}
-                        title="隐式默认分区（未显式建账号时使用）"
-                      >
-                        <button
-                          className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-                          title={
-                            p.defaultAccountId
-                              ? '设为默认账号（隐式默认分区）'
-                              : '当前默认账号（隐式默认分区）'
-                          }
-                          style={{
-                            color: p.defaultAccountId ? 'var(--text-hint)' : 'var(--accent)'
-                          }}
-                          onClick={() => setDefaultAccount(p.id, null)}
-                        >
-                          <IconStar size={11} filled={!p.defaultAccountId} />
-                        </button>
+                      {showImplicit && (
                         <span
-                          className="flex items-center gap-1.5 px-1.5 py-1 text-[11.5px]"
-                          style={{ color: 'var(--text-body)' }}
+                          className="inline-flex items-center overflow-hidden rounded-[var(--r-sm)]"
+                          style={{
+                            background: 'var(--surface)',
+                            border: '1px solid var(--border)'
+                          }}
+                          title="隐式默认分区（未显式建账号时使用）"
                         >
-                          {p.defaultLoggedIn && (
-                            <span
-                              className="h-1.5 w-1.5 rounded-full"
-                              style={{ background: 'var(--success)' }}
-                            />
-                          )}
-                          {p.defaultAccountLabel ||
-                            (p.defaultLoggedIn ? '默认登录态' : '默认分区')}
+                          <button
+                            className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
+                            title={
+                              p.defaultAccountId
+                                ? '设为默认账号（隐式默认分区）'
+                                : '当前默认账号（隐式默认分区）'
+                            }
+                            style={{
+                              color: p.defaultAccountId ? 'var(--text-hint)' : 'var(--accent)'
+                            }}
+                            onClick={() => setDefaultAccount(p.id, null)}
+                          >
+                            <IconStar size={11} filled={!p.defaultAccountId} />
+                          </button>
+                          <span
+                            className="flex items-center gap-1.5 px-1.5 py-1 text-[11.5px]"
+                            style={{ color: 'var(--text-body)' }}
+                          >
+                            {p.defaultLoggedIn && (
+                              <span
+                                className="h-1.5 w-1.5 rounded-full"
+                                style={{ background: 'var(--success)' }}
+                              />
+                            )}
+                            {p.defaultAccountLabel ||
+                              (p.defaultLoggedIn ? '默认登录态' : '默认分区')}
+                          </span>
                         </span>
-                      </span>
+                      )}
                       {p.accounts.map((a) => {
                         const active = p.activeAccountId === a.id
                         return (
@@ -3037,12 +3180,12 @@ export function SettingsView(): React.JSX.Element {
                             <button
                               className="flex h-full items-center px-1.5 py-1 transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
                               title={
-                                p.defaultAccountId === a.id ? '当前默认账号' : '设为默认账号'
+                                effectiveDefaultId === a.id ? '当前默认账号' : '设为默认账号'
                               }
                               style={{
                                 background: active ? 'var(--accent)' : 'var(--surface)',
                                 color:
-                                  p.defaultAccountId === a.id
+                                  effectiveDefaultId === a.id
                                     ? active
                                       ? 'var(--on-accent)'
                                       : 'var(--accent)'
@@ -3052,7 +3195,7 @@ export function SettingsView(): React.JSX.Element {
                               }}
                               onClick={() => setDefaultAccount(p.id, a.id)}
                             >
-                              <IconStar size={11} filled={p.defaultAccountId === a.id} />
+                              <IconStar size={11} filled={effectiveDefaultId === a.id} />
                             </button>
                             <span
                               aria-hidden
@@ -3089,7 +3232,8 @@ export function SettingsView(): React.JSX.Element {
                       </button>
                     </div>
                   </div>
-                ))}
+                  )
+                })}
               </div>
             ) : (
               <div className="text-[12px]" style={{ color: 'var(--text-hint)' }}>

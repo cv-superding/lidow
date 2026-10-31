@@ -42,7 +42,7 @@ import {
   IconFolderColor,
   IconTrash
 } from './icons'
-import { WindowControls, DragStrip } from './TitleBar'
+import { WindowControls, PureMenuBar } from './TitleBar'
 
 type RailItem = { id: ViewId; label: string }
 const RAIL_GROUPS: RailItem[][] = [
@@ -84,16 +84,20 @@ export function PanelHeader({ title, children }: { title: string; children?: Rea
 export function LeftRail(): React.JSX.Element {
   const { view, setView, pureMode, setPure } = useStore()
   const railPinned = useStore((s) => s.railPinned)
-  // 只由顶栏的固定开关控制展开；悬停不再改变宽度，避免整栏跳动和文字错位
-  const expanded = railPinned
+  const [hovered, setHovered] = useState(false)
+  // 悬停时向右展开盖住内容，用负 margin 抵消布局宽度，避免网页跟着左右跳动
+  const expanded = railPinned || hovered
   return (
     <div
       className="relative flex h-full flex-col border-r"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         width: expanded ? 184 : 56,
+        marginRight: expanded && !railPinned ? -128 : 0,
         borderColor: 'var(--border)',
         background: 'var(--sidebar)',
-        transition: 'width var(--dur-slow) var(--ease-emph)',
+        transition: 'width var(--dur-slow) var(--ease-emph), margin-right var(--dur-slow) var(--ease-emph)',
         overflow: 'hidden',
         zIndex: 40
       }}
@@ -127,9 +131,9 @@ export function LeftRail(): React.JSX.Element {
                     justifyContent: expanded ? 'flex-start' : 'center',
                     height: 36,
                     borderRadius: 'var(--r-md)',
-                    background: active ? 'var(--surface)' : 'transparent',
-                    color: active ? 'var(--accent)' : 'var(--text-dim)',
-                    boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+                    background: active ? 'var(--surface)' : undefined,
+                    color: active ? 'var(--accent)' : undefined,
+                    boxShadow: active ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : undefined
                   }}
                   onClick={() => setView(item.id)}
                   title={item.label}
@@ -160,9 +164,9 @@ export function LeftRail(): React.JSX.Element {
             justifyContent: expanded ? 'flex-start' : 'center',
             height: 36,
             borderRadius: 'var(--r-md)',
-            background: pureMode ? 'var(--surface)' : 'transparent',
-            color: pureMode ? 'var(--accent)' : 'var(--text-dim)',
-            boxShadow: pureMode ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+            background: pureMode ? 'var(--surface)' : undefined,
+            color: pureMode ? 'var(--accent)' : undefined,
+            boxShadow: pureMode ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : undefined
           }}
           title="纯净模式"
           onClick={() => setPure(!pureMode)}
@@ -208,9 +212,9 @@ export function LeftRail(): React.JSX.Element {
             justifyContent: expanded ? 'flex-start' : 'center',
             height: 36,
             borderRadius: 'var(--r-md)',
-            background: view === 'settings' ? 'var(--surface)' : 'transparent',
-            color: view === 'settings' ? 'var(--accent)' : 'var(--text-dim)',
-            boxShadow: view === 'settings' ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : 'none'
+            background: view === 'settings' ? 'var(--surface)' : undefined,
+            color: view === 'settings' ? 'var(--accent)' : undefined,
+            boxShadow: view === 'settings' ? 'inset 0 0 0 1px var(--border), var(--shadow-sm)' : undefined
           }}
           title="设置"
           onClick={() => setView('settings')}
@@ -741,7 +745,7 @@ export function AppShell(): React.JSX.Element {
 
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
-      {pureMode ? <DragStrip /> : <TopBar />}
+      {pureMode ? <PureMenuBar /> : <TopBar />}
 
       <div className="relative flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}

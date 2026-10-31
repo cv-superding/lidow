@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -35,7 +35,10 @@ import {
   IconThumbUp,
   IconThumbDown,
   IconVolume,
-  IconShare
+  IconShare,
+  IconBrain,
+  IconGlobe,
+  IconWhale
 } from './icons'
 
 const SLASH_COMMANDS = [
@@ -335,37 +338,24 @@ function ChangeCard({
 }
 
 /** 首包等待态：对齐 Qoder 的「正在思考」 */
-function PendingIndicator({ since }: { since: number }): React.JSX.Element {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const t = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(t)
-  }, [])
-  const start = since || now
-  const secs = Math.max(0, Math.floor((now - start) / 1000))
+function DeepSearching(): React.JSX.Element {
   return (
-    <div
-      className="anim-fade flex items-center gap-2 self-start rounded-[var(--r-lg)] border px-3 py-[7px] text-[12px]"
-      style={{
-        borderColor: 'var(--border)',
-        background: 'var(--surface)',
-        color: 'var(--text-dim)'
-      }}
-    >
-      <span className="anim-breathe inline-flex" style={{ color: 'var(--accent)' }}>
-        <IconSpark size={14} />
-      </span>
-      <span>正在思考</span>
+    <span className="anim-fade flex items-center gap-1.5" style={{ color: 'var(--accent)' }}>
+      <IconWhale size={16} />
+      <span className="text-[12.5px] font-medium tracking-tight">深度求索中</span>
       <span className="pending-dots">
         <span />
         <span />
         <span />
       </span>
-      {secs >= 1 && (
-        <span className="tabular-nums" style={{ color: 'var(--text-hint)' }}>
-          {secs}s
-        </span>
-      )}
+    </span>
+  )
+}
+
+function PendingIndicator(): React.JSX.Element {
+  return (
+    <div className="anim-fade flex items-center self-start py-0.5">
+      <DeepSearching />
     </div>
   )
 }
@@ -393,18 +383,28 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
       out.push(turn)
       continue
     }
+    const isInitAck = (text: string): boolean => /^初始化成功/.test(text.replace(/\s+/g, ''))
     let duplicateOf = -1
+    let initAckDup = false
     for (let j = out.length - 1; j >= groupStart; j--) {
       const prev = out[j]
       if (!prev || prev.role !== 'assistant') continue
       if ((prev.toolResults?.length ?? 0) > 0 || /```lidow/i.test(prev.text)) continue
       const prevKey = norm(prev.text)
       if (!prevKey) continue
+      // 初始化回复可能被抓成一条残缺、一条完整；只保留更完整的那条
+      if (isInitAck(turn.text) && isInitAck(prev.text)) {
+        duplicateOf = j
+        initAckDup = true
+        break
+      }
+      // 同一轮里常见的「半截回答 + 完整回答」：短文本是长文本的前缀子串。
+      // 下限放到 8 个字符，否则「已完成。文件：`lidow-tool」这种短残片达不到
+      // 30 字阈值，会在界面上和完整回答并排显示两条。
+      const shorter = Math.min(prevKey.length, key.length)
       const related =
         prevKey === key ||
-        (key.length >= 30 &&
-          prevKey.length >= 30 &&
-          (prevKey.includes(key) || key.includes(prevKey)))
+        (shorter >= 8 && (prevKey.includes(key) || key.includes(prevKey)))
       if (related) {
         duplicateOf = j
         break
@@ -415,8 +415,13 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
       continue
     }
     const prev = out[duplicateOf]!
-    if (key.length > norm(prev.text).length) {
-      out[duplicateOf] = { ...turn, think: turn.think || prev.think }
+    const prevThink = (prev.think ?? '').trim()
+    const nextThink = (turn.think ?? '').trim()
+    // 初始化确认只保留最长的一条；普通重复回复保留文本/处理步骤更完整的
+    if (initAckDup) {
+      if (key.length > norm(prev.text).length) out[duplicateOf] = turn
+    } else if (key.length > norm(prev.text).length || nextThink.length > prevThink.length) {
+      out[duplicateOf] = { ...turn, think: nextThink ? turn.think : prev.think }
     }
   }
   return out
@@ -462,9 +467,11 @@ function TurnItem({
   const [copied, setCopied] = useState(false)
   const [vote, setVote] = useState<'up' | 'down' | null>(null)
   const [speaking, setSpeaking] = useState(false)
+  // 助手轮次里的工具调用块/复制下载残留不算正文；用户轮次保持原文
+  const actionText = isUser ? turn.text : stripToolArtifacts(turn.text).trim()
 
   const copy = (): void => {
-    void navigator.clipboard.writeText(turn.text).then(() => {
+    void navigator.clipboard.writeText(actionText).then(() => {
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
@@ -477,8 +484,8 @@ function TurnItem({
       setSpeaking(false)
       return
     }
-    const u = new SpeechSynthesisUtterance(turn.text.replace(/```[\s\S]*?```/g, ' ').slice(0, 6000))
-    u.lang = /[一-龥]/.test(turn.text) ? 'zh-CN' : 'en-US'
+    const u = new SpeechSynthesisUtterance(actionText.replace(/```[\s\S]*?```/g, ' ').slice(0, 6000))
+    u.lang = /[一-龥]/.test(actionText) ? 'zh-CN' : 'en-US'
     u.onend = () => setSpeaking(false)
     u.onerror = () => setSpeaking(false)
     synth.cancel()
@@ -490,10 +497,10 @@ function TurnItem({
       share?: (data: { title?: string; text?: string }) => Promise<void>
     }
     if (typeof nav.share === 'function') {
-      void nav.share({ title: 'Lidow', text: turn.text }).catch(() => undefined)
+      void nav.share({ title: 'Lidow', text: actionText }).catch(() => undefined)
       return
     }
-    void navigator.clipboard.writeText(turn.text).then(() => {
+    void navigator.clipboard.writeText(actionText).then(() => {
       useStore.getState().notice('已复制内容，可粘贴分享')
     })
   }
@@ -540,21 +547,25 @@ function TurnItem({
 
   // status=streaming 且已有工具 = 工具批次正在执行（转圈 + 计时）
   const toolRunning = turn.status === 'streaming' && (turn.toolResults?.length ?? 0) > 0
+  // 工具调用块 / 网页复制下载残留不算给用户看的正文；否则会多出一整行空白操作栏
+  const visibleText = stripToolArtifacts(turn.text).trim()
+  // 只有工具残留、没有可见正文/思考/工具结果的轮次直接不渲染，避免空白间距
+  if (turn.text && !visibleText && !turn.think && (turn.toolResults?.length ?? 0) === 0) return <></>
   return (
     <div className="flex flex-col gap-2">
       {/* 处理过程默认折叠，只露摘要；历史轮次也保留可展开查看 */}
       {turn.think && <ThinkingBlock text={turn.think} streaming={false} />}
-      {turn.text ? (
-        <TurnBody text={turn.text} />
-      ) : (
+      {visibleText ? (
+        <TurnBody text={visibleText} />
+      ) : !turn.text && (turn.toolResults?.length ?? 0) === 0 ? (
         <span className="text-[12px] italic" style={{ color: 'var(--text-hint)' }}>
           （本轮仅工具调用，无文本）
         </span>
-      )}
+      ) : null}
       {turn.toolResults && turn.toolResults.length > 0 && (
         <ToolGroup results={turn.toolResults} running={toolRunning} startedAt={turn.ts} />
       )}
-      {showActions && turn.text && (
+      {showActions && visibleText && (
         <div className="mt-0.5 flex flex-wrap items-center gap-0.5">
           <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
             {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
@@ -679,12 +690,77 @@ function PermissionPicker(): React.JSX.Element {
   )
 }
 
+function UploadTile({
+  name,
+  preview,
+  progress
+}: {
+  name: string
+  preview?: string
+  progress: number
+}): React.JSX.Element {
+  const pct = Math.max(0, Math.min(100, Math.round(progress)))
+  const radius = 20
+  const circumference = 2 * Math.PI * radius
+  return (
+    <div
+      className="relative h-12 w-12 overflow-hidden rounded-[10px]"
+      style={{ border: '1px solid var(--border-strong)', background: 'var(--surface-sunken)' }}
+      title={`${name}（上传中 ${pct}%）`}
+    >
+      {preview ? (
+        <img src={preview} alt={name} className="h-full w-full object-cover" />
+      ) : (
+        <span
+          className="flex h-full w-full items-center justify-center"
+          style={{ color: 'var(--text-hint)' }}
+        >
+          <IconFile size={16} />
+        </span>
+      )}
+      <span
+        className="absolute inset-0 flex items-center justify-center"
+        style={{ background: preview ? 'rgba(0,0,0,.32)' : 'rgba(255,255,255,.55)' }}
+      >
+        <svg viewBox="0 0 48 48" className="absolute inset-0 h-full w-full -rotate-90">
+          <circle
+            cx="24"
+            cy="24"
+            r={radius}
+            fill="none"
+            stroke={preview ? 'rgba(255,255,255,.35)' : 'var(--border-strong)'}
+            strokeWidth="3"
+          />
+          <circle
+            cx="24"
+            cy="24"
+            r={radius}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth="3"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - pct / 100)}
+          />
+        </svg>
+        <span
+          className="relative text-[10px] font-semibold tabular-nums"
+          style={{
+            color: preview ? '#fff' : 'var(--text)',
+            textShadow: preview ? '0 1px 2px rgba(0,0,0,.45)' : 'none'
+          }}
+        >
+          {pct}%
+        </span>
+      </span>
+    </div>
+  )
+}
+
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const pendingReplySessionId = useStore((s) => s.pendingReplySessionId)
-  const pendingSince = useStore((s) => s.pendingSince)
   const streamingText = useStore((s) => s.streamingText)
-  const streamingTps = useStore((s) => s.streamingTps)
   const thinkingText = useStore((s) => s.thinkingText)
   const sendPrompt = useStore((s) => s.sendPrompt)
   const stop = useStore((s) => s.stop)
@@ -705,7 +781,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const resizeStart = useRef<{ y: number; h: number } | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
   const [pendingAttachments, setPendingAttachments] = useState<
-    Record<string, { key: string; name: string; preview?: string }[]>
+    Record<
+      string,
+      { key: string; name: string; preview?: string; uploading?: boolean; progress?: number }[]
+    >
   >({})
   const attachments = activeSession?.id ? (pendingAttachments[activeSession.id] ?? []) : []
   const addAttachments = (
@@ -724,17 +803,152 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const clearAttachments = (sessionId: string): void => {
     setPendingAttachments((prev) => (prev[sessionId]?.length ? { ...prev, [sessionId]: [] } : prev))
   }
+  const uploadTimers = useRef<Record<string, number>>({})
+  useEffect(
+    () => () => {
+      Object.values(uploadTimers.current).forEach((t) => window.clearInterval(t))
+    },
+    []
+  )
+  // 图片注入网页后平台还要上传：这里用进度环给出即时反馈（豆包同款观感）
+  const startUpload = (sessionId: string): void => {
+    const key = `upload-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const startedAt = Date.now()
+    setPendingAttachments((prev) => ({
+      ...prev,
+      [sessionId]: [
+        ...(prev[sessionId] ?? []),
+        { key, name: '图片上传中…', uploading: true, progress: 0 }
+      ]
+    }))
+    const timer = window.setInterval(() => {
+      setPendingAttachments((prev) => {
+        const list = prev[sessionId]
+        if (!list) return prev
+        return {
+          ...prev,
+          [sessionId]: list.map((a) =>
+            a.key === key && a.uploading
+              ? { ...a, progress: Math.min(90, (a.progress ?? 0) + 6) }
+              : a
+          )
+        }
+      })
+    }, 120)
+    uploadTimers.current[key] = timer
+    const stopTimer = (): void => {
+      window.clearInterval(timer)
+      delete uploadTimers.current[key]
+    }
+    const dropPlaceholder = (): void => {
+      setPendingAttachments((prev) => ({
+        ...prev,
+        [sessionId]: (prev[sessionId] ?? []).filter((a) => a.key !== key)
+      }))
+    }
+    void api
+      .uploadWebFile(sessionId)
+      .then((r) => {
+        if (r.canceled) {
+          stopTimer()
+          dropPlaceholder()
+          return
+        }
+        if (!r.ok) {
+          stopTimer()
+          dropPlaceholder()
+          useStore.getState().notice(r.message ?? '文件附加失败', 'warn')
+          return
+        }
+        stopTimer()
+        const first = r.files?.[0]
+        // 至少让进度环可见一小段时间，避免一闪而过。注入完成后立即显示真实缩略图，
+        // 平台侧上传还没结束时用户也能看到图片 + 转圈，而不是干等。
+        const wait = Math.max(0, 650 - (Date.now() - startedAt))
+        window.setTimeout(() => {
+          setPendingAttachments((prev) => ({
+            ...prev,
+            [sessionId]: (prev[sessionId] ?? []).map((a) =>
+              a.key === key
+                ? {
+                    ...a,
+                    name: first?.name ?? a.name,
+                    preview: first?.preview ?? a.preview,
+                    progress: 92
+                  }
+                : a
+            )
+          }))
+          window.setTimeout(() => {
+            setPendingAttachments((prev) => ({
+              ...prev,
+              [sessionId]: (prev[sessionId] ?? []).map((a) =>
+                a.key === key ? { ...a, progress: 100 } : a
+              )
+            }))
+            window.setTimeout(() => {
+              setPendingAttachments((prev) => ({
+                ...prev,
+                [sessionId]: [
+                  ...(prev[sessionId] ?? []).filter((a) => a.key !== key),
+                  ...(r.files ?? []).map((f) => ({
+                    key: f.path,
+                    name: f.name,
+                    preview: f.preview
+                  }))
+                ]
+              }))
+            }, 350)
+          }, 400)
+        }, wait)
+      })
+      .catch((e) => {
+        stopTimer()
+        dropPlaceholder()
+        useStore
+          .getState()
+          .notice(`上传失败：${e instanceof Error ? e.message : String(e)}`, 'error')
+      })
+  }
+  const removeAttachment = (
+    sessionId: string,
+    a: { key: string; name: string; uploading?: boolean }
+  ): void => {
+    setPendingAttachments((prev) => ({
+      ...prev,
+      [sessionId]: (prev[sessionId] ?? []).filter((x) => x.key !== a.key)
+    }))
+    // 同步移除网页输入区里的附件；上传中的先不动，等它完成后再显示删除按钮
+    if (!WEB_MODE && !a.uploading) void api.removeWebAttachment(sessionId, a.name)
+  }
   const [slashOpen, setSlashOpen] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const slashSelectedRef = useRef<HTMLButtonElement | null>(null)
   const projectId = useStore((s) => s.activeProjectId)
   const project = useProject(useStore())
+  const providers = useStore((s) => s.providers)
+  const toggleState = useStore((s) => s.toggleState)
+  const providerActions = activeSession
+    ? (providers.find((p) => p.id === activeSession.providerId)?.adapter?.composerActions ?? [])
+    : []
+  const thinkAction =
+    providerActions.find((a) => a.label === '深度思考') ??
+    providerActions.find((a) => a.label === '思考')
+  const hasThinkToggle = Boolean(thinkAction)
+  const thinkLabel = thinkAction?.label ?? '深度思考'
+  const hasSearchToggle = providerActions.some((a) => a.label === '智能搜索')
   const auxPanel = useStore((s) => s.auxPanel)
   const [skills, setSkills] = useState<SkillMeta[]>([])
   const [initOpen, setInitOpen] = useState(false)
   const [initPicking, setInitPicking] = useState(false)
   const [initStarting, setInitStarting] = useState(false)
   const [initName, setInitName] = useState('')
+  const [previewImage, setPreviewImage] = useState<{
+    src: string
+    name: string
+    path?: string
+  } | null>(null)
+  const [initTick, setInitTick] = useState(0)
 
   // 打开斜杠菜单时重新扫描技能/快捷指令：新装的技能和刚保存的指令不需要重启软件
   useEffect(() => {
@@ -841,6 +1055,36 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       mode === 'workbench' ? allTurns.filter((t) => (t.toolResults?.length ?? 0) > 0) : allTurns
     return dedupeAssistantTurns(base)
   }, [allTurns, mode])
+  // 初始化锁：系统提示词发出后，AI 首次回复前禁止发送。
+  // 用初始化系统轮次 + 2 分钟窗口判断，页面重载/切换会话也能恢复锁定。
+  const initPending = useMemo(() => {
+    let idx = -1
+    for (let i = allTurns.length - 1; i >= 0; i--) {
+      const t = allTurns[i]!
+      if (t.role === 'system' && (t.text || '').includes('[Lidow 初始化]')) {
+        idx = i
+        break
+      }
+    }
+    if (idx < 0) return { busy: false, until: 0 }
+    const initTurn = allTurns[idx]!
+    // 必须等到 AI 明确回「初始化成功」；普通回复（例如误回的“测试”）不能解锁
+    const replied = allTurns
+      .slice(idx + 1)
+      .some((t) => t.role === 'assistant' && /初始化成功|初始化完成/.test(t.text || ''))
+    const until = (initTurn.ts ?? 0) + 60_000
+    return { busy: !replied && Date.now() < until, until }
+    // initTick 用于到期后重新计算
+  }, [allTurns, initTick])
+  useEffect(() => {
+    if (!initPending.busy) return
+    const timer = window.setTimeout(
+      () => setInitTick((v) => v + 1),
+      Math.max(200, initPending.until - Date.now() + 50)
+    )
+    return () => window.clearTimeout(timer)
+  }, [initPending.busy, initPending.until])
+  const initializing = initPending.busy || initStarting
   // 当前任务（最后一条用户消息之后）的全部工具结果：文件变更汇总用
   const taskChangeResults = useMemo(() => {
     for (let i = turns.length - 1; i >= 0; i--) {
@@ -1127,18 +1371,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
         </span>
         {activeSession && <span className="badge badge-accent">{activeSession.providerId}</span>}
         <span className="flex-1" />
-        {running && (
-          <span
-            className="flex items-center gap-1.5 text-[11px]"
-            style={{ color: 'var(--text-hint)' }}
-          >
-            <span
-              className="anim-breathe h-1.5 w-1.5 rounded-full"
-              style={{ background: 'var(--accent)' }}
-            />
-            {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中'}
-          </span>
-        )}
         {!auxPanel && <PureToolbar />}
       </div>
 
@@ -1285,7 +1517,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               onEditUser={(text) => startEdit(text, t.id)}
             />
           ))}
-          {waiting && <PendingIndicator since={pendingSince} />}
+          {waiting && <PendingIndicator />}
           {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
           {taskChangeResults.length > 0 && (
             <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
@@ -1305,16 +1537,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               >
                 {stripCitationMarkers(streamingText)}
               </div>
-              <span
-                className="flex items-center gap-1.5 text-[11px]"
-                style={{ color: 'var(--text-hint)' }}
-              >
-                <span
-                  className="anim-breathe h-1.5 w-1.5 rounded-full"
-                  style={{ background: 'var(--accent)' }}
-                />
-                {streamingTps > 0 ? `${streamingTps} tok/s` : '生成中…'}
-              </span>
+              <DeepSearching />
             </div>
           )}
         </div>
@@ -1432,46 +1655,89 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             </button>
           </div>
         )}
-        {attachments.length > 0 && (
-          <div className="mx-auto flex w-full max-w-[780px] flex-wrap items-center gap-2 px-1 pb-2">
-            {attachments.map((a) =>
-              a.preview ? (
-                <div
-                  key={a.key}
-                  className="h-12 w-12 overflow-hidden rounded-[10px]"
-                  style={{ border: '1px solid var(--border-strong)', background: 'var(--bg)' }}
-                  title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
-                >
-                  <img src={a.preview} alt={a.name} className="h-full w-full object-cover" />
-                </div>
-              ) : (
-                <div
-                  key={a.key}
-                  className="flex h-12 max-w-[220px] items-center gap-1.5 rounded-[10px] px-2.5"
-                  style={{
-                    border: '1px solid var(--border)',
-                    background: 'var(--surface-sunken)'
-                  }}
-                  title={`${a.name}（已附加到网页输入框，发送时一起上传）`}
-                >
-                  <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
-                    <IconFile size={13} />
-                  </span>
-                  <span className="truncate text-[11px]">{a.name}</span>
-                </div>
-              )
-            )}
-          </div>
-        )}
         <div
           data-composer="true"
           className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[160ms]"
-          style={{
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--border-strong)',
-            boxShadow: 'var(--shadow)'
-          }}
         >
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 px-3 pt-3">
+              {attachments.map((a) =>
+                a.uploading || (a.progress !== undefined && a.progress < 100) ? (
+                  <UploadTile
+                    key={a.key}
+                    name={a.name}
+                    preview={a.preview}
+                    progress={a.progress ?? 0}
+                  />
+                ) : a.preview ? (
+                  <div key={a.key} className="group relative h-12 w-12">
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      className="h-full w-full cursor-pointer overflow-hidden rounded-[10px]"
+                      style={{
+                        border: '1px solid var(--border-strong)',
+                        background: 'var(--bg)'
+                      }}
+                      title={a.key || a.name}
+                      onClick={() =>
+                        setPreviewImage({ src: a.preview!, name: a.name, path: a.key })
+                      }
+                    >
+                      <img src={a.preview} alt={a.name} className="h-full w-full object-cover" />
+                    </div>
+                    <button
+                      className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full opacity-0 transition-opacity duration-[100ms] group-hover:opacity-100"
+                      style={{
+                        background: 'rgba(15,17,21,.72)',
+                        color: '#fff',
+                        border: 'none',
+                        cursor: 'pointer'
+                      }}
+                      title="移除附件"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (activeSession) removeAttachment(activeSession.id, a)
+                      }}
+                    >
+                      <IconClose size={9} />
+                    </button>
+                  </div>
+                ) : (
+                  <div
+                    key={a.key}
+                    className="group relative flex h-12 max-w-[220px] items-center gap-1.5 rounded-[10px] px-2.5"
+                    style={{
+                      border: '1px solid var(--border)',
+                      background: 'var(--surface-sunken)'
+                    }}
+                    title={a.key || a.name}
+                  >
+                    <span className="shrink-0" style={{ color: 'var(--text-hint)' }}>
+                      <IconFile size={13} />
+                    </span>
+                    <span className="truncate text-[11px]">{a.name}</span>
+                    <button
+                      className="absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full opacity-0 transition-opacity duration-[100ms] group-hover:opacity-100"
+                      style={{
+                        background: 'rgba(15,17,21,.72)',
+                        color: '#fff',
+                        border: 'none',
+                        cursor: 'pointer'
+                      }}
+                      title="移除附件"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (activeSession) removeAttachment(activeSession.id, a)
+                      }}
+                    >
+                      <IconClose size={9} />
+                    </button>
+                  </div>
+                )
+              )}
+            </div>
+          )}
           {/* 斜杠菜单锚定在输入框上；宽度与输入框一致（Qoder 同款命令面板） */}
           {slashOpen && (
             <div
@@ -1570,6 +1836,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           <textarea
             ref={inputRef}
             className="max-h-44 min-h-[46px] w-full resize-none bg-transparent px-4 pt-3 text-[13.5px] leading-[1.6] outline-none"
+            disabled={initializing}
             style={{
               color: 'var(--text)',
               ...(composerHeight ? { height: composerHeight, maxHeight: 'none' } : {})
@@ -1679,36 +1946,50 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                   void api.overlayToggle(activeSession.id, 'upload-file')
                   return
                 }
-                void api
-                  .uploadWebFile(activeSession.id)
-                  .then((r) => {
-                    if (r.canceled) return
-                    if (r.ok) {
-                      addAttachments(activeSession.id, r.files ?? [])
-                      return
-                    }
-                    useStore.getState().notice(r.message ?? '文件附加失败', 'warn')
-                  })
-                  .catch((e) =>
-                    useStore
-                      .getState()
-                      .notice(`上传失败：${e instanceof Error ? e.message : String(e)}`, 'error')
-                  )
+                startUpload(activeSession.id)
               }}
             >
               <IconAttach size={13} />
             </button>
             <PermissionPicker />
+            {hasThinkToggle && (
+              <button
+                className="composer-chip disabled:opacity-40"
+                data-active={toggleState.think}
+                disabled={running || !toggleState.thinkAvailable}
+                title="深度思考"
+                onClick={() =>
+                  activeSession && void api.overlayToggle(activeSession.id, 'toggle-think')
+                }
+              >
+                <IconBrain size={13} />
+                <span>{thinkLabel}</span>
+              </button>
+            )}
+            {hasSearchToggle && (
+              <button
+                className="composer-chip disabled:opacity-40"
+                data-active={toggleState.search}
+                disabled={running || !toggleState.searchAvailable}
+                title="智能搜索"
+                onClick={() =>
+                  activeSession && void api.overlayToggle(activeSession.id, 'toggle-search')
+                }
+              >
+                <IconGlobe size={13} />
+                <span>智能搜索</span>
+              </button>
+            )}
             <span className="flex-1" />
             {models && models.options.length > 0 && (
               <div className="relative" ref={modelRef}>
                 <button
-                  className="composer-chip max-w-[150px] disabled:opacity-40"
+                  className="composer-chip max-w-[190px] disabled:opacity-40"
                   title="选择模型"
                   disabled={running}
                   onClick={openModelMenu}
                 >
-                  <span className="max-w-[110px] truncate">{models.current || '模型'}</span>
+                  <span className="max-w-[160px] truncate">{models.current || '模型'}</span>
                   <IconChevronDown
                     size={11}
                     className={`transition-transform duration-[130ms] ${
@@ -1721,7 +2002,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                   createPortal(
                     <div
                       ref={modelMenuRef}
-                      className="fixed z-[100] w-[240px] overflow-hidden rounded-[var(--r-lg)] p-1"
+                      className="fixed z-[100] w-[260px] overflow-hidden rounded-[var(--r-lg)] p-1"
                       style={{
                         right: modelMenuPos.right,
                         bottom: modelMenuPos.bottom,
@@ -1731,34 +2012,56 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                       }}
                       onMouseDown={(e) => e.stopPropagation()}
                     >
-                      {models.options.map((o) => (
-                        <button
-                          key={o.label}
-                          className="flex w-full items-start gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
-                          onClick={() => void chooseModel(o.label)}
-                        >
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[12px] font-medium">
-                              {o.label}
+                      {models.options.map((o, i) => (
+                        <Fragment key={o.group ? `${o.group}-${o.label}` : o.label}>
+                          {o.group && o.group !== models.options[i - 1]?.group && (
+                            <div
+                              className="px-2.5 pb-1 pt-2 text-[10px] font-medium tracking-wide"
+                              style={{ color: 'var(--text-hint)' }}
+                            >
+                              {o.group}
+                            </div>
+                          )}
+                          <button
+                            className="flex w-full items-start gap-2 rounded-[var(--r-sm)] px-2.5 py-2 text-left transition-colors duration-[100ms] hover:bg-[var(--bg-hover)] disabled:cursor-not-allowed disabled:opacity-40"
+                            disabled={o.disabled}
+                            title={o.disabled ? '当前账号不可用' : undefined}
+                            onClick={() => {
+                              if (!o.disabled) void chooseModel(o.label)
+                            }}
+                          >
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-[12px] font-medium">
+                                {o.label}
+                              </span>
+                              {o.desc && (
+                                <span
+                                  className="block text-[10.5px]"
+                                  style={{ color: 'var(--text-hint)' }}
+                                >
+                                  {o.desc}
+                                </span>
+                              )}
                             </span>
-                            {o.desc && (
+                            {o.disabled ? (
                               <span
-                                className="block text-[10.5px]"
+                                className="mt-0.5 shrink-0 text-[10px]"
                                 style={{ color: 'var(--text-hint)' }}
                               >
-                                {o.desc}
+                                不可用
                               </span>
+                            ) : (
+                              o.selected && (
+                                <span
+                                  className="mt-0.5 shrink-0"
+                                  style={{ color: 'var(--accent)' }}
+                                >
+                                  <IconCheck size={12} />
+                                </span>
+                              )
                             )}
-                          </span>
-                          {o.selected && (
-                            <span
-                              className="mt-0.5 shrink-0"
-                              style={{ color: 'var(--accent)' }}
-                            >
-                              <IconCheck size={12} />
-                            </span>
-                          )}
-                        </button>
+                          </button>
+                        </Fragment>
                       ))}
                     </div>,
                     document.body
@@ -1777,7 +2080,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 title="发送 (Enter)"
                 className="flex h-7 w-7 items-center justify-center rounded-full transition-all duration-[130ms] disabled:opacity-30"
                 style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
-                disabled={!input.trim()}
+                disabled={!input.trim() || initializing}
                 onClick={() => void submit()}
               >
                 <IconArrowUp size={15} />
@@ -1786,6 +2089,55 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           </div>
         </div>
       </div>
+
+      {/* 图片预览：点击纯模式里的附件缩略图打开 */}
+      {previewImage &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-[130] flex items-center justify-center p-8"
+            style={{ background: 'rgba(9,12,18,.78)', backdropFilter: 'blur(4px)' }}
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setPreviewImage(null)
+            }}
+          >
+            <div
+              className="relative flex max-h-[90vh] max-w-[92vw] flex-col items-center"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <img
+                src={previewImage.src}
+                alt={previewImage.name}
+                className="max-h-[82vh] max-w-[88vw] rounded-[12px] object-contain"
+                style={{ boxShadow: '0 24px 64px rgba(0,0,0,.5)' }}
+              />
+              <div
+                className="mt-3 flex max-w-[80vw] items-center gap-3 text-[11.5px]"
+                style={{ color: 'rgba(255,255,255,.82)' }}
+              >
+                <span className="truncate">{previewImage.name}</span>
+                {previewImage.path && (
+                  <span className="truncate" style={{ color: 'rgba(255,255,255,.45)' }}>
+                    {previewImage.path}
+                  </span>
+                )}
+              </div>
+              <button
+                className="absolute -right-2 -top-2 flex h-7 w-7 items-center justify-center rounded-full"
+                style={{
+                  background: 'rgba(15,17,21,.85)',
+                  color: '#fff',
+                  border: '1px solid rgba(255,255,255,.18)',
+                  cursor: 'pointer'
+                }}
+                title="关闭"
+                onClick={() => setPreviewImage(null)}
+              >
+                <IconClose size={12} />
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
 
       {/* 初始化项目弹窗：选择/更换工作目录，确认后回到对话输入 */}
       {initOpen &&
@@ -1893,6 +2245,35 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           </div>,
           document.body
         )}
+
+      {/* 初始化锁：系统提示词发出到 AI 首次回复之间禁止输入 */}
+      {initializing && (
+        <div
+          className="absolute inset-0 z-[60] flex items-center justify-center p-6"
+          style={{
+            background: 'color-mix(in srgb, var(--bg) 78%, transparent)',
+            backdropFilter: 'blur(3px)'
+          }}
+        >
+          <div
+            className="anim-pop card flex max-w-[430px] items-center gap-3 px-5 py-4"
+            style={{ background: 'var(--surface-raised)', borderColor: 'var(--border)' }}
+          >
+            <span
+              className="anim-breathe flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]"
+              style={{ background: 'var(--accent-soft)', color: 'var(--accent)' }}
+            >
+              <IconWhale size={20} />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[13px] font-semibold">正在初始化，请稍等</div>
+              <div className="mt-0.5 text-[11.5px]" style={{ color: 'var(--text-hint)' }}>
+                正在发送系统提示词并建立工具连接，完成后即可开始对话
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

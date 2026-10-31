@@ -263,6 +263,26 @@ export function IconFolderOpen({ size, className }: P): React.JSX.Element {
 }
 
 /** 思考 / 灵感：四角星 */
+export function IconWhale({ size, className }: P): React.JSX.Element {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="none"
+      className={className}
+      aria-hidden="true"
+    >
+      <path
+        d="M2.1 9c0-2 1.6-3.6 3.6-3.6 1.2 0 2.3.6 3 1.6h3c.9 0 1.7.3 2.3.9l1.1-1.4.2 2.7-1.6.8c-.8 1.5-2.4 2.5-4.2 2.5H5.7c-2 0-3.6-1.6-3.6-3.5Z"
+        fill="currentColor"
+      />
+      <path d="M3.2 6.1c-.2-1.1.4-2.1 1.4-2.5" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+      <circle cx="6" cy="8.1" r=".65" fill="var(--bg)" />
+    </svg>
+  )
+}
+
 export function IconSpark({ size, className }: P): React.JSX.Element {
   return (
     <svg {...base(size)} className={className}>

@@ -145,6 +145,14 @@ export interface LidowApi {
   // 工具/文件
   readFileTree(projectId: string, dir: string, depth: number): Promise<FileNode[]>
   readFileContent(projectId: string, relPath: string): Promise<string>
+  /** 文件预览：图片/PDF 返回 data URL，文本返回截断内容，其余标记 binary */
+  readFilePreview(projectId: string, relPath: string): Promise<{
+    kind: 'text' | 'image' | 'pdf' | 'html' | 'binary'
+    content?: string
+    dataUrl?: string
+    mime?: string
+    size: number
+  }>
   openPathInSystem(path: string): Promise<void>
 
   // Skills / Agents / Rules
@@ -230,6 +238,8 @@ export interface LidowApi {
   listTools(): Promise<{ name: string; description: string }[]>
   /** 用系统浏览器打开外部链接 */
   openExternal(url: string): Promise<boolean>
+  /** 标准编辑动作：作用于当前聚焦的输入框或网页 */
+  editAction(action: 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll'): Promise<void>
 
   // 审计
   listAudit(sessionId?: string, limit?: number): Promise<AuditEntry[]>
@@ -292,6 +302,8 @@ export interface LidowApi {
   ): Promise<{ ok: boolean; count?: number; files?: WebAttachmentInfo[]; message?: string }>
   /** 按文案点击平台自带按钮（各平台底部功能不同） */
   overlayAction(sessionId: string, keywords: string[]): Promise<boolean>
+  /** 移除网页输入区里的同名附件（纯模式删除缩略图时同步） */
+  removeWebAttachment(sessionId: string, name: string): Promise<void>
   getModels(sessionId: string): Promise<ModelPickerInfo>
   selectModel(
     sessionId: string,

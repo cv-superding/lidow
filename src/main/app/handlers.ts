@@ -700,6 +700,14 @@ export function registerHandlers(
     await shell.openExternal(u)
     return true
   })
+  R('editAction', (action: string) => {
+    const allowed = ['undo', 'redo', 'cut', 'copy', 'paste', 'selectAll'] as const
+    if (!(allowed as readonly string[]).includes(action)) return
+    const wc = webContents.getFocusedWebContents()
+    if (!wc || wc.isDestroyed()) return
+    const fn = wc[action as (typeof allowed)[number]]
+    if (typeof fn === 'function') fn.call(wc)
+  })
   R('runTerminal', async (command: string, cwd?: string) => {
     const project = ctx.activeProject()
     const root = project?.root ?? process.cwd()
@@ -728,6 +736,66 @@ export function registerHandlers(
     if (raw.includes('\u0000')) return '（二进制文件，暂不支持预览）'
     // 大文件全量塞进渲染进程会卡死：预览截断到 300k
     return raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw
+  })
+  R('readFilePreview', (projectId: string, relPath: string) => {
+    const project = ctx.projects.find((p) => p.id === String(projectId))
+    if (!project) throw new Error('项目不存在')
+    const abs = resolve(join(project.root, String(relPath)))
+    const rel = relative(project.root, abs)
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error('路径越界')
+    const stat = statSync(abs)
+    const size = stat.size
+    const ext = extname(abs).toLowerCase()
+    const IMAGE_MIME: Record<string, string> = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif',
+      '.webp': 'image/webp',
+      '.bmp': 'image/bmp',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.avif': 'image/avif'
+    }
+    const MAX_INLINE = 25 * 1024 * 1024
+    const imageMime = IMAGE_MIME[ext]
+    if (imageMime) {
+      if (size > MAX_INLINE) return { kind: 'binary' as const, size }
+      const buf = readFileSync(abs)
+      return {
+        kind: 'image' as const,
+        dataUrl: `data:${imageMime};base64,${buf.toString('base64')}`,
+        mime: imageMime,
+        size
+      }
+    }
+    if (ext === '.pdf') {
+      if (size > MAX_INLINE) return { kind: 'binary' as const, size }
+      const buf = readFileSync(abs)
+      return {
+        kind: 'pdf' as const,
+        dataUrl: `data:application/pdf;base64,${buf.toString('base64')}`,
+        mime: 'application/pdf',
+        size
+      }
+    }
+    if (ext === '.html' || ext === '.htm') {
+      const html = readFileSync(abs, 'utf-8')
+      return {
+        kind: 'html' as const,
+        content:
+          html.length > 300_000 ? `${html.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : html,
+        mime: 'text/html',
+        size
+      }
+    }
+    const raw = readFileSync(abs, 'utf-8')
+    if (raw.includes('\u0000')) return { kind: 'binary' as const, size }
+    return {
+      kind: 'text' as const,
+      content: raw.length > 300_000 ? `${raw.slice(0, 300_000)}\n\n…[文件过大，预览已截断]` : raw,
+      size
+    }
   })
   R('openPathInSystem', (path: string) => {
     const p = String(path ?? '')
@@ -1055,6 +1123,13 @@ export function registerHandlers(
     return ctx.overlay.sendCmd(String(sessionId), {
       kind: 'click-keywords',
       keywords: keywords ?? []
+    })
+  })
+  /** 纯模式删除附件：同步点掉网页输入区里对应的缩略图移除按钮 */
+  R('removeWebAttachment', (sessionId: string, name: string) => {
+    void ctx.overlay.sendCmd(String(sessionId), {
+      kind: 'remove-attachment',
+      attachmentName: String(name ?? '')
     })
   })
   R('getModels', (sessionId: string) => ctx.getModels(String(sessionId)))

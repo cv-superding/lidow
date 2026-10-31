@@ -277,13 +277,179 @@ export function PureToolbar(): React.JSX.Element {
   )
 }
 
-/** 纯模式顶部拖拽条：左侧留白可拖拽，右侧只保留窗口控件 */
-export function DragStrip(): React.JSX.Element {
+type PureMenuItem = {
+  label: string
+  shortcut?: string
+  action?: () => void
+  separator?: boolean
+}
+
+/** 纯模式顶部菜单栏：Qoder 风格 文件 / 编辑 / 视图 / 帮助 */
+export function PureMenuBar(): React.JSX.Element {
+
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const barRef = useRef<HTMLDivElement>(null)
+  // 点击空白处关闭菜单
+  useEffect(() => {
+    if (!openMenu) return
+    const onDown = (e: MouseEvent): void => {
+      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpenMenu(null)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpenMenu(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [openMenu])
+
+  const newTask = (): void => {
+    const s = useStore.getState()
+    const pid = s.activeSession?.providerId ?? s.providers[0]?.id
+    if (!pid) {
+      s.notice('请先选择一个平台', 'warn')
+      return
+    }
+    s.setPureView('home')
+    void (async () => {
+      await s.createSession(pid)
+      const created = useStore.getState().activeSession
+      if (created) await s.openProviderTab(created.providerId, created.id, created.accountId)
+    })()
+  }
+
+  const menus: Record<string, PureMenuItem[]> = {
+    文件: [
+      { label: '新建任务', shortcut: 'Ctrl N', action: newTask },
+      {
+        label: '切换项目…',
+        action: () => {
+          void api.pickDirectory().then((dir) => dir && void useStore.getState().openProject(dir))
+        }
+      },
+      { label: '', separator: true },
+      { label: '设置', action: () => useStore.getState().setPureView('settings') },
+      { label: '', separator: true },
+      { label: '退出 Lidow', action: () => void api.quit() }
+    ],
+    编辑: [
+      { label: '撤销', shortcut: 'Ctrl Z', action: () => void api.editAction('undo') },
+      { label: '重做', shortcut: 'Ctrl Y', action: () => void api.editAction('redo') },
+      { label: '', separator: true },
+      { label: '剪切', shortcut: 'Ctrl X', action: () => void api.editAction('cut') },
+      { label: '复制', shortcut: 'Ctrl C', action: () => void api.editAction('copy') },
+      { label: '粘贴', shortcut: 'Ctrl V', action: () => void api.editAction('paste') },
+      { label: '全选', shortcut: 'Ctrl A', action: () => void api.editAction('selectAll') }
+    ],
+    视图: [
+      { label: '返回工作台', action: () => useStore.getState().setPure(false) },
+      {
+        label: '命令面板',
+        shortcut: 'Ctrl K',
+        action: () => window.dispatchEvent(new CustomEvent('lidow:command'))
+      }
+    ],
+    帮助: [
+      { label: '检查更新', action: () => void useStore.getState().checkUpdate(true) },
+      {
+        label: 'GitHub 仓库',
+        action: () => void api.openExternal('https://github.com/cv-superding/lidow')
+      },
+      {
+        label: '关于 Lidow',
+        action: () => {
+          const s = useStore.getState()
+          s.notice(`Lidow ${s.version}`, 'info')
+        }
+      }
+    ]
+  }
+
   return (
     <div
-      className="flex h-10 shrink-0 items-center justify-end border-b"
-      style={{ borderColor: 'var(--border)', background: 'var(--surface-2)', WebkitAppRegion: 'drag' } as React.CSSProperties}
+      ref={barRef}
+      className="flex h-10 shrink-0 items-center border-b"
+      style={
+        {
+          borderColor: 'var(--border)',
+          background: 'var(--surface-2)',
+          WebkitAppRegion: 'drag'
+        } as React.CSSProperties
+      }
     >
+      <div
+        className="flex h-full items-center gap-0.5 pl-2"
+        style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+      >
+        <span
+          className="mr-1.5 flex h-5 w-5 items-center justify-center rounded-[6px] text-[11px] font-bold"
+          style={{ background: 'var(--accent)', color: 'var(--on-accent)' }}
+        >
+          L
+        </span>
+        {Object.keys(menus).map((title) => (
+          <div key={title} className="relative flex h-full items-center">
+            <button
+              className="flex h-7 items-center rounded-[var(--r-sm)] px-2 text-[12px] transition-colors duration-[110ms]"
+              style={{
+                color: openMenu === title ? 'var(--text)' : 'var(--text-dim)',
+                background: openMenu === title ? 'var(--bg-hover)' : 'transparent'
+              }}
+              onMouseDown={(e) => e.preventDefault()}
+              onMouseEnter={() => {
+                if (openMenu && openMenu !== title) setOpenMenu(title)
+              }}
+              onClick={() => setOpenMenu((v) => (v === title ? null : title))}
+            >
+              {title}
+            </button>
+            {openMenu === title && (
+              <div
+                className="absolute left-0 top-full z-[90] w-[210px] overflow-hidden rounded-[var(--r-md)] p-1"
+                style={{
+                  background: 'var(--surface-raised)',
+                  border: '1px solid var(--border)',
+                  boxShadow: 'var(--shadow-menu)'
+                }}
+              >
+                {menus[title]!.map((item, i) =>
+                  item.separator ? (
+                    <div
+                      key={`sep-${i}`}
+                      className="my-1 h-px"
+                      style={{ background: 'var(--border-soft)' }}
+                    />
+                  ) : (
+                    <button
+                      key={item.label}
+                      className="flex w-full items-center gap-4 rounded-[var(--r-sm)] px-2.5 py-1.5 text-left text-[12px] transition-colors duration-[100ms] hover:bg-[var(--bg-hover)]"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setOpenMenu(null)
+                        item.action?.()
+                      }}
+                    >
+                      <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                      {item.shortcut && (
+                        <span
+                          className="shrink-0 text-[10px]"
+                          style={{ color: 'var(--text-hint)' }}
+                        >
+                          {item.shortcut}
+                        </span>
+                      )}
+                    </button>
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="h-full flex-1" />
       <WindowControls />
     </div>
   )

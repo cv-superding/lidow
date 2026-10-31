@@ -249,6 +249,8 @@ function createWindow(host = false): BrowserWindow {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      // 内置 PDF 查看器需要 plugins；渲染层只加载本地界面，不加载远程页面
+      plugins: true,
       // 隐藏宿主不能走后台节流，否则 webview 里的 AI 页面不响应、回复也不流式
       backgroundThrottling: false
     }

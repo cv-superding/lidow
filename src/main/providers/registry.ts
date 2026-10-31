@@ -159,7 +159,7 @@ const CHATGPT: ProviderDescriptor = {
       'button[aria-label*="停止"]',
       'button[aria-label*="Stop"]'
     ],
-    composerActions: [{ label: '思考', keywords: ['思考', 'Thinking'] }],
+    // 「思考」在网页里是付费引导弹层，不是可切换开关，纯净模式不能镜像成假 chip
     newChat: ['a[href="/"]', 'button[aria-label*="New chat" i]'],
     loginFlag: ['img[alt*="Profile"]', '[data-testid="profile-button"]'],
     profileName: [
@@ -242,7 +242,14 @@ const DOUBAO: ProviderDescriptor = {
       'button[type="submit"]'
     ],
     messages: ['[data-testid="conversation_container"]', 'main'],
-    bubble: ['[data-testid="receive_message"]', '[data-testid="message_item_content"]'],
+    // receive_message 外层把「推荐追问」也包进来了（实测纯净模式正文后面挂三条建议）；
+    // 正文只取 message_content，receive_message 仅作兜底。
+    bubble: [
+      '[data-testid="message_content"]',
+      '[data-testid="message_text_content"]',
+      '[data-testid="receive_message"]'
+    ],
+    strictBubble: true,
     streamingFlag: ['button[data-testid="chat_input_stop_button"]', 'button[aria-label*="停止"]'],
     newChat: ['button[data-testid="new_session"]', 'button[aria-label*="新会话"]'],
     composerActions: [
@@ -302,8 +309,17 @@ const ERNIE: ProviderDescriptor = {
       'div[contenteditable="true"]'
     ],
     send: ['button[class*="send-btn"]', 'button[aria-label*="发送"]', '#sendBtn'],
-    messages: ['[class*="answer-item"]', '#app'],
-    bubble: ['[class*="answer-item"]', '[class*="markdown-body"]'],
+    // 文心现在把回答放在 .cosd-markdown；旧选择器命不中时会回退整页 #app，
+    // 纯净模式会把左侧栏/推荐问题一起抓成 AI 回复（实测）。
+    messages: ['.answer-box', '[class*="answer-box"]', 'main'],
+    bubble: [
+      '.cosd-markdown',
+      '.ai-markdown',
+      '[class*="answer-container"] [class*="markdown"]',
+      '[class*="answer-item"]',
+      '[class*="markdown-body"]'
+    ],
+    strictBubble: true,
     streamingFlag: ['button[class*="stop"]', 'button[aria-label*="停止"]'],
     newChat: ['button[aria-label*="新对话"]', 'a[class*="new"]'],
     loginFlag: ['img[class*="avatar"]', '[class*="username"]']
@@ -375,11 +391,9 @@ const YUANBAO: ProviderDescriptor = {
       'button[class*="send"]',
       'button[aria-label*="发送"]'
     ],
-    messages: [
-      '[class*="agent-chat__conv"]',
-      '[class*="agent-dialogue__content--common__content"]',
-      'main'
-    ],
+    // 只观察真实会话容器：元宝首页的 agent-chat__conv--agent-homepage 也带 conv 前缀，
+    // 整页欢迎语会被当成回复（实测未发送就落 assistant 轮次）。
+    messages: ['[class*="agent-chat__conv"]:not([class*="agent-homepage"])'],
     bubble: [
       '[class*="hyc-content-md"]',
       '.hyc-common-markdown-style',
@@ -391,15 +405,20 @@ const YUANBAO: ProviderDescriptor = {
       '[class*="sendStop"]'
     ],
     newChat: ['.agent-dialogue__tool__new-chat', '.yb-new-chat-entry', '[class*="new-chat"]'],
-    loginFlag: ['[class*="user-avatar"]', 'img[class*="avatar"]', '.t-avatar img'],
-    profileName: [
-      '[class*="user-name"]',
-      '[class*="userName"]',
-      '[class*="user-info"] span'
+    loginFlag: [
+      '[class*="user-avatar"]',
+      'img[class*="avatar"]',
+      '.t-avatar img',
+      '.yb-common-nav__ft__avatar img'
     ],
+    profileName: ['.nick-info-name', '.yb-common-nav__ft .nick-info-name'],
+    logoutText: ['未登录'],
+    strictBubble: true,
     model: {
       button: ['button[aria-label="切换模型"]'],
-      items: ['[role="menu"] [role="menuitemradio"]']
+      items: ['[role="menu"] [role="menuitemradio"]'],
+      itemLabel: ['[class*="text-sm"]'],
+      submenu: { trigger: ['[role="menuitem"][aria-label="选择模型"]'] }
     },
     composerActions: [
       { label: '深度研究', keywords: ['深度研究'] },
@@ -446,6 +465,8 @@ export class ProviderRegistry {
     let changed = false
     // 内置平台的选择器必须跟着版本更新：旧项目 providers.json 里存的是旧 adapter，
     // 平台改版后新选择器（如 ChatGPT 新 UI/账号名）永远进不去。账号/登录态保留。
+    // 必须整体替换而不是浅合并：旧版本有、新版本已删除的字段（例如 ChatGPT 的假
+    // 思考开关）在浅合并下会一直留在旧项目里，纯净模式就会显示幽灵控件。
     const merged: ProviderDescriptor[] = [
       ...BUILT_IN_PROVIDERS.map((b) => {
         const existing = byId.get(b.id)
@@ -453,7 +474,7 @@ export class ProviderRegistry {
           changed = true
           return structuredClone(b)
         }
-        const adapter = { ...existing.adapter, ...b.adapter }
+        const adapter = structuredClone(b.adapter)
         if (JSON.stringify(adapter) !== JSON.stringify(existing.adapter)) changed = true
         return { ...existing, name: b.name, home: b.home, adapter }
       }),

@@ -1,6 +1,6 @@
 {
   "name": "lidow",
-  "version": "1.0.0",
+  "version": "1.0.5",
   "description": "Lidow — 零 Token 成本内嵌网页版 AI Agent 桌面端",
   "main": "./out/main/index.js",
   "type": "commonjs",
@@ -32,6 +32,7 @@
     "katex": "^0.19.1",
     "mysql2": "^3.24.6",
     "nanoid": "^6.0.2",
+    "pdfjs-dist": "^3.11.174",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "^10.1.0",

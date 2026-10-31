@@ -110,8 +110,19 @@ export interface DomAdapter {
   loginFlag: string[]
   /** 网页侧账号显示名（侧栏头像/账号菜单），用于自动命名账号 */
   profileName?: string[]
+  /** 网页上表示「未登录」的文案；命中即判未登录（登录按钮在 iframe/阴影里时兜底） */
+  logoutText?: string[]
+  /** 没有气泡节点时不要退回整个容器文本（首页引导文案会被误当成回复） */
+  strictBubble?: boolean
   /** 网页侧模型选择器（按钮 + 菜单项选择器）；没有该字段的平台不显示模型下拉 */
-  model?: { button: string[]; items: string[] }
+  model?: {
+    button: string[]
+    items: string[]
+    /** 菜单项名称选择器（名称被拆成多行/多 span 时使用） */
+    itemLabel?: string[]
+    /** 二级菜单（如元宝的「模型 → Hy4/Hy3/DeepSeek」）：触发项选择器 */
+    submenu?: { trigger: string[] }
+  }
   /**
    * 输入框下方的平台自带功能（纯净模式底栏按平台渲染）。
    * 每个平台不一样：DeepSeek 是「深度思考/智能搜索」，豆包是「对话/项目/技能/快速」。
@@ -456,6 +467,10 @@ export interface ModelOption {
   label: string
   desc?: string
   selected?: boolean
+  /** 分组标题（元宝：模型 / 思考模式） */
+  group?: string
+  /** 平台明确标记不可用（如 Gemini 免费账号的 3.6 Flash / 3.1 Pro） */
+  disabled?: boolean
 }
 
 export interface ModelPickerInfo {
@@ -482,6 +497,7 @@ export interface OverlayCommand {
     | 'toggle-search'
     | 'upload-file'
     | 'click-keywords'
+    | 'remove-attachment'
     | 'watch-chats'
     | 'project-folders'
     | 'open-chat'
@@ -492,6 +508,8 @@ export interface OverlayCommand {
   urls?: string[]
   /** project-folders：网页侧项目文件夹数据（DeepSeek 侧栏） */
   folders?: ProjectFolderData
+  /** configure：当前网页绑定的会话（初始化忽略状态按会话持久化） */
+  sessionId?: string
   /** configure：下发当前 provider 的 DOM 适配器 */
   adapter?: DomAdapter
   /** configure：网络层 hook 源码（注入主世界，拦截 SSE 获取回复，不依赖 DOM） */
@@ -511,6 +529,8 @@ export interface OverlayCommand {
   keywords?: string[]
   /** select-model：要切换到的模型名称 */
   modelLabel?: string
+  /** remove-attachment：附件文件名（用于匹配网页输入区的缩略图） */
+  attachmentName?: string
 }
 
 export type OverlayEvent =

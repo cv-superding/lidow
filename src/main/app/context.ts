@@ -164,6 +164,45 @@ function chatUrlKey(raw: string | undefined): string {
 }
 
 /** 账号归一化：空值/__default__ 都代表隐式默认分区 */
+/** 平台首条消息前的临时对话 URL（豆包 local_xxx、ChatGPT local-chatgpt:xxx） */
+function isTransientChatUrl(raw: string | undefined): boolean {
+  if (!raw) return false
+  try {
+    const u = new URL(raw)
+    return u.pathname
+      .split('/')
+      .some((seg) => /^local[-_]/i.test(decodeURIComponent(seg)))
+  } catch {
+    return false
+  }
+}
+
+/** 同一会话的 URL 变化（新对话页 → 具体对话 id），不是切到另一条对话 */
+function isConversationUpgrade(oldUrl: string | undefined, newUrl: string): boolean {
+  const a = chatUrlKey(oldUrl)
+  const b = chatUrlKey(newUrl)
+  if (!a || !b) return true
+  if (a === b) return true
+  // 元宝 /chat/<bot> → /chat/<bot>/<chatId>，首条消息后 URL 才补上会话 id
+  if (b.startsWith(a + '/')) return true
+  // 豆包 local_xxx / ChatGPT local-chatgpt:xxx 会在首条消息后换成正式会话 id
+  if (isTransientChatUrl(oldUrl)) return true
+  // Kimi 首条消息前是 /chat/p<临时id>，发送后换成正式 UUID 会话
+  const lastSeg = (raw: string): string => {
+    try {
+      const parts = new URL(raw).pathname.split('/').filter(Boolean)
+      return decodeURIComponent(parts[parts.length - 1] || '')
+    } catch {
+      return ''
+    }
+  }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const oldSeg = lastSeg(oldUrl || '')
+  const newSeg = lastSeg(newUrl)
+  if (oldSeg && newSeg && !uuid.test(oldSeg) && uuid.test(newSeg)) return true
+  return false
+}
+
 function accountKey(accountId?: string): string {
   return accountId && accountId !== '__default__' ? accountId : '__default__'
 }
@@ -516,6 +555,23 @@ export class AppContext {
       const onHome = Boolean(home) && url.split('#')[0] === home
       // 登录页/首页不算对话页，不覆盖已记录的对话 URL
       const shouldRecordUrl = !loginPage && !onHome && url !== session.providerUrl
+      // 会话已经有本地历史，网页却切到了另一条对话：不能把新 URL 写进来，
+      // 否则本地旧历史会和新网页对话混在同一个会话里（实测元宝出现两条对话合并）。
+      // 也不能继续把新对话的回复接管进旧会话，先解绑；下次在纯净模式选回该会话
+      // 或发送时会重新绑定并落到它自己的 URL。
+      if (
+        shouldRecordUrl &&
+        session.providerUrl &&
+        session.turns.length > 0 &&
+        !isConversationUpgrade(session.providerUrl, url)
+      ) {
+        Logger.warn(
+          'nav',
+          `会话已有历史，网页切到另一条对话：解除绑定 session=${sessionId.slice(-6)} → ${url.slice(0, 70)}`
+        )
+        this.overlay.unbindSession(sessionId)
+        return
+      }
       if (shouldRecordUrl) {
         // 同一网页对话不能同时归属两个 Lidow 会话；否则两边发送都会写进同一个
         // 平台对话，历史互相污染。网页侧手动切换对话时宁可忽略这次导航。
@@ -1098,7 +1154,11 @@ export class AppContext {
     if (!session) return
     const provider = this.providerRegistryOf(session.projectId).get(session.providerId)
     if (!provider) return
-    this.overlay.sendCmd(sessionId, { kind: 'configure', adapter: provider.adapter })
+    this.overlay.sendCmd(sessionId, {
+      kind: 'configure',
+      sessionId,
+      adapter: provider.adapter
+    })
     // 告诉网页侧有没有工作目录：没有就由 overlay 在页面里弹初始化引导
     // （cuckoo 的 first-time-dialog 同款位置，用户准备说话的地方）。
     // 用「会话所属项目」而不是全局 activeProject —— 多项目并行时，
@@ -1799,9 +1859,9 @@ export class AppContext {
 
   /** 当前会话是否已有真实对话/初始化痕迹（用于页面级是否还要弹初始化入口） */
   private sessionInitialized(session: Session): boolean {
-    return (
-      session.turns.length > 0 || Boolean(session.providerUrl) || Boolean(session.systemPromptSent)
-    )
+    // providerUrl 会在打开网页时被自动记录（元宝首页 /chat/... 也算），
+    // 不能当作「已经初始化」；只有真的聊过/发过系统提示词才算。
+    return session.turns.length > 0 || Boolean(session.systemPromptSent)
   }
 
   /** 项目里是否已有带轮次的会话（任一即可）：用于判断是否还需要首次引导 */
@@ -1929,7 +1989,9 @@ export class AppContext {
         this.overlay.bindSession(sessionId, webContentsId)
         this.lastSessionId = sessionId
       }
-      const sys = this.systemPromptFor(sessionId)
+      const sys =
+        this.systemPromptFor(sessionId) +
+        `\n\n## 初始化确认\n这是新会话的初始化消息。请只回复「初始化成功」，并确认当前工作目录是 ${project.root}。不要调用工具，不要输出测试或无关内容。\n初始化完成后，后续任务必须使用 Lidow 工具执行本地操作；需要读写文件、执行命令时，严格按上面的 lidow JSON 工具块协议输出，不要声称无法访问本地文件。`
       // 直接经 overlay 发送：此时用户正看着网页，消息要出现在 AI 对话框里
       await this.overlay.sendToPage(sessionId, sys)
       const initStore = this.sessionStoreOf(this.sessionProjectOf(sessionId))

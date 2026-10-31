@@ -7,7 +7,6 @@ import {
   IconPlus,
   IconSearch,
   IconChevronLeft,
-  IconChevronRight,
   IconClose,
   IconSettings,
   IconPlugin,
@@ -202,7 +201,6 @@ export function PureModeShell({
     }
   }
   const activeTab = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId))
-  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [query, setQuery] = useState('')
   const [providerId, setProviderId] = useState(() => {
     const s = useStore.getState()
@@ -215,10 +213,14 @@ export function PureModeShell({
   // 切到 Claude 只看 Claude；多账号也不互相混。
   const currentProvider = activeTab?.providerId ?? activeSession?.providerId ?? ''
   const currentAccount = activeTab?.accountId ?? activeSession?.accountId ?? ''
+  // 只在网页标签/当前会话变化时同步过滤平台；用户手动在下拉里选平台时
+  // 不能立刻被这里拉回去（此前会导致下拉框永远跳回 DeepSeek，切不了平台）。
   useEffect(() => {
     if (currentProvider) setProviderId(currentProvider)
-    else if (!providerId && sessions[0]) setProviderId(sessions[0].providerId)
-  }, [currentProvider, providerId, sessions])
+  }, [currentProvider])
+  useEffect(() => {
+    if (!providerId && sessions[0]) setProviderId(sessions[0].providerId)
+  }, [providerId, sessions])
 
   const filtered = useMemo(
     () => filterSessionList(sessions, { query, providerId, currentProvider, currentAccount }),
@@ -251,21 +253,29 @@ export function PureModeShell({
       await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
   }
 
-  if (!sidebarOpen) {
-    return (
-      <button
-        title="展开侧栏"
-        className="flex w-9 shrink-0 items-center justify-center border-r transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-        style={{
-          borderColor: 'var(--border)',
-          background: 'var(--sidebar)',
-          color: 'var(--text-hint)'
-        }}
-        onClick={() => setSidebarOpen(true)}
-      >
-        <IconChevronRight size={14} />
-      </button>
-    )
+  /**
+   * 纯净模式平台选择：切到该平台最近一条会话；没有会话就新建。
+   * 只改过滤状态不切 activeSession 的话，输入框仍会把消息发进上一个平台，
+   * 用户看到的“每个平台对话框独立”就会被打破。
+   */
+  const switchProvider = async (pid: string): Promise<void> => {
+    if (!pid || pid === currentProvider) return
+    setProviderId(pid)
+    const norm = (a?: string): string => a || '__default__'
+    const all = useStore.getState().sessions.filter((s) => s.providerId === pid)
+    const sameAccount = all.filter((s) => norm(s.accountId) === norm(currentAccount))
+    const candidate = (sameAccount.length > 0 ? sameAccount : all).sort(
+      (a, b) => b.updatedAt - a.updatedAt
+    )[0]
+    if (candidate) {
+      await switchSession(candidate.id)
+      return
+    }
+    setPureView('home')
+    await useStore.getState().createSession(pid)
+    const created = useStore.getState().activeSession
+    if (created)
+      await useStore.getState().openProviderTab(created.providerId, created.id, created.accountId)
   }
 
   const navBtn =
@@ -282,16 +292,9 @@ export function PureModeShell({
       }}
     >
       <ResizeHandle width={sidebarWidth} onResize={setSidebarWidth} />
-      {/* ① 项目头 */}
+      {/* ① 项目头（侧栏固定展开，不再提供折叠/展开按钮） */}
       <div className="flex h-12 shrink-0 items-center gap-1 px-2">
         <ProjectMenu />
-        <button
-          title="收起侧栏"
-          className="btn btn-ghost btn-icon btn-sm"
-          onClick={() => setSidebarOpen(false)}
-        >
-          <IconChevronLeft size={14} />
-        </button>
       </div>
 
       <div className="px-2 pb-1">
@@ -351,8 +354,8 @@ export function PureModeShell({
             className="max-w-[86px] cursor-pointer rounded-[var(--r-sm)] border-0 bg-transparent text-[10.5px] outline-none"
             style={{ color: 'var(--text-hint)' }}
             value={providerId}
-            onChange={(e) => setProviderId(e.target.value)}
-            title="按平台隔离会话"
+            onChange={(e) => void switchProvider(e.target.value)}
+            title="切换平台（各平台会话独立）"
           >
             <option value="" disabled>
               选择平台

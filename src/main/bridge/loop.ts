@@ -105,6 +105,10 @@ const MAX_WILD_HINTS = 10
 /** 长任务自然结束时，如果最终回复只是一句“好了”，补一轮结构化摘要 */
 const SUMMARY_NUDGE_MIN_ROUNDS = 10
 
+/** 每轮末尾的工具提醒：网页模型（尤其 ChatGPT）常在中段提示词后仍声称「没有工具」 */
+const TOOL_REMINDER =
+  '（Lidow 环境：本地工具已启用。需要读写文件或执行命令时，按 lidow 协议输出 ```lidow JSON 代码块；不要回答没有工具、无法访问本地文件或需要用户手动操作。）'
+
 const SUMMARY_NUDGE_PROMPT =
   '请基于本次任务的实际执行结果，给出简洁的收尾摘要，按以下结构输出（没有的项写「无」）：\n\n' +
   '## 已完成\n- …\n\n## 未解决\n- …\n\n## 说明\n- …（可选）\n\n' +
@@ -322,6 +326,9 @@ export class AgentLoop {
           injectedPrompt = true
         }
       }
+      // 系统提示词在长对话中会被网页模型忽略；注入首轮时在任务末尾再压一行硬约束，
+      // 否则 ChatGPT/元宝会改用平台原生能力或直接声称「没有工具」。
+      if (injectedPrompt) prompt += '\n\n' + TOOL_REMINDER
       await this.toolLoop(sessionId, state, prompt)
       // 只有本轮真正跑完才记为已注入；发送失败/未连接时保留 false，
       // 下一条用户消息还能补上系统提示词。
@@ -552,9 +559,18 @@ export class AgentLoop {
     const turns = session.turns
     const lastUser = [...turns].reverse().find((t) => t.role === 'user')
     if (lastUser && lastUser.text.trim() === text) return
+    // 网页抓取常把工具调用块/复制下载残留单独落成一条 assistant 轮次；
+    // 这类轮次在纯净模式不显示，思考和文本要补到最近一条真正可见的回复上。
+    const artifactOnly = (t: { text: string }): boolean => {
+      const raw = (t.text || '').trim()
+      if (!raw) return true
+      if (/```lidow/i.test(raw) || /lidow复制下载/.test(raw)) return true
+      return /^\s*```[\s\S]*?"tool"\s*:/.test(raw)
+    }
     let lastIdx = -1
     for (let i = turns.length - 1; i >= 0; i--) {
-      if (turns[i]!.role === 'assistant') {
+      const t = turns[i]!
+      if (t.role === 'assistant' && !artifactOnly(t)) {
         lastIdx = i
         break
       }

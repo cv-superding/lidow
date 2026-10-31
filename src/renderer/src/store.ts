@@ -181,7 +181,14 @@ interface LidowState {
   quickCmds: QuickCommand[]
   todos: TaskItem[]
   fileTree: Awaited<ReturnType<typeof api.readFileTree>>
-  selectedFile: { path: string; content: string } | null
+  selectedFile: {
+    path: string
+    content: string
+    kind?: 'text' | 'image' | 'pdf' | 'html' | 'binary'
+    dataUrl?: string
+    mime?: string
+    size?: number
+  } | null
   /** 右栏审阅：当前任务的 diff 文件列表 */
   reviewFiles: ReviewFile[]
   reviewActivePath: string
@@ -506,6 +513,9 @@ export const useStore = create<LidowState>((set, get) => ({
         const cur = get().tabs.find((t) => t.id === get().activeTabId)
         if (cur?.sessionId && cur.sessionId !== sessionId) return // 期间又切了标签
         set({ activeSession: sess })
+        // 进入纯净模式时网页可能还停在新建对话/别的对话：落到本会话的网页 URL，
+        // 保证纯净窗口与网页窗口显示同一条对话（用户明确要求二者绑定）。
+        if (sess.providerUrl) void api.landSession(sessionId).catch(() => undefined)
         void api
           .getActivePlan(sessionId)
           .then((plan) => {
@@ -674,6 +684,9 @@ export const useStore = create<LidowState>((set, get) => ({
           // 旧会话没有 accountId 时按默认分区打开，不能落到 accounts[0] 的新账号
           await get().openProviderTab(s.providerId, s.id, s.accountId ?? DEFAULT_ACCOUNT_ID)
         }
+        // 网页可能停在新对话/别的对话：切回会话时强制落到它自己的平台 URL，
+        // 否则纯净模式显示的是这条会话，网页窗口却是另一条（实测元宝脱钩）。
+        if (s.providerUrl) await api.landSession(s.id).catch(() => undefined)
       } catch {
         /* 平台未配置时忽略，发送时还会再试 */
       }
@@ -898,6 +911,11 @@ export const useStore = create<LidowState>((set, get) => ({
     }
     // 首包到达前显示「正在思考」；turn-chunk/think-chunk/tool-start 会清掉
     if (wcId > 0) set({ pendingReplySessionId: activeSession.id, pendingSince: Date.now() })
+    // 网页可能被用户切到了别的对话/新对话：发送前先落回本会话的网页 URL，
+    // 否则这条消息会进错上下文，网页窗口和纯净窗口的历史也会分叉。
+    if (activeSession.providerUrl) {
+      await api.landSession(activeSession.id).catch(() => undefined)
+    }
     try {
       await api.sendPrompt(activeSession.id, text)
     } catch (e) {

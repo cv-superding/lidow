@@ -184,12 +184,17 @@ function AddTabButton(): React.JSX.Element {
     }
   }
 
-  // 默认账号是隐式的（内置平台没显式建账号时，登录态就在 default 分区）。
-  // 有账号记录时仍保留它：否则先登录后加账号的用户会看不到自己原来的登录态。
+  // 隐式默认分区只在没有命名账号（或它确实已登录）时展示；
+  // 否则同一个登录会出现“默认账号 + 命名账号”两行。
+  const showImplicit = picked
+    ? picked.accounts.length === 0 ||
+      (!picked.defaultAccountId && picked.defaultLoggedIn === true)
+    : false
   const accountRows = picked
     ? [
-        // 隐式默认账号始终保留：加了新账号后，用户仍需要能回到原来的登录态
-        { id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态' },
+        ...(showImplicit
+          ? [{ id: DEFAULT_ACCOUNT_ID, label: '默认账号', hint: '沿用当前登录态' }]
+          : []),
         ...picked.accounts.map((a) => ({
           id: a.id,
           label: a.label,
@@ -553,9 +558,15 @@ function HomeEmpty(): React.JSX.Element {
     const defaultLogin =
       picked.defaultLoggedIn !== false &&
       (picked.defaultLoggedIn === true || Boolean(picked.defaultAccountLabel))
-    const implicitDefault = !picked.defaultAccountId
-    // 已经显式选了默认账号时不再显示隐式默认分区，避免同一个登录出现两行；
-    // 需要切回隐式分区时去设置 → 平台与账号点隐式默认分区的星标。
+    // 有命名账号且默认分区没有登录时，不再并列显示隐式默认分区；
+    // 否则用户只登录了一个账号却看到两行（设置页同款规则）。
+    const showImplicit =
+      picked.accounts.length === 0 ||
+      (!picked.defaultAccountId && picked.defaultLoggedIn === true)
+    const implicitDefault = showImplicit && !picked.defaultAccountId
+    const effectiveDefaultId =
+      picked.defaultAccountId ??
+      (!showImplicit && picked.accounts.length === 1 ? (picked.accounts[0]?.id ?? null) : null)
     const accountRows = [
       ...(implicitDefault
         ? [
@@ -569,7 +580,7 @@ function HomeEmpty(): React.JSX.Element {
           ]
         : []),
       ...picked.accounts.map((a) => {
-        const isDefault = a.id === picked.defaultAccountId
+        const isDefault = a.id === effectiveDefaultId
         return {
           id: a.id,
           label: a.label,
