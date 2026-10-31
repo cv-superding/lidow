@@ -31,10 +31,6 @@ import {
   IconFile,
   IconCopy,
   IconEdit,
-  IconRefresh,
-  IconThumbUp,
-  IconThumbDown,
-  IconVolume,
   IconShare,
   IconBrain,
   IconGlobe,
@@ -460,15 +456,65 @@ function ActionButton({
   )
 }
 
+/** 流式中的 lidow 工具块：还没闭合也要立刻隐藏，不能先把整段 JSON 甩给用户看 */
+function stripStreamingToolBlocks(text: string): string {
+  return text
+    .replace(/```\s*lidow[\s\S]*?(?:```|$)/gi, '')
+    .replace(/lidow复制下载[\s\S]*?(?:```|$)/gi, '')
+    .trim()
+}
+
+/** 流式回复单独订阅 store：避免每个片段都重渲染整个消息列表 */
+function StreamingReply({
+  scrollRef,
+  stickRef
+}: {
+  scrollRef: React.RefObject<HTMLDivElement | null>
+  stickRef: React.RefObject<boolean>
+}): React.JSX.Element | null {
+  const text = useStore((s) => s.streamingText)
+  useEffect(() => {
+    if (!stickRef.current) return
+    const el = scrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [text, scrollRef, stickRef])
+  if (!text) return null
+  const visible = stripStreamingToolBlocks(text)
+  // 超长代码/文档在流式阶段只显示最新一段，避免每次更新都重排几十万字符
+  const shown =
+    visible.length > 12_000 ? `…（前文较长，仅显示最新内容）\n${visible.slice(-12_000)}` : visible
+  return (
+    <div className="flex flex-col gap-2">
+      {shown && (
+        <div
+          className="whitespace-pre-wrap text-[13.5px] leading-[1.68]"
+          style={{ color: 'var(--text-body)' }}
+        >
+          {stripCitationMarkers(shown)}
+        </div>
+      )}
+      {!visible && /lidow/i.test(text) && (
+        <div className="text-[12px]" style={{ color: 'var(--text-hint)' }}>
+          正在生成工具调用…
+        </div>
+      )}
+      <DeepSearching />
+    </div>
+  )
+}
+
+function LiveThinkingPanel({ streaming }: { streaming: boolean }): React.JSX.Element {
+  const text = useStore((s) => s.thinkingText)
+  return <ThinkingBlock text={text} streaming={streaming} />
+}
+
 function TurnItem({
   turn,
-  sessionId,
   showActions,
   showAssistantActions,
   onEditUser
 }: {
   turn: ChatTurn
-  sessionId?: string
   showActions?: boolean
   /** 助手操作栏只在整个任务结束后显示一次，工具中间轮次不再重复 */
   showAssistantActions?: boolean
@@ -477,49 +523,20 @@ function TurnItem({
   const isUser = turn.role === 'user'
   const isSystem = turn.role === 'system'
   const [copied, setCopied] = useState(false)
-  const [vote, setVote] = useState<'up' | 'down' | null>(null)
-  const [speaking, setSpeaking] = useState(false)
   // 助手轮次里的工具调用块/复制下载残留不算正文；用户轮次保持原文
   const actionText = isUser ? turn.text : stripToolArtifacts(turn.text).trim()
 
   const copy = (): void => {
-    void navigator.clipboard.writeText(actionText).then(() => {
+    void api.copyText(actionText).then((ok) => {
+      if (!ok) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })
   }
-  const speak = (): void => {
-    const synth = window.speechSynthesis
-    if (!synth) return
-    if (speaking) {
-      synth.cancel()
-      setSpeaking(false)
-      return
-    }
-    const u = new SpeechSynthesisUtterance(actionText.replace(/```[\s\S]*?```/g, ' ').slice(0, 6000))
-    u.lang = /[一-龥]/.test(actionText) ? 'zh-CN' : 'en-US'
-    u.onend = () => setSpeaking(false)
-    u.onerror = () => setSpeaking(false)
-    synth.cancel()
-    synth.speak(u)
-    setSpeaking(true)
-  }
   const share = (): void => {
-    const nav = navigator as Navigator & {
-      share?: (data: { title?: string; text?: string }) => Promise<void>
-    }
-    if (typeof nav.share === 'function') {
-      void nav.share({ title: 'Lidow', text: actionText }).catch(() => undefined)
-      return
-    }
-    void navigator.clipboard.writeText(actionText).then(() => {
-      useStore.getState().notice('已复制内容，可粘贴分享')
+    void api.copyText(actionText).then((ok) => {
+      if (ok) useStore.getState().notice('已复制内容，可粘贴分享')
     })
-  }
-  const regenerate = (): void => {
-    if (!sessionId) return
-    void api.overlayAction(sessionId, ['重新生成', '重新回答', 'Regenerate'])
-    useStore.getState().notice('已请求网页端重新生成')
   }
 
   if (isSystem) {
@@ -581,28 +598,6 @@ function TurnItem({
         <div className="mt-0.5 flex flex-wrap items-center gap-0.5">
           <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
             {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
-          </ActionButton>
-          {sessionId && (
-            <ActionButton title="在网页端重新生成" onClick={regenerate}>
-              <IconRefresh size={13} />
-            </ActionButton>
-          )}
-          <ActionButton
-            title="有帮助"
-            active={vote === 'up'}
-            onClick={() => setVote(vote === 'up' ? null : 'up')}
-          >
-            <IconThumbUp size={13} />
-          </ActionButton>
-          <ActionButton
-            title="没帮助"
-            active={vote === 'down'}
-            onClick={() => setVote(vote === 'down' ? null : 'down')}
-          >
-            <IconThumbDown size={13} />
-          </ActionButton>
-          <ActionButton title={speaking ? '停止朗读' : '朗读'} active={speaking} onClick={speak}>
-            <IconVolume size={13} />
           </ActionButton>
           <ActionButton title="分享" onClick={share}>
             <IconShare size={13} />
@@ -772,8 +767,10 @@ function UploadTile({
 export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): React.JSX.Element {
   const activeSession = useStore((s) => s.activeSession)
   const pendingReplySessionId = useStore((s) => s.pendingReplySessionId)
-  const streamingText = useStore((s) => s.streamingText)
-  const thinkingText = useStore((s) => s.thinkingText)
+  // 只订阅布尔值：完整流式文本交给 StreamingReply / LiveThinkingPanel 自己渲染，
+  // 否则每个片段都会重渲染整棵对话树，网页长输出时界面明显卡顿。
+  const hasStreaming = useStore((s) => Boolean(s.streamingText))
+  const hasThinking = useStore((s) => Boolean(s.thinkingText))
   const sendPrompt = useStore((s) => s.sendPrompt)
   const stop = useStore((s) => s.stop)
   const confirmRequest = useStore((s) => s.confirmRequest)
@@ -799,19 +796,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     >
   >({})
   const attachments = activeSession?.id ? (pendingAttachments[activeSession.id] ?? []) : []
-  const addAttachments = (
-    sessionId: string,
-    items: { path: string; name: string; preview?: string }[]
-  ): void => {
-    if (items.length === 0) return
-    setPendingAttachments((prev) => ({
-      ...prev,
-      [sessionId]: [
-        ...(prev[sessionId] ?? []),
-        ...items.map((it) => ({ key: it.path, name: it.name, preview: it.preview }))
-      ]
-    }))
-  }
   const clearAttachments = (sessionId: string): void => {
     setPendingAttachments((prev) => (prev[sessionId]?.length ? { ...prev, [sessionId]: [] } : prev))
   }
@@ -1105,12 +1089,12 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     return turns.flatMap((t) => t.toolResults ?? [])
   }, [turns])
   const running = activeSession
-    ? turns[turns.length - 1]?.status === 'streaming' || streamingText.length > 0
+    ? turns[turns.length - 1]?.status === 'streaming' || hasStreaming
     : false
   // 实时思考只在任务进行中显示：刚发出（最后一轮是用户）或正在生成/执行；
   // 任务结束后网页侧迟到的 think-chunk 不能再挂到最终答复下面。
   const liveThinking = Boolean(
-    thinkingText &&
+    hasThinking &&
     activeSession &&
     (running ||
       pendingReplySessionId === activeSession.id ||
@@ -1121,20 +1105,23 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     activeSession &&
     pendingReplySessionId === activeSession.id &&
     allTurns[allTurns.length - 1]?.role === 'user' &&
-    !streamingText &&
-    !thinkingText
+    !hasStreaming &&
+    !hasThinking
   )
   // 工具批次执行中（turn.status=streaming 且已有结果）：停止按钮应中止工具而不是生成
   const lastTurn = turns[turns.length - 1]
   const toolRunning = Boolean(
     activeSession && lastTurn?.status === 'streaming' && (lastTurn.toolResults?.length ?? 0) > 0
   )
+  // 忙碌 = 生成中/等待首包/思考中/工具执行中。此前只看 streamingText，
+  // 思考阶段（或网页侧刚开始回复）发送键仍然可点，会重复发消息。
+  const busy = Boolean(
+    activeSession &&
+      (running || toolRunning || pendingReplySessionId === activeSession.id || liveThinking)
+  )
   // 一个任务可能包含多段助手回复（工具批次/中间说明）。操作栏只在任务最后
   // 一段有正文的回复后出现一次，避免截图中每隔一个工具组就重复一排按钮。
-  const taskRunning = Boolean(
-    activeSession &&
-      (running || pendingReplySessionId === activeSession.id || lastTurn?.status === 'streaming')
-  )
+  const taskRunning = busy
   const assistantActionIds = useMemo(() => {
     const ids = new Set<string>()
     let group: ChatTurn[] = []
@@ -1177,7 +1164,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     if (!stickRef.current) return
     const el = scrollRef.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [turns.length, streamingText])
+  }, [turns.length, hasStreaming])
 
   const preferredProviderId = (): string | undefined => {
     const st = useStore.getState()
@@ -1299,6 +1286,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   }, [activeSession?.id])
 
   const submit = async (): Promise<void> => {
+    if (busy) return
     const text = input.trim()
     if (!text) return
     // 快捷指令模板里的占位符没填就发送，AI 收到的是一句带 {{input}} 的指令
@@ -1400,7 +1388,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const shouldFoldEarly = turns.length > 8 || totalTextLen > 8_000
   const keepRecent = 6
   const visibleTurns = shouldFoldEarly && !earlyExpanded ? turns.slice(-keepRecent) : turns
-  const empty = turns.length === 0 && !streamingText
+  const empty = turns.length === 0 && !hasStreaming
 
   return (
     <div className="relative flex h-full flex-col" style={{ background: 'var(--bg)' }}>
@@ -1555,7 +1543,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             <TurnItem
               key={t.id}
               turn={t}
-              sessionId={activeSession?.id}
               showActions={mode === 'pure'}
               showAssistantActions={mode === 'pure' && assistantActionIds.has(t.id)}
               onEditUser={(text) => startEdit(text, t.id)}
@@ -1568,21 +1555,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           )}
           {/* 只显示当前任务进行中的实时思考；任务结束后网页可能还有迟到的思考块，
               不能让它挂在最终答复下面，看起来像「还在想」 */}
-          {liveThinking && mode === 'pure' && (
-            <ThinkingBlock text={thinkingText} streaming={!streamingText} />
-          )}
+          {liveThinking && mode === 'pure' && <LiveThinkingPanel streaming={!hasStreaming} />}
 
-          {streamingText && mode === 'pure' && (
-            <div className="flex flex-col gap-2">
-              {/* 流式期间只渲染纯文本：ReactMarkdown+hljs 全量解析长文本会卡死 UI */}
-              <div
-                className="whitespace-pre-wrap text-[13.5px] leading-[1.68]"
-                style={{ color: 'var(--text-body)' }}
-              >
-                {stripCitationMarkers(streamingText)}
-              </div>
-              <DeepSearching />
-            </div>
+          {hasStreaming && mode === 'pure' && (
+            <StreamingReply scrollRef={scrollRef} stickRef={stickRef} />
           )}
         </div>
       </div>
@@ -1908,9 +1884,78 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 return
               }
               const session = activeSession
+              const pasted = files.slice(0, 4)
+              const stamp = Date.now()
+              const placeholderKeys = pasted.map(
+                (_, i) => `paste-${stamp}-${i}-${Math.random().toString(36).slice(2, 5)}`
+              )
+              // 粘贴瞬间先放占位图 + 0% 进度圈；等 FileReader/注入完成才出现
+              // 缩略图会让用户以为没反应（实测约 1 秒空白）。
+              setPendingAttachments((prev) => ({
+                ...prev,
+                [session.id]: [
+                  ...(prev[session.id] ?? []),
+                  ...pasted.map((f, i) => ({
+                    key: placeholderKeys[i]!,
+                    name: f.name || `粘贴图片 ${i + 1}`,
+                    uploading: true,
+                    progress: 0
+                  }))
+                ]
+              }))
+              const clearPasteTimers = (): void => {
+                for (const key of placeholderKeys) {
+                  const t = uploadTimers.current[key]
+                  if (t) {
+                    window.clearInterval(t)
+                    delete uploadTimers.current[key]
+                  }
+                }
+              }
+              for (const key of placeholderKeys) {
+                const timer = window.setInterval(() => {
+                  setPendingAttachments((prev) => {
+                    const list = prev[session.id]
+                    if (!list) return prev
+                    return {
+                      ...prev,
+                      [session.id]: list.map((a) =>
+                        a.key === key && a.uploading
+                          ? { ...a, progress: Math.min(90, (a.progress ?? 0) + 7) }
+                          : a
+                      )
+                    }
+                  })
+                }, 120)
+                uploadTimers.current[key] = timer
+              }
+              const updatePlaceholders = (
+                fn: (a: { key: string; name: string; preview?: string; progress?: number }, i: number) => {
+                  key: string
+                  name: string
+                  preview?: string
+                  progress?: number
+                }
+              ): void => {
+                setPendingAttachments((prev) => ({
+                  ...prev,
+                  [session.id]: (prev[session.id] ?? []).map((a) => {
+                    const i = placeholderKeys.indexOf(a.key)
+                    return i >= 0 ? fn(a, i) : a
+                  })
+                }))
+              }
+              const dropPlaceholders = (): void => {
+                setPendingAttachments((prev) => ({
+                  ...prev,
+                  [session.id]: (prev[session.id] ?? []).filter(
+                    (a) => !placeholderKeys.includes(a.key)
+                  )
+                }))
+              }
               const pastedUrls: string[] = []
               void Promise.all(
-                files.slice(0, 4).map(
+                pasted.map(
                   (f) =>
                     new Promise<string>((resolve, reject) => {
                       const reader = new FileReader()
@@ -1922,31 +1967,53 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               )
                 .then((images) => {
                   pastedUrls.push(...images)
+                  // 读到本地 data URL 就立刻显示缩略图，注入网页期间只转圈不空白
+                  updatePlaceholders((a, i) => ({
+                    ...a,
+                    preview: images[i] ?? a.preview,
+                    name: pasted[i]?.name || a.name,
+                    progress: Math.max(a.progress ?? 0, 50)
+                  }))
                   return api.pasteWebImages(session.id, images)
                 })
                 .then((r) => {
                   if (r.ok) {
-                    // 本地 data URL 已在内存里，直接拿来预览；主进程只补文件路径/名称
-                    addAttachments(
-                      session.id,
-                      pastedUrls.map((src, i) => ({
-                        path: r.files?.[i]?.path ?? `paste-${Date.now()}-${i}`,
-                        name: r.files?.[i]?.name ?? `粘贴图片 ${i + 1}`,
-                        preview: src
-                      }))
-                    )
+                    clearPasteTimers()
+                    updatePlaceholders((a, i) => ({
+                      ...a,
+                      preview: r.files?.[i]?.preview ?? pastedUrls[i] ?? a.preview,
+                      name: r.files?.[i]?.name ?? a.name,
+                      progress: 100
+                    }))
+                    window.setTimeout(() => {
+                      setPendingAttachments((prev) => {
+                        const rest = (prev[session.id] ?? []).filter(
+                          (a) => !placeholderKeys.includes(a.key)
+                        )
+                        const finals = (r.files ?? []).map((f, i) => ({
+                          key: f.path,
+                          name: f.name,
+                          preview: f.preview ?? pastedUrls[i]
+                        }))
+                        return { ...prev, [session.id]: [...rest, ...finals] }
+                      })
+                    }, 220)
                     return
                   }
+                  clearPasteTimers()
+                  dropPlaceholders()
                   useStore.getState().notice(r.message ?? '图片附加失败', 'warn')
                 })
-                .catch((err) =>
+                .catch((err) => {
+                  clearPasteTimers()
+                  dropPlaceholders()
                   useStore
                     .getState()
                     .notice(
                       `图片附加失败：${err instanceof Error ? err.message : String(err)}`,
                       'error'
                     )
-                )
+                })
             }}
             onKeyDown={(e) => {
               if (slashOpen && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
@@ -2000,7 +2067,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               <button
                 className="composer-chip disabled:opacity-40"
                 data-active={toggleState.think}
-                disabled={running || !toggleState.thinkAvailable}
+                disabled={busy || !toggleState.thinkAvailable}
                 title="深度思考"
                 onClick={() =>
                   activeSession && void api.overlayToggle(activeSession.id, 'toggle-think')
@@ -2014,7 +2081,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               <button
                 className="composer-chip disabled:opacity-40"
                 data-active={toggleState.search}
-                disabled={running || !toggleState.searchAvailable}
+                disabled={busy || !toggleState.searchAvailable}
                 title="智能搜索"
                 onClick={() =>
                   activeSession && void api.overlayToggle(activeSession.id, 'toggle-search')
@@ -2030,7 +2097,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                 <button
                   className="composer-chip max-w-[190px] disabled:opacity-40"
                   title="选择模型"
-                  disabled={running}
+                  disabled={busy}
                   onClick={openModelMenu}
                 >
                   <span className="max-w-[160px] truncate">{models.current || '模型'}</span>
@@ -2112,7 +2179,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
                   )}
               </div>
             )}
-            {running ? (
+            {busy ? (
               <button
                 className="btn btn-sm btn-danger"
                 onClick={() => void stop(toolRunning ? 'tool' : 'generate')}

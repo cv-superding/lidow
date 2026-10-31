@@ -154,6 +154,8 @@ export interface LidowApi {
     size: number
   }>
   openPathInSystem(path: string): Promise<void>
+  /** 写系统剪贴板（操作栏复制/分享，避免渲染层 clipboard 权限问题） */
+  copyText(text: string): Promise<boolean>
 
   // Skills / Agents / Rules
   listSkills(): Promise<SkillMeta[]>

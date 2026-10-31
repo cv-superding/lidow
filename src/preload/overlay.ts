@@ -230,6 +230,8 @@ let streaming = false
 let everFlag = false // 平台是否出现过流式标志（决定是否启用文本稳定兜底判定）
 let endTimer: ReturnType<typeof setTimeout> | null = null
 let chunkTimer: ReturnType<typeof setTimeout> | null = null
+/** 合并高频 DOM 变化：流式 token 每次 mutation 都做整段克隆解析会把页面拖卡 */
+let mutationTimer: ReturnType<typeof setTimeout> | null = null
 /** 最近一次经 lidow 发出去的文本：部分平台把用户消息也匹配进 bubble，不能当回复 */
 let lastSentText = ''
 /** 本轮是否真的出现过新的回复文本：只有流式标志、文本还停在上一轮时不能结束 */
@@ -675,7 +677,11 @@ function watchMessages(): void {
     clearTimeout(chunkTimer)
     chunkTimer = null
   }
-  observer = new MutationObserver(() => {
+  if (mutationTimer) {
+    clearTimeout(mutationTimer)
+    mutationTimer = null
+  }
+  const processMutations = (): void => {
     const flag = isStreaming()
     const chatgpt = isChatGptPage()
 
@@ -777,6 +783,13 @@ function watchMessages(): void {
         if (lastText === scheduled) finishStream()
       }, 1500)
     }
+  }
+  observer = new MutationObserver(() => {
+    if (mutationTimer) return
+    mutationTimer = setTimeout(() => {
+      mutationTimer = null
+      processMutations()
+    }, 150)
   })
   observer.observe(document.body, { childList: true, subtree: true, characterData: true })
 }

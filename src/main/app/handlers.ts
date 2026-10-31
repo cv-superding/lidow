@@ -4,6 +4,7 @@ import {
   dialog,
   shell,
   nativeTheme,
+  clipboard,
   session as electronSession,
   webContents
 } from 'electron'
@@ -290,6 +291,11 @@ export function registerHandlers(
     return { removed: true, webDeleted, webFailed: 0, message: parts.join('') }
   })
   R('quit', () => app.quit())
+  // 渲染层的 navigator.clipboard 在 Electron 里可能被权限/焦点拦截；操作栏复制走系统剪贴板
+  R('copyText', (text: string) => {
+    clipboard.writeText(String(text ?? ''))
+    return true
+  })
 
   // ---------- 窗口控制（自绘标题栏） ----------
   R('windowMinimize', () => BrowserWindow.getFocusedWindow()?.minimize())
