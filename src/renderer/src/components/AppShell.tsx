@@ -92,21 +92,30 @@ export function LeftRail(): React.JSX.Element {
   // 悬停时向右展开盖住内容，用负 margin 抵消布局宽度，避免网页跟着左右跳动
   const expanded = railPinned || hovered
   return (
+    // 外层只负责占位：悬停展开不能让主内容跟着回流（此前 width + 负 margin
+    // 同时动画，鼠标离开时会先跳到新位置再弹回）。固定占位后只动画内层宽度。
     <div
-      className="relative flex h-full flex-col border-r"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      data-lidow-rail=""
+      className="relative h-full shrink-0"
       style={{
-        width: expanded ? 184 : 56,
-        marginRight: expanded && !railPinned ? -128 : 0,
-        borderColor: 'var(--border)',
-        background: 'var(--sidebar)',
-        transition: 'width var(--dur-slow) var(--ease-emph), margin-right var(--dur-slow) var(--ease-emph)',
-        overflow: 'hidden',
-        zIndex: 40
+        width: railPinned ? 184 : 56,
+        transition: 'width var(--dur-slow) var(--ease-emph)'
       }}
     >
-      <div className="rail-scroll flex min-h-0 flex-1 flex-col overflow-y-auto px-2 py-2">
+      <div
+        data-lidow-rail-panel=""
+        className="absolute inset-y-0 left-0 z-40 flex h-full flex-col border-r"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        style={{
+          width: expanded ? 184 : 56,
+          borderColor: 'var(--border)',
+          background: 'var(--sidebar)',
+          transition: 'width var(--dur-slow) var(--ease-emph)',
+          overflow: 'hidden'
+        }}
+      >
+        <div className="rail-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto px-2 py-2">
         {RAIL_GROUPS.map((group, gi) => (
           <div key={gi} className="flex flex-col gap-1">
             {gi > 0 && (
@@ -115,8 +124,8 @@ export function LeftRail(): React.JSX.Element {
                 style={{
                   height: 1,
                   background: 'var(--border)',
-                  marginLeft: expanded ? 8 : 12,
-                  marginRight: expanded ? 8 : 12
+                  marginLeft: 8,
+                  marginRight: 8
                 }}
               />
             )}
@@ -130,9 +139,9 @@ export function LeftRail(): React.JSX.Element {
                   className="nav-item shrink-0"
                   data-active={active}
                   style={{
-                    padding: expanded ? '0 9px 0 10px' : 0,
-                    gap: expanded ? 9 : 0,
-                    justifyContent: expanded ? 'flex-start' : 'center',
+                    padding: '0 9px 0 11px',
+                    gap: 9,
+                    justifyContent: 'flex-start',
                     height: 36,
                     borderRadius: 'var(--r-md)',
                     background: active ? 'var(--surface)' : undefined,
@@ -146,8 +155,10 @@ export function LeftRail(): React.JSX.Element {
                     <Icon size={18} />
                   </span>
                   <span
+                    data-lidow-rail-label=""
                     className="whitespace-nowrap"
-                    style={{ display: expanded ? undefined : 'none' }}
+                    aria-hidden={!expanded}
+                    style={{ opacity: expanded ? 1 : 0, transition: 'opacity 120ms linear' }}
                   >
                     {item.label}
                   </span>
@@ -163,9 +174,9 @@ export function LeftRail(): React.JSX.Element {
         <button
           className="nav-item shrink-0"
           style={{
-            padding: expanded ? '0 9px 0 10px' : 0,
-            gap: expanded ? 9 : 0,
-            justifyContent: expanded ? 'flex-start' : 'center',
+            padding: '0 9px 0 11px',
+            gap: 9,
+            justifyContent: 'flex-start',
             height: 36,
             borderRadius: 'var(--r-md)',
             background: pureMode ? 'var(--surface)' : undefined,
@@ -179,8 +190,10 @@ export function LeftRail(): React.JSX.Element {
             <IconPure size={18} />
           </span>
           <span
+            data-lidow-rail-label=""
             className="whitespace-nowrap"
-            style={{ display: expanded ? undefined : 'none' }}
+            aria-hidden={!expanded}
+            style={{ opacity: expanded ? 1 : 0, transition: 'opacity 120ms linear' }}
           >
             纯净模式
           </span>
@@ -188,9 +201,9 @@ export function LeftRail(): React.JSX.Element {
         <button
           className="nav-item shrink-0"
           style={{
-            padding: expanded ? '0 9px 0 10px' : 0,
-            gap: expanded ? 9 : 0,
-            justifyContent: expanded ? 'flex-start' : 'center',
+            padding: '0 9px 0 11px',
+            gap: 9,
+            justifyContent: 'flex-start',
             height: 36,
             borderRadius: 'var(--r-md)'
           }}
@@ -201,8 +214,10 @@ export function LeftRail(): React.JSX.Element {
             <IconSearch size={18} />
           </span>
           <span
+            data-lidow-rail-label=""
             className="whitespace-nowrap"
-            style={{ display: expanded ? undefined : 'none' }}
+            aria-hidden={!expanded}
+            style={{ opacity: expanded ? 1 : 0, transition: 'opacity 120ms linear' }}
           >
             命令面板
           </span>
@@ -211,9 +226,9 @@ export function LeftRail(): React.JSX.Element {
           className="nav-item shrink-0"
           data-active={view === 'settings'}
           style={{
-            padding: expanded ? '0 9px 0 10px' : 0,
-            gap: expanded ? 9 : 0,
-            justifyContent: expanded ? 'flex-start' : 'center',
+            padding: '0 9px 0 11px',
+            gap: 9,
+            justifyContent: 'flex-start',
             height: 36,
             borderRadius: 'var(--r-md)',
             background: view === 'settings' ? 'var(--surface)' : undefined,
@@ -227,12 +242,15 @@ export function LeftRail(): React.JSX.Element {
             <IconSettings size={18} />
           </span>
           <span
+            data-lidow-rail-label=""
             className="whitespace-nowrap"
-            style={{ display: expanded ? undefined : 'none' }}
+            aria-hidden={!expanded}
+            style={{ opacity: expanded ? 1 : 0, transition: 'opacity 120ms linear' }}
           >
             设置
           </span>
         </button>
+        </div>
       </div>
     </div>
   )
