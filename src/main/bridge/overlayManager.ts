@@ -72,6 +72,8 @@ export class OverlayManager {
   private onThinkChunk?: (sessionId: string, think: string) => void
   /** 网页侧「AI 回复完成」常驻回调：用户直接在网页输入框发消息时也能接管（cuckoo observer 同款） */
   private onPageReply?: (sessionId: string, text: string) => void
+  /** 网页侧自行发起任务时的实时流文本（没有 loop 等待方时推给纯净模式） */
+  onPageStream?: (sessionId: string, text: string, tps: number) => void
   /** 用户在网页输入框里亲手发送的消息（同步回纯净模式的用户轮次） */
   private onPageUserMessage?: (sessionId: string, text: string) => void
   /** 页面重挂载后的最后一条 AI 回答（补齐重启/重载期间缺失的最终答复） */
@@ -265,8 +267,14 @@ export class OverlayManager {
         ch.lastActivityAt = Date.now()
         // 有内容说明页面还在生成：把软错误的宽限往后顺延
         this.rearmErrorGrace(ch)
-        for (const r of ch.chunkResolvers)
-          r(payload.text, this.estimateTps(payload.text.length, ch))
+        const tps = this.estimateTps(payload.text.length, ch)
+        for (const r of ch.chunkResolvers) r(payload.text, tps)
+        // 没有 loop 等待方 = 用户在网页里自己发的任务：这里直接把流推给
+        // 纯净模式，否则要等整段回复结束才一次性出现（大代码块会像卡死）。
+        if (ch.chunkResolvers.size === 0) {
+          const sid = this.sessionOfWebContents(sender.id)
+          if (sid) this.onPageStream?.(sid, payload.text, tps)
+        }
         break
       }
       case 'stream-heartbeat': {

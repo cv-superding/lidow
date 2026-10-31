@@ -1200,22 +1200,32 @@ function scanMessageFold(): void {
     foldBarEl = null
     return
   }
-  const total = items.reduce((n, el) => n + (el.innerText || '').length, 0)
+  const total = items.reduce((n, el) => n + (el.textContent || '').length, 0)
   const older = items.slice(0, -1)
-  const long = older.filter(
-    (el) =>
-      (el.innerText || '').length >= FOLD_MIN_TEXT &&
-      el.getBoundingClientRect().height > FOLD_MIN_HEIGHT
-  )
+  const long = older.filter((el) => {
+    const len = (el.textContent || '').length
+    if (len < FOLD_MIN_TEXT) return false
+    // 折叠后 getBoundingClientRect 会变成 340px，用它判断会“折叠→取消→再折叠”
+    // 每 1.6 秒抖一次，页面跟着自动滚。scrollHeight 不受 max-height 影响；
+    // 已折叠元素直接按长消息保留，避免平台重渲染后高度读数变化。
+    return el.classList.contains('lpf-msg-fold') || el.scrollHeight > FOLD_MIN_HEIGHT
+  })
   const active = total >= FOLD_MIN_TOTAL && long.length > 0
   if (!active) {
-    for (const el of items) el.classList.remove('lpf-msg-fold')
+    for (const el of items) {
+      if (el.classList.contains('lpf-msg-fold')) el.classList.remove('lpf-msg-fold')
+    }
     foldBarEl?.remove()
     foldBarEl = null
     return
   }
   const longSet = new Set(long)
-  for (const el of items) el.classList.toggle('lpf-msg-fold', !foldExpanded && longSet.has(el))
+  for (const el of items) {
+    const should = !foldExpanded && longSet.has(el)
+    if (el.classList.contains('lpf-msg-fold') !== should) {
+      el.classList.toggle('lpf-msg-fold', should)
+    }
+  }
   const bar = ensureFoldBar()
   bar.textContent = foldExpanded
     ? `已展开 ${long.length} 条长消息 · 收起`

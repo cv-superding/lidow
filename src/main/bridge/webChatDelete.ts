@@ -51,6 +51,35 @@ async function webChatDeleteScript(args: { url: string; title: string }): Promis
       .toLowerCase()
     return labels.some((l) => t === l || (l.length >= 2 && t.includes(l)))
   }
+  // 删除接口和网页自己的 HTTP 客户端一样需要 Bearer token；只有 Cookie
+  // 会返回 INVALID_TOKEN，即使页面明明已经登录。
+  const readToken = (): string => {
+    try {
+      const keys = ['userToken']
+      for (let i = 0; i < g.localStorage.length; i++) {
+        const k = g.localStorage.key(i) || ''
+        if (/token/i.test(k) && !keys.includes(k)) keys.push(k)
+      }
+      for (const k of keys) {
+        const raw = g.localStorage.getItem(k) || ''
+        if (!raw) continue
+        try {
+          const parsed = JSON.parse(raw)
+          if (typeof parsed === 'string' && parsed.length > 10) return parsed
+          if (parsed && typeof parsed === 'object') {
+            const v = parsed.token || parsed.value || parsed.accessToken || parsed.access_token
+            if (typeof v === 'string' && v.length > 10) return v
+          }
+        } catch {
+          /* 不是 JSON，直接当 token */
+        }
+        if (raw.length > 10) return raw.replace(/^"|"$/g, '')
+      }
+    } catch {
+      /* localStorage 不可用 */
+    }
+    return ''
+  }
 
   let target: URL
   try {
@@ -69,18 +98,21 @@ async function webChatDeleteScript(args: { url: string; title: string }): Promis
   // POST /api/v0/chat_session/delete { chat_session_ids: [id] }。
   if (target.origin === 'https://chat.deepseek.com') {
     try {
+      const token = readToken()
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = `Bearer ${token}`
       const res = await g.fetch('/api/v0/chat_session/delete', {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ chat_session_ids: [id] })
       })
-      if (res.status === 401 || res.status === 403) {
+      if ((res.status === 401 || res.status === 403) && !token) {
         return { ok: false, reason: '网页未登录，无法删除网页端对话' }
       }
       const json = await res.json().catch(() => null)
       const code = json?.data?.biz_code ?? json?.code
-      if (code === 40003 || /INVALID_TOKEN/i.test(String(json?.msg ?? ''))) {
+      if (code === 40003 && !token) {
         return { ok: false, reason: '网页未登录，无法删除网页端对话' }
       }
       if (res.ok && code === 0) {

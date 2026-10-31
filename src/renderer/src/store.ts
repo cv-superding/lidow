@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { api } from './api'
-import { waitWebviewWcId, webviewWcId } from './webviews'
+import { waitWebviewWcId, webviewUrl, webviewWcId } from './webviews'
 import type { LidowEvent, UpdateState } from '@shared/ipc'
 import type {
   AppSettings,
@@ -495,13 +495,34 @@ export const useStore = create<LidowState>((set, get) => ({
     const tab = s.tabs.find((t) => t.id === s.activeTabId)
     const providerId = tab?.providerId ?? s.activeSession?.providerId ?? s.providers[0]?.id
     if (!providerId) return
+    // 以「网页当前打开的对话 URL」为准：标签里的 sessionId 可能落后
+    // （网页里切过对话/新建过对话），直接用它会把纯净模式带到另一条会话。
+    const tabUrl = tab ? webviewUrl(tab.id) : ''
+    const urlKey = (raw?: string): string => {
+      try {
+        const u = new URL(raw || '')
+        return `${u.origin}${u.pathname.replace(/\/+$/, '')}`
+      } catch {
+        return ''
+      }
+    }
+    const currentKey = urlKey(tabUrl)
+    const acc = (a?: string): string => a || '__default__'
+    const matched = currentKey
+      ? s.sessions.find(
+          (m) =>
+            m.providerId === providerId &&
+            urlKey(m.providerUrl) === currentKey &&
+            (!tab?.accountId || acc(m.accountId) === acc(tab.accountId))
+        )
+      : undefined
     // 标签没有绑定会话时，只能复用同平台的 activeSession，避免把 A 平台会话绑到 B 平台页面
     const fallbackId = tab
       ? s.activeSession?.providerId === providerId
         ? s.activeSession.id
         : ''
       : (s.activeSession?.id ?? '')
-    const sessionId = tab?.sessionId || fallbackId
+    const sessionId = matched?.id || tab?.sessionId || fallbackId
     // 确保有后台 webview 承载（webview 是对话驱动通道）
     void s.openProviderTab(providerId, sessionId, tab?.accountId ?? s.activeSession?.accountId)
     if (!sessionId) return

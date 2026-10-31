@@ -23,6 +23,17 @@ export function webviewWcId(tabId: string): number {
   }
 }
 
+/** 标签对应 webview 当前打开的网页 URL（未挂载/读取失败返回空） */
+export function webviewUrl(tabId: string): string {
+  const el = registry.get(tabId) as (Electron.WebviewTag & { getURL?: () => string }) | undefined
+  if (!el) return ''
+  try {
+    return el.getURL?.() || ''
+  } catch {
+    return ''
+  }
+}
+
 /** 等待 webview attach（首次打开时 React 渲染晚于状态更新） */
 export async function waitWebviewWcId(tabId: string, tries = 60, intervalMs = 150): Promise<number> {
   for (let i = 0; i < tries; i++) {

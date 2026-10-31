@@ -366,6 +366,10 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
     text
       .replace(/\s+/g, '')
       .replace(/[*_`#>~|:：\-—，。；、,.;!?！？"'“”‘’（）()【】<>《》]/g, '')
+  // 显示层会剥掉工具块；去重也必须按“用户实际看到的正文”比较，
+  // 否则一段工具残留 + 相同说明会在最终答案后面再冒出一条。
+  const visibleOf = (t: ChatTurn): string =>
+    t.role === 'assistant' ? stripToolArtifacts(t.text).trim() : t.text.trim()
   const out: ChatTurn[] = []
   let groupStart = 0
   for (const turn of list) {
@@ -374,11 +378,12 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
       groupStart = out.length
       continue
     }
-    if ((turn.toolResults?.length ?? 0) > 0 || /```lidow/i.test(turn.text)) {
+    // 带真实工具结果的轮次必须保留（工具组/执行结果不能丢）
+    if ((turn.toolResults?.length ?? 0) > 0) {
       out.push(turn)
       continue
     }
-    const key = norm(turn.text)
+    const key = norm(visibleOf(turn) || turn.text)
     if (!key) {
       out.push(turn)
       continue
@@ -389,8 +394,7 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
     for (let j = out.length - 1; j >= groupStart; j--) {
       const prev = out[j]
       if (!prev || prev.role !== 'assistant') continue
-      if ((prev.toolResults?.length ?? 0) > 0 || /```lidow/i.test(prev.text)) continue
-      const prevKey = norm(prev.text)
+      const prevKey = norm(visibleOf(prev) || prev.text)
       if (!prevKey) continue
       // 初始化回复可能被抓成一条残缺、一条完整；只保留更完整的那条
       if (isInitAck(turn.text) && isInitAck(prev.text)) {
@@ -415,12 +419,17 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
       continue
     }
     const prev = out[duplicateOf]!
+    // 前一条是工具轮：保留它（含 toolResults），只丢掉重复的当前残片
+    if ((prev.toolResults?.length ?? 0) > 0) continue
     const prevThink = (prev.think ?? '').trim()
     const nextThink = (turn.think ?? '').trim()
     // 初始化确认只保留最长的一条；普通重复回复保留文本/处理步骤更完整的
     if (initAckDup) {
-      if (key.length > norm(prev.text).length) out[duplicateOf] = turn
-    } else if (key.length > norm(prev.text).length || nextThink.length > prevThink.length) {
+      if (key.length > norm(visibleOf(prev) || prev.text).length) out[duplicateOf] = turn
+    } else if (
+      key.length > norm(visibleOf(prev) || prev.text).length ||
+      nextThink.length > prevThink.length
+    ) {
       out[duplicateOf] = { ...turn, think: nextThink ? turn.think : prev.think }
     }
   }
@@ -455,11 +464,14 @@ function TurnItem({
   turn,
   sessionId,
   showActions,
+  showAssistantActions,
   onEditUser
 }: {
   turn: ChatTurn
   sessionId?: string
   showActions?: boolean
+  /** 助手操作栏只在整个任务结束后显示一次，工具中间轮次不再重复 */
+  showAssistantActions?: boolean
   onEditUser?: (text: string) => void
 }): React.JSX.Element {
   const isUser = turn.role === 'user'
@@ -565,7 +577,7 @@ function TurnItem({
       {turn.toolResults && turn.toolResults.length > 0 && (
         <ToolGroup results={turn.toolResults} running={toolRunning} startedAt={turn.ts} />
       )}
-      {showActions && visibleText && (
+      {showAssistantActions && visibleText && turn.status !== 'streaming' && (
         <div className="mt-0.5 flex flex-wrap items-center gap-0.5">
           <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
             {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
@@ -1117,6 +1129,37 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const toolRunning = Boolean(
     activeSession && lastTurn?.status === 'streaming' && (lastTurn.toolResults?.length ?? 0) > 0
   )
+  // 一个任务可能包含多段助手回复（工具批次/中间说明）。操作栏只在任务最后
+  // 一段有正文的回复后出现一次，避免截图中每隔一个工具组就重复一排按钮。
+  const taskRunning = Boolean(
+    activeSession &&
+      (running || pendingReplySessionId === activeSession.id || lastTurn?.status === 'streaming')
+  )
+  const assistantActionIds = useMemo(() => {
+    const ids = new Set<string>()
+    let group: ChatTurn[] = []
+    const flush = (isLast: boolean): void => {
+      let chosen = ''
+      for (let i = group.length - 1; i >= 0; i--) {
+        const t = group[i]
+        if (t && t.role === 'assistant' && stripToolArtifacts(t.text).trim()) {
+          chosen = t.id
+          break
+        }
+      }
+      if (chosen && (!isLast || !taskRunning)) ids.add(chosen)
+    }
+    for (const t of turns) {
+      if (t.role === 'user') {
+        flush(false)
+        group = [t]
+      } else {
+        group.push(t)
+      }
+    }
+    flush(true)
+    return ids
+  }, [turns, taskRunning])
 
   // 滚屏跟随：记住用户是否停留在底部；流式/新消息时只在「原本就在底部」才跟随。
   // 旧实现把判定放在 DOM 增长之后，单次新增超过 120px 时会永远判为不在底部。
@@ -1514,6 +1557,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               turn={t}
               sessionId={activeSession?.id}
               showActions={mode === 'pure'}
+              showAssistantActions={mode === 'pure' && assistantActionIds.has(t.id)}
               onEditUser={(text) => startEdit(text, t.id)}
             />
           ))}

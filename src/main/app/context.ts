@@ -495,6 +495,11 @@ export class AppContext {
     this.overlay.setPageReplyHandler((sessionId, text) => {
       void this.loop.adoptExternalReply(sessionId, text)
     })
+    // 网页侧自己发起的任务也要实时出现在纯净模式：旧逻辑只在结束时接管，
+    // 大代码块生成期间纯净模式一直停在「正在思考」，看起来像卡死。
+    this.overlay.onPageStream = (sessionId, text, tps) => {
+      this.emit({ type: 'turn-chunk', sessionId, text, tps })
+    }
     // 网页里亲手发的用户消息也要出现在纯净模式（双向同步的另一半）
     this.overlay.setPageUserMessageHandler((sessionId, text) =>
       this.recordWebUserMessage(sessionId, text)
