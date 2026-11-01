@@ -675,7 +675,15 @@ export class AppContext {
       const wc = webContents.fromId(webContentsId)
       if (wc && !wc.isDestroyed()) {
         setTimeout(() => {
-          if (!wc.isDestroyed()) void this.persistSessionCookies(wc.session)
+          if (wc.isDestroyed()) return
+          void this.persistSessionCookies(wc.session)
+          // DeepSeek 把登录 token 放在 localStorage：登录后立刻落盘，
+          // 避免紧接着退出/更新重启时丢掉刚拿到的登录态
+          try {
+            wc.session.flushStorageData()
+          } catch {
+            /* 存储服务不可用 */
+          }
         }, 1500)
       }
     }
@@ -686,6 +694,13 @@ export class AppContext {
         for (const wc of webContents.getAllWebContents()) {
           if (wc.getType() === 'webview' && !wc.isDestroyed()) {
             void this.persistSessionCookies(wc.session)
+            // localStorage/IndexedDB 也定期落盘：登录 token 不在 Cookie 里的平台
+            // 只能靠这一步在异常退出前保住登录态
+            try {
+              wc.session.flushStorageData()
+            } catch {
+              /* 存储服务不可用 */
+            }
           }
         }
       }, 60_000)

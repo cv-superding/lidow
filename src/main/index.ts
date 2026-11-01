@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, shell, webContents } from 'electron'
 import { join } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { Logger } from './infra/log'
@@ -49,6 +49,13 @@ const APP_ID = 'ai.lidow.app'
 // Win11 任务栏按 AUMID 查找快捷方式图标，直接跑 electron.exe 且无快捷方式时会回落到原子图标。
 const RUN_APP_ID = app.isPackaged ? APP_ID : `${APP_ID}.dev`
 if (process.platform === 'win32') app.setAppUserModelId(RUN_APP_ID)
+
+/**
+ * 单实例：同一份 userData 上的 Cookie/LocalStorage 只能被一个 Chromium 进程持有。
+ * 多开时后启动的实例拿不到这些存储，所有平台都会显示未登录、重新登录也存不下来。
+ * 必须在创建任何窗口/会话之前抢锁；拿不到就把已有实例的窗口叫回前台。
+ */
+const singleInstanceLock = app.requestSingleInstanceLock()
 
 const ctx = new AppContext()
 
@@ -217,6 +224,54 @@ let apiServer: WebServer | null = null
 let apiHostWindow: BrowserWindow | null = null
 let apiServerKey = ''
 let apiStatusError = ''
+/** 启动流程是否已经创建过主窗口：避免启动期间 second-instance 抢先再建一个 */
+let mainWindowStarted = false
+
+/** 已有实例收到第二次启动：把主窗口调回前台（窗口可能已被关闭，只剩 API 隐藏宿主） */
+function revealMainWindow(): void {
+  if (WEB_SERVER || !app.isReady()) return
+  if (hostWindow && !hostWindow.isDestroyed()) {
+    if (hostWindow.isMinimized()) hostWindow.restore()
+    hostWindow.show()
+    hostWindow.focus()
+    return
+  }
+  // 启动还没走到建窗口那一步（如正在 await API 服务监听）：
+  // 此时再建会与启动流程各建一个窗口，直接交给启动流程即可
+  if (!mainWindowStarted) return
+  hostWindow = createWindow(false)
+  attachMainWindowLifecycle(hostWindow)
+}
+
+/**
+ * 退出前把 Cookie / DOMStorage 落盘。
+ * DeepSeek 等平台的登录 token 在 localStorage，异常退出或更新重启时最容易丢。
+ */
+function flushSessionStorage(): void {
+  for (const wc of webContents.getAllWebContents()) {
+    try {
+      if (wc.isDestroyed()) continue
+      wc.session.flushStorageData()
+      void wc.session.cookies.flushStore().catch(() => undefined)
+    } catch {
+      /* 存储服务已关闭 */
+    }
+  }
+}
+
+function onMainWindowClosed(): void {
+  hostWindow = null
+  // 关闭主窗口就退出：HTTP API 的隐藏宿主窗口还在时 window-all-closed 不会触发，
+  // 旧进程会静默驻留并继续独占 Chromium 配置目录，之后启动的实例全部变成未登录。
+  if (!WEB_SERVER && process.platform !== 'darwin') app.quit()
+}
+
+/** 主窗口生命周期：关窗即退出（桌面版），并在销毁前发起一次存储落盘 */
+function attachMainWindowLifecycle(win: BrowserWindow): void {
+  // closed 之后 webContents 已销毁，flush 就成了空操作，必须在 close 时先发起
+  win.on('close', () => flushSessionStorage())
+  if (!WEB_SERVER) win.on('closed', onMainWindowClosed)
+}
 
 function createWindow(host = false): BrowserWindow {
   const pngIconPath = app.isPackaged
@@ -285,7 +340,16 @@ function createWindow(host = false): BrowserWindow {
   return win
 }
 
+if (!singleInstanceLock) {
+  // 已有实例：直接退出，绝不能在同一个 userData 上再起一个 Chromium
+  Logger.warn('app', '检测到已运行的 Lidow 实例，本次启动退出并唤起已有窗口')
+  app.quit()
+} else {
+  app.on('second-instance', () => revealMainWindow())
+}
+
 app.whenReady().then(async () => {
+  if (!singleInstanceLock) return
   const userData = app.getPath('userData')
   mkdirSync(join(userData, 'logs'), { recursive: true })
   Logger.init(join(userData, 'logs'))
@@ -355,12 +419,17 @@ app.whenReady().then(async () => {
   }
 
   hostWindow = createWindow(WEB_SERVER)
+  mainWindowStarted = true
+  attachMainWindowLifecycle(hostWindow)
   await syncApiServer()
   scheduleAutoUpdateCheck()
   Logger.info('app', `Lidow 启动完成 v${app.getVersion()}${WEB_SERVER ? '（Web 服务）' : ''}`)
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) hostWindow = createWindow(WEB_SERVER)
+    if (BrowserWindow.getAllWindows().length === 0) {
+      hostWindow = createWindow(WEB_SERVER)
+      attachMainWindowLifecycle(hostWindow)
+    }
   })
 })
 
@@ -369,6 +438,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  // 兜底：正常退出时尽量把登录态写回磁盘（页面关闭后 webContents 已销毁，
+  // 这里只覆盖仍在运行的会话）
+  flushSessionStorage()
   webServer?.close()
   ctx.jobs.dispose()
   ctx.mcp.disposeAll()
