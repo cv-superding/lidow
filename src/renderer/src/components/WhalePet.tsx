@@ -537,8 +537,14 @@ export function WhalePet(): React.JSX.Element | null {
           if (d) savePos(lastPos.current)
         }}
       >
+        {/* 预取所有动作片段：切换时直接命中缓存，不会出现空白帧 */}
+        <div className="pointer-events-none absolute h-0 w-0 overflow-hidden opacity-0" aria-hidden>
+          {Object.values(CLIPS).map((src) => (
+            <video key={src} src={src} preload="auto" muted playsInline />
+          ))}
+        </div>
+        {/* 不加 key：切动作时复用同一个 <video>，避免元素重建导致桌宠整块闪一下 */}
         <video
-          key={reaction ? `${clip}-${reaction.n}` : clip}
           src={CLIPS[clip]}
           autoPlay
           muted

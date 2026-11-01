@@ -900,10 +900,25 @@ function doNewChat(): void {
   window.setTimeout(confirmNewChatDialog, 1200)
 }
 
-function doStop(): void {
+function doStop(force = false): void {
   const flag = adapter ? findFirst(adapter.streamingFlag) : null
-  if (flag) click(flag)
-  else document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+  if (flag) {
+    click(flag)
+    return
+  }
+  // 停止/发送共用按钮的平台（DeepSeek）：force 表示主进程确认本轮在跑，
+  // 此时这个圆按钮就是「停止」，直接点它；否则不乱点（避免把草稿发出去）。
+  if (force && adapter?.stop) {
+    const stopBtn = findFirst(adapter.stop, (el) => {
+      const r = (el as HTMLElement).getBoundingClientRect()
+      return r.width > 0 && r.height > 0
+    })
+    if (stopBtn) {
+      click(stopBtn)
+      return
+    }
+  }
+  document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
 }
 
 // ---------- 悬浮球（三层停止） ----------
@@ -3185,7 +3200,7 @@ ipcRenderer.on('lidow:overlay-cmd', (_e, cmd: OverlayCommand) => {
       document.querySelector<HTMLInputElement>('input[type="file"]')?.click()
       break
     case 'stop':
-      doStop()
+      doStop(Boolean(cmd.force))
       break
     case 'extract':
       send({ type: 'stream-end', text: lastBubbleText() })

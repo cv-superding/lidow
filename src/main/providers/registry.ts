@@ -80,6 +80,9 @@ const DEEPSEEK: ProviderDescriptor = {
       'button[aria-label*="停止"]',
       'button[aria-label*="stop" i]'
     ],
+    // 新版 DeepSeek 的停止按钮就是发送按钮本身（同一个圆按钮，图标换成方块，
+    // 没有 aria-label/stop 类名）。只有主进程确认本轮在运行时才会点它。
+    stop: ['div[role="button"].ds-button--primary.ds-button--circle'],
     newChat: [
       'a[class*="new-chat"]',
       'button[aria-label*="开始新对话"]',

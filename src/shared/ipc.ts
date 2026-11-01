@@ -373,10 +373,26 @@ export type LidowEvent =
   /** 自动续接：任务已迁移到新会话，渲染层应把标签/活动会话切过去 */
   | { type: 'session-switched'; fromSessionId: string; sessionId: string }
   | { type: 'turn-chunk'; sessionId: string; turnId: string; text: string; tps?: number }
+  /** 本轮回复已落盘：只有它能清掉流式块（中途 session-updated 不能，否则会闪） */
+  | { type: 'round-done'; sessionId: string }
   /** Agent 任务整体开始/结束：UI 用它保持“停止生成”直到最后一轮真正收尾 */
   | { type: 'loop-state'; sessionId: string; running: boolean }
   /** 正在等待网页发送间隔（工具结果即将自动发送） */
   | { type: 'send-wait'; sessionId: string; waiting: boolean }
+  /**
+   * 任务韧性状态：自动重试/看门狗催继续时推给 UI 做持续反馈。
+   * phase=clear 表示恢复，UI 应移除该会话的提示。
+   */
+  | {
+      type: 'task-status'
+      sessionId: string
+      phase: 'retry' | 'continue' | 'clear'
+      attempt: number
+      max: number
+      /** 预计恢复时间戳（重试倒计时用） */
+      until: number
+      message: string
+    }
   | { type: 'tool-start'; sessionId: string; result: ToolResult }
   | {
       type: 'tool-confirm-required'

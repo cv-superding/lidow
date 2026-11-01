@@ -937,7 +937,7 @@ export class OverlayManager {
     })
   }
 
-  interruptPage(sessionId: string): void {
+  interruptPage(sessionId: string, force = false): void {
     const ch = this.channelOfSession(sessionId)
     if (!ch) return
     // 打标：随后的 stopped 事件是 Lidow 主动停止，不是用户/平台自己停的
@@ -946,7 +946,12 @@ export class OverlayManager {
       if (ch.lidowStopped) ch.lidowStopped = false
     }, 15_000)
     timer.unref?.()
-    this.targetOf(ch)?.send('lidow:overlay-cmd', { kind: 'stop' } satisfies OverlayCommand)
+    // force：主进程确认此刻正在等回复（含思考阶段）。只有这时才允许把
+    // 「发送/停止」共用的按钮当停止点；工具执行期间该按钮是发送，不能点。
+    this.targetOf(ch)?.send('lidow:overlay-cmd', {
+      kind: 'stop',
+      force
+    } satisfies OverlayCommand)
   }
 
   /**

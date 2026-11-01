@@ -423,7 +423,7 @@ export class AppContext {
       sendToPage: (sessionId, text) => this.overlay.sendToPage(sessionId, text),
       waitPageIdle: (sessionId) => this.overlay.waitPageIdle(sessionId),
       awaitReply: (sessionId, onChunk) => this.overlay.awaitReply(sessionId, onChunk),
-      interruptPage: (sessionId) => this.overlay.interruptPage(sessionId),
+      interruptPage: (sessionId, force) => this.overlay.interruptPage(sessionId, force),
       // 停止生成：立即结束本地等待并压制网页后续事件，不能只依赖网页停止按钮
       abortReply: (sessionId) => this.overlay.abortReply(sessionId),
       suppressPage: (sessionId) => this.overlay.suppressPage(sessionId),

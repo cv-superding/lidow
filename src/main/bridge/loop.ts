@@ -71,7 +71,7 @@ export interface LoopDeps {
     onChunk: (partial: string, tps: number) => void
   ) => Promise<string>
   /** 中断网页侧生成 */
-  interruptPage: (sessionId: string) => void
+  interruptPage: (sessionId: string, force?: boolean) => void
   /** 用户停止：立即 reject 当前等待，不能指望网页一定响应停止按钮 */
   abortReply?: (sessionId: string) => void
   /** 用户停止：压制网页后续 chunk/最终回答，避免又接管或把 UI 变回“生成中” */
@@ -200,6 +200,8 @@ interface RunningLoop {
   abort?: AbortController
   /** 本任务累计软删除数量：达到设置阈值时只审批一次 */
   deleteBatch?: { count: number; approved: boolean }
+  /** 正在等网页回复（含思考阶段）：只有此时才把「发送/停止」共用按钮当停止点 */
+  awaitingReply?: boolean
 }
 
 /**
@@ -244,7 +246,10 @@ export class AgentLoop {
     }
     r.stopped.add(level)
     Logger.info('loop', `停止请求 session=${sessionId} level=${level}`)
-    if (level === 'generate' || level === 'all') this.deps.interruptPage(sessionId)
+    // 只有确实在等回复时才 force：工具执行期间页面是空闲的，
+    // 那个共用按钮此刻是「发送」，不能点（会把网页草稿发出去）。
+    if (level === 'generate' || level === 'all')
+      this.deps.interruptPage(sessionId, Boolean(r.awaitingReply))
     // 工具批次自带 AbortController：中止正在跑的 shell 命令并跳过剩余调用
     if (level === 'tool' || level === 'all') r.abort?.abort()
     if ((level === 'auto-loop' || level === 'all') && r.resolveStop) r.resolveStop()
@@ -513,6 +518,7 @@ export class AgentLoop {
               status: 'done'
             })
             this.deps.emit({ type: 'session-updated', sessionId })
+            this.deps.emit({ type: 'round-done', sessionId })
             Logger.info('loop', `最终回答替换思考/前半段 session=${sessionId}`)
             return
           }
@@ -526,6 +532,7 @@ export class AgentLoop {
           think: think || undefined
         })
         this.deps.emit({ type: 'session-updated', sessionId })
+        this.deps.emit({ type: 'round-done', sessionId })
         return
       }
       Logger.info('loop', `接管网页侧回复 session=${sessionId} 工具块=${parsed.calls.length}`)
@@ -541,6 +548,7 @@ export class AgentLoop {
       }
       store.appendTurn(sessionId, turn)
       this.deps.emit({ type: 'session-updated', sessionId })
+      this.deps.emit({ type: 'round-done', sessionId })
       const results: ToolResult[] = []
       const abort = new AbortController()
       state.abort = abort
@@ -829,6 +837,7 @@ export class AgentLoop {
       }
       store.appendTurn(activeSid, turn)
       this.deps.emit({ type: 'session-updated', sessionId: activeSid })
+      this.deps.emit({ type: 'round-done', sessionId: activeSid })
 
       if (intercepted) {
         end = 'intercepted'
@@ -1142,7 +1151,18 @@ export class AgentLoop {
     for (;;) {
       if (runState?.stopped.has('generate')) throw new Error('用户中止了生成')
       try {
-        return { text: await this.awaitWithWatchdog(sid, cur, wdCfg), sessionId: sid }
+        const text = await this.awaitWithWatchdog(sid, cur, wdCfg)
+        // 本轮已恢复：撤掉重试/催继续提示
+        this.deps.emit({
+          type: 'task-status',
+          sessionId: sid,
+          phase: 'clear',
+          attempt: 0,
+          max: 0,
+          until: 0,
+          message: ''
+        })
+        return { text, sessionId: sid }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         // 用户主动停止：不要重试
@@ -1199,11 +1219,21 @@ export class AgentLoop {
           'loop',
           `${is429 ? '429 限流' : '失败'}，第 ${used}/${max} 次重试，等待 ${Math.round(raw / 1000)}s：${msg}`
         )
+        const retryText = `${is429 ? '平台限流' : '回复失败'}，正在自动重试（${used}/${max}）`
         this.deps.emit({
           type: 'notice',
           sessionId: sid,
           level: 'warn',
           message: `${is429 ? '平台限流' : '回复失败'}，${Math.round(raw / 1000)} 秒后自动重试（${used}/${max}）`
+        })
+        this.deps.emit({
+          type: 'task-status',
+          sessionId: sid,
+          phase: 'retry',
+          attempt: used,
+          max,
+          until: Date.now() + raw,
+          message: retryText
         })
         await this.sleep(raw)
         // 发送类失败（页面没就绪/填不进输入框）意味着消息从未落地：重发任务原文，
@@ -1228,6 +1258,10 @@ export class AgentLoop {
     let idleTimer: NodeJS.Timeout | null = null
     let nudges = 0
     let settled = false
+    /** 催继续提示已发出：收到新内容/本轮结束时清掉 */
+    let nudgeActive = false
+    const runState = this.running.get(sessionId)
+    if (runState) runState.awaitingReply = true
 
     // 流式上报节流：net hook 每 80ms 一条全量文本。渲染层现在按 markdown 块增量更新，
     // 合并到 120ms 一条即可保持顺滑，又不会让 IPC/React 处理频率过高。
@@ -1281,7 +1315,7 @@ export class AgentLoop {
             level: 'warn',
             message: `AI 已 ${wd.maxRetries} 次无响应，转为自动重试`
           })
-          this.deps.interruptPage(sessionId)
+          this.deps.interruptPage(sessionId, true)
           failWatchdog?.(new Error(`AI 无响应（看门狗催继续 ${wd.maxRetries} 次仍未恢复）`))
           return
         }
@@ -1295,6 +1329,16 @@ export class AgentLoop {
           sessionId,
           level: 'info',
           message: `AI 无响应，已自动发送「${wd.prompt}」（${nudges}/${wd.maxRetries}）`
+        })
+        nudgeActive = true
+        this.deps.emit({
+          type: 'task-status',
+          sessionId,
+          phase: 'continue',
+          attempt: nudges,
+          max: wd.maxRetries,
+          until: Date.now() + wd.idleMs,
+          message: `AI 无响应，已自动发送「${wd.prompt}」继续（${nudges}/${wd.maxRetries}）`
         })
         // 催继续：把提示词打进同一个网页会话
         void this.deps.sendToPage(sessionId, wd.prompt).catch(() => undefined)
@@ -1310,6 +1354,18 @@ export class AgentLoop {
     if (isStopped()) throw new Error('用户中止了生成')
 
     const chunkPromise = this.deps.awaitReply(sessionId, (partial, tps) => {
+      if (nudgeActive) {
+        nudgeActive = false
+        this.deps.emit({
+          type: 'task-status',
+          sessionId,
+          phase: 'clear',
+          attempt: 0,
+          max: 0,
+          until: 0,
+          message: ''
+        })
+      }
       latestPartial = partial
       latestTps = tps
       if (!pendingFlush) pendingFlush = setTimeout(flushChunk, 120)
@@ -1343,6 +1399,7 @@ export class AgentLoop {
       return reply
     } finally {
       settled = true
+      if (runState) runState.awaitingReply = false
       if (idleTimer) clearTimeout(idleTimer)
       if (pendingFlush) clearTimeout(pendingFlush)
       // 认输的那一方不消耗另一方：看门狗判死后，原等待仍在 overlay 里挂着，

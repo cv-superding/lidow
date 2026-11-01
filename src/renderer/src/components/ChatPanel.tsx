@@ -40,7 +40,6 @@ import {
   IconFile,
   IconCopy,
   IconEdit,
-  IconShare,
   IconBrain,
   IconGlobe,
   IconWhale
@@ -155,7 +154,8 @@ function ThinkingBlock({
 }): React.JSX.Element {
   const [open, setOpen] = useState(false)
   if (!text) return <></>
-  const preview = text.replace(/\s+/g, ' ').trim().slice(0, 72)
+  // 只取开头 160 字符做预览：思考文本可达上万字，整段 replace 会在每个 think 片段重算
+  const preview = text.slice(0, 160).replace(/\s+/g, ' ').trim().slice(0, 72)
   return (
     <div
       className="overflow-hidden rounded-[var(--r-lg)]"
@@ -355,12 +355,12 @@ function ChangeCard({
   )
 }
 
-/** 首包等待态：对齐 Qoder 的「正在思考」 */
-function DeepSearching(): React.JSX.Element {
+/** 任务进行中的常驻状态行：整个任务期间只切换文案，不整块卸载（避免闪空） */
+function DeepSearching({ label = '深度求索中' }: { label?: string }): React.JSX.Element {
   return (
     <span className="anim-fade flex items-center gap-1.5" style={{ color: 'var(--accent)' }}>
       <IconWhale size={16} />
-      <span className="text-[12.5px] font-medium tracking-tight">深度求索中</span>
+      <span className="text-[12.5px] font-medium tracking-tight">{label}</span>
       <span className="pending-dots">
         <span />
         <span />
@@ -370,10 +370,33 @@ function DeepSearching(): React.JSX.Element {
   )
 }
 
-function PendingIndicator(): React.JSX.Element {
+/**
+ * 常驻任务状态：等待首包 / 思考 / 生成 / 工具执行 / 发送间隔。
+ * 之前只有「流式中」才渲染，工具轮和轮次间隙整块消失，看起来像闪屏。
+ */
+function TaskStatusRow({
+  sessionId,
+  toolRunning
+}: {
+  sessionId: string
+  toolRunning: boolean
+}): React.JSX.Element | null {
+  const streaming = useStore((s) => Boolean(s.streamingText))
+  const thinking = useStore((s) => Boolean(s.thinkingText))
+  const tps = useStore((s) => s.streamingTps)
+  const loopRunning = useStore((s) => (sessionId ? s.runningSessionIds.includes(sessionId) : false))
+  const sendWaiting = useStore((s) => (sessionId ? s.sendWaiting.includes(sessionId) : false))
+  const pending = useStore((s) => Boolean(sessionId) && s.pendingReplySessionId === sessionId)
+  const busy = Boolean(sessionId) && (loopRunning || streaming || thinking || pending || toolRunning)
+  if (!busy) return null
+  let label = '深度求索中'
+  if (toolRunning) label = '执行工具中'
+  else if (streaming) label = tps > 0 ? `生成中 · ${Math.round(tps)} tok/s` : '生成中'
+  else if (thinking) label = '思考中'
+  else if (sendWaiting) label = '等待发送间隔 · 工具结果稍后自动发送'
   return (
     <div className="anim-fade flex items-center self-start py-0.5">
-      <DeepSearching />
+      <DeepSearching label={label} />
     </div>
   )
 }
@@ -563,7 +586,7 @@ function StreamingReply(): React.JSX.Element | null {
   )
   if (!text) return null
   return (
-    <div className="flex flex-col gap-2">
+    <div className="streaming-body flex flex-col gap-2">
       {blocks.length > 0 ? (
         <div className="markdown-body">
           {blocks.map((block, index) => (
@@ -577,7 +600,6 @@ function StreamingReply(): React.JSX.Element | null {
           </div>
         )
       )}
-      <DeepSearching />
     </div>
   )
 }
@@ -616,12 +638,6 @@ const TurnItem = memo(function TurnItem({
       window.setTimeout(() => setCopied(false), 1200)
     })
   }
-  const share = (): void => {
-    void api.copyText(actionText).then((ok) => {
-      if (ok) useStore.getState().notice('已复制内容，可粘贴分享')
-    })
-  }
-
   if (isSystem) {
     return (
       <div className="flex justify-center">
@@ -698,9 +714,6 @@ const TurnItem = memo(function TurnItem({
         <div className="mt-0.5 flex flex-wrap items-center gap-0.5">
           <ActionButton title={copied ? '已复制' : '复制'} onClick={copy}>
             {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
-          </ActionButton>
-          <ActionButton title="分享" onClick={share}>
-            <IconShare size={13} />
           </ActionButton>
         </div>
       )}
@@ -1214,9 +1227,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const loopRunning = useStore((s) =>
     Boolean(s.activeSession && s.runningSessionIds.includes(s.activeSession.id))
   )
-  const sendWaiting = useStore((s) =>
-    Boolean(s.activeSession && s.sendWaiting.includes(s.activeSession.id))
-  )
   // 实时思考只在任务进行中显示：刚发出（最后一轮是用户）或正在生成/执行；
   // 任务结束后网页侧迟到的 think-chunk 不能再挂到最终答复下面。
   const liveThinking = Boolean(
@@ -1225,14 +1235,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     (running ||
       pendingReplySessionId === activeSession.id ||
       turns[turns.length - 1]?.role === 'user')
-  )
-  // 已发送但首包还没到：显示「正在思考」，避免看起来卡死
-  const waiting = Boolean(
-    activeSession &&
-    pendingReplySessionId === activeSession.id &&
-    allTurns[allTurns.length - 1]?.role === 'user' &&
-    !hasStreaming &&
-    !hasThinking
   )
   // 工具批次执行中（turn.status=streaming 且已有结果）：停止按钮应中止工具而不是生成
   const lastTurn = turns[turns.length - 1]
@@ -1564,7 +1566,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   }, [slashOpen, slashIndex, slashFiltered.length])
 
   // 不再按长度自动折叠历史：长回复落盘时突然收起会让用户以为刚生成的正文「折叠没了」。
-  // 性能交给每轮的 content-visibility（.turn-row），屏幕外的轮次不参与布局/绘制。
+  // 性能靠 TurnItem/TurnBody 的 memo 与 store 的轮次对象复用，不做 content-visibility：
+  // 后者在长会话滚动时会让轮次延迟渲染，反而产生新的闪/跳。
   const empty = turns.length === 0 && !hasStreaming
 
   return (
@@ -1709,21 +1712,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               />
             </div>
           ))}
-          {waiting && <PendingIndicator />}
-          {sendWaiting && (
-            <div className="flex justify-center">
-              <span
-                className="badge inline-flex items-center gap-1.5"
-                style={{ color: 'var(--text-dim)' }}
-              >
-                <span
-                  className="anim-breathe h-1 w-1 rounded-full"
-                  style={{ background: 'var(--accent)' }}
-                />
-                等待发送间隔 · 工具结果稍后自动发送
-              </span>
-            </div>
-          )}
           {/* 文件变更汇总：按「本轮任务」聚合所有轮次的 diff，展示在活动流末尾 */}
           {taskChangeResults.length > 0 && (
             <ChangeCard results={taskChangeResults} running={lastTurn?.status === 'streaming'} />
@@ -1733,6 +1721,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
           {liveThinking && mode === 'pure' && <LiveThinkingPanel streaming={!hasStreaming} />}
 
           {hasStreaming && mode === 'pure' && <StreamingReply />}
+          <TaskStatusRow sessionId={activeSession?.id ?? ''} toolRunning={toolRunning} />
         </div>
         {/* 用户向上翻看时不强行拉回底部，只给一个回到最新的入口（对齐 cuckoo） */}
         {!atBottom && (

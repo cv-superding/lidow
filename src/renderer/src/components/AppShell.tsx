@@ -256,6 +256,41 @@ export function LeftRail(): React.JSX.Element {
   )
 }
 
+/**
+ * 自动重试 / 看门狗催继续的常驻横幅。
+ * 之前只在右下角弹一条 toast，几秒就消失；用户看不到"还在重试、多久继续"。
+ */
+function TaskStatusBanner(): React.JSX.Element | null {
+  const sessionId = useStore((s) => s.activeSession?.id ?? '')
+  const status = useStore((s) => (sessionId ? s.taskStatus[sessionId] : undefined))
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!status) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [status?.phase, status?.until])
+  if (!status) return null
+  const left = status.until > now ? Math.ceil((status.until - now) / 1000) : 0
+  return (
+    <div
+      className="flex h-8 shrink-0 items-center gap-2 border-b px-4 text-[11.5px]"
+      style={{
+        borderColor: 'var(--border)',
+        background: 'var(--accent-soft)',
+        color: 'var(--accent)'
+      }}
+    >
+      <span className="anim-breathe h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: 'var(--accent)' }} />
+      <span className="truncate">{status.message}</span>
+      {left > 0 && (
+        <span className="ml-auto shrink-0 tabular-nums">
+          {status.phase === 'retry' ? `${left}s 后继续` : `${left}s`}
+        </span>
+      )}
+    </div>
+  )
+}
+
 /** 顶栏：品牌 | 项目面包屑 | 运行态 + 窗口控制。整条可拖拽窗口 */
 function TopBar(): React.JSX.Element {
   const view = useStore((s) => s.view)
@@ -798,6 +833,7 @@ export function AppShell(): React.JSX.Element {
   return (
     <div className="flex h-full flex-col overflow-hidden" style={{ background: 'var(--bg)' }}>
       {pureMode ? <PureMenuBar /> : <TopBar />}
+      <TaskStatusBanner />
 
       <div className="relative flex min-h-0 flex-1">
         {pureMode ? <PureModeShell /> : <LeftRail />}
@@ -805,8 +841,19 @@ export function AppShell(): React.JSX.Element {
         {/* 主区容器：WebTabs 与各管理视图共存，靠 z-index 切换 */}
         <div className="relative min-w-0 flex-1" style={{ background: 'var(--bg)' }}>
           {/* webview 必须保持在视口内：离屏定位会触发 document.hidden=true，
-              Chromium 节流隐藏页面 → React 不响应输入/点击（实测消息发不出去）。 */}
-          <div className="h-full" style={{ position: 'relative', zIndex: 0 }}>
+              Chromium 节流隐藏页面 → React 不响应输入/点击（实测消息发不出去）。
+              但被纯净模式/管理页完全盖住时不需要继续绘制：对齐 cuckoo 的
+              view.setVisible(false)，用 visibility 停画（不是 display/离屏）——
+              实测 guest 仍保持 document.visibilityState=visible，发送、流式、
+              捕获全部正常，只是不再参与合成，消除底层网页更新带来的卡顿与闪烁。 */}
+          <div
+            className="h-full"
+            style={{
+              position: 'relative',
+              zIndex: 0,
+              visibility: pureMode || view !== 'home' ? 'hidden' : 'visible'
+            }}
+          >
             <WebTabs />
           </div>
 

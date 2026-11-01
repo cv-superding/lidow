@@ -114,6 +114,11 @@ export interface DomAdapter {
   bubble: string[]
   /** 流式生成中的标志（存在=仍在生成；通常为停止按钮） */
   streamingFlag: string[]
+  /**
+   * 停止按钮选择器。DeepSeek 等平台的停止/发送是同一个圆形按钮、
+   * 只用图标区分（没有 aria-label），所以单独给出「点它就是停止」的选择器。
+   */
+  stop?: string[]
   /** 新建会话按钮 */
   newChat: string[]
   /** 已登录标志（存在=已登录） */
@@ -514,6 +519,8 @@ export interface OverlayCommand {
   text?: string
   /** open-chat：要切换到的对话 URL */
   url?: string
+  /** stop：主进程确认这一轮确实在运行，即使页面还没上报流式状态也点停止 */
+  force?: boolean
   /** watch-chats：当前项目下需要监听“网页侧是否被删除”的对话 URL */
   urls?: string[]
   /** project-folders：网页侧项目文件夹数据（DeepSeek 侧栏） */

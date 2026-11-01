@@ -161,6 +161,11 @@ interface LidowState {
   runningSessionIds: string[]
   /** 正在等待网页发送间隔的会话（工具结果尚未发出） */
   sendWaiting: string[]
+  /** 自动重试/看门狗催继续的实时状态（顶栏横幅与任务状态行用） */
+  taskStatus: Record<
+    string,
+    { phase: 'retry' | 'continue'; attempt: number; max: number; until: number; message: string }
+  >
   /** 当前流式回复的思考过程（折叠块显示，结束时清空） */
   thinkingText: string
   /** 已发送、等待网页开始回复的会话（用于“正在思考”加载态） */
@@ -272,7 +277,7 @@ function turnSig(t: ChatTurn): string {
     t.tps ?? 0,
     t.attachments?.length ?? 0,
     (t.toolResults ?? []).map(toolResultSig).join(',')
-  ].join(' ')
+  ].join('\u0000')
 }
 
 /**
@@ -299,6 +304,31 @@ function mergeTurns(prev: ChatTurn[], next: ChatTurn[]): ChatTurn[] {
 let sessionSyncTimer: ReturnType<typeof setTimeout> | null = null
 let sessionSyncSid = ''
 let sessionSyncStream = ''
+/** 已明确「本轮落盘」的会话：只有它们允许清掉流式块，中途刷新不能清（否则闪） */
+const roundDoneSessions = new Set<string>()
+
+/**
+ * 流式文本/思考的渲染合并：主进程 120–80ms 一条，纯模式每来一条就重排整段对话，
+ * GPU 直接被打满。这里合并到 150ms / 300ms 一次，只保留最新快照。
+ */
+let streamFlushTimer: ReturnType<typeof setTimeout> | null = null
+let pendingStream: { sessionId: string; text: string; tps: number } | null = null
+let thinkFlushTimer: ReturnType<typeof setTimeout> | null = null
+let pendingThink: { sessionId: string; think: string } | null = null
+
+/** 丢弃尚未落地的流式片段：收尾/新任务时避免旧片段把已清空的正文又写回来 */
+function dropPendingChunks(): void {
+  pendingStream = null
+  pendingThink = null
+  if (streamFlushTimer) {
+    clearTimeout(streamFlushTimer)
+    streamFlushTimer = null
+  }
+  if (thinkFlushTimer) {
+    clearTimeout(thinkFlushTimer)
+    thinkFlushTimer = null
+  }
+}
 
 function scheduleSessionSync(
   sessionId: string,
@@ -320,13 +350,20 @@ function scheduleSessionSync(
         const st = get()
         // 等待期间如果又有新片段进来，说明下一轮已经开始，不能把它清掉
         const streamSettled = st.streamingText === streamAt
-        const last = sess.turns[sess.turns.length - 1]
+        // 只有主进程明确「本轮已落盘」才清流式块。中途的 session-updated
+        // （页面快照/思考修正/工具结果）如果也清，整段正文会闪一下再回来。
+        const committed = roundDoneSessions.has(sid)
+        if (committed) {
+          roundDoneSessions.delete(sid)
+          dropPendingChunks()
+        }
         set({
           // 复用没变化的轮次对象，避免每次刷新把整个消息列表重渲染
           activeSession: { ...sess, turns: mergeTurns(st.activeSession?.turns ?? [], sess.turns) },
-          ...(streamSettled ? { streamingText: '', streamingTps: 0, thinkingText: '' } : {}),
-          // 回复轮已落盘（assistant），清掉「等待首包」加载态
-          ...(last?.role === 'assistant' ? { pendingReplySessionId: '' } : {})
+          ...(committed && streamSettled
+            ? { streamingText: '', streamingTps: 0, thinkingText: '' }
+            : {}),
+          ...(committed ? { pendingReplySessionId: '' } : {})
         })
       })
       .catch(() => {
@@ -420,6 +457,7 @@ export const useStore = create<LidowState>((set, get) => ({
   streamingTps: 0,
   runningSessionIds: [],
   sendWaiting: [],
+  taskStatus: {},
   thinkingText: '',
   pendingReplySessionId: '',
   pendingSince: 0,
@@ -1029,6 +1067,7 @@ export const useStore = create<LidowState>((set, get) => ({
       throw new Error('请先初始化项目（选择工作目录），AI 才有可以操作的文件系统')
     }
     // 新一轮任务开始：清掉上一轮可能迟到的思考/流式残留，避免旧内容显示在新任务下
+    dropPendingChunks()
     set({ thinkingText: '', streamingText: '', streamingTps: 0 })
     let { activeSession } = get()
     // 没有活动会话：自动新建（纯净模式直接发送的兜底）
@@ -1394,24 +1433,90 @@ export const useStore = create<LidowState>((set, get) => ({
       case 'think-chunk':
         // 子代理/后台会话的思考流不进当前视图（session 过滤，防串台）
         if (e.sessionId !== s.activeSession?.id) break
-        set({ thinkingText: e.think, pendingReplySessionId: '' })
+        set({ pendingReplySessionId: '' })
+        pendingThink = { sessionId: e.sessionId, think: e.think }
+        if (!thinkFlushTimer) {
+          thinkFlushTimer = setTimeout(() => {
+            thinkFlushTimer = null
+            const next = pendingThink
+            pendingThink = null
+            if (next && next.sessionId === get().activeSession?.id) {
+              set({ thinkingText: next.think })
+            }
+          }, 300)
+        }
         break
       case 'turn-chunk':
         if (e.sessionId !== s.activeSession?.id) break
-        set({ streamingText: e.text, streamingTps: e.tps ?? 0, pendingReplySessionId: '' })
+        set({ pendingReplySessionId: '' })
+        pendingStream = { sessionId: e.sessionId, text: e.text, tps: e.tps ?? 0 }
+        if (!streamFlushTimer) {
+          streamFlushTimer = setTimeout(() => {
+            streamFlushTimer = null
+            const next = pendingStream
+            pendingStream = null
+            if (!next || next.sessionId !== get().activeSession?.id) return
+            set((st) => ({
+              // 空快照（思考阶段/页面瞬时重建）不能把已有正文清空，否则整块闪一下
+              streamingText: next.text || st.streamingText,
+              streamingTps: next.tps ?? st.streamingTps
+            }))
+          }, 150)
+        }
         break
       case 'loop-state':
         set((st) => {
           const ids = new Set(st.runningSessionIds)
           if (e.running) ids.add(e.sessionId)
           else ids.delete(e.sessionId)
+          const taskStatus = { ...st.taskStatus }
+          if (!e.running) {
+            delete taskStatus[e.sessionId]
+            roundDoneSessions.delete(e.sessionId)
+          }
+          if (!e.running && e.sessionId === get().activeSession?.id) {
+            // 兜底：没收到 round-done 时别让流式块一直挂着。
+            // 延迟一会儿再清：等轮次落盘的同步先到，避免先清空再出正文的闪屏。
+            const at = get().streamingText
+            window.setTimeout(() => {
+              const cur = get()
+              if (cur.activeSession?.id !== e.sessionId) return
+              if (cur.streamingText !== at || cur.runningSessionIds.includes(e.sessionId)) return
+              set({ streamingText: '', streamingTps: 0, thinkingText: '', pendingReplySessionId: '' })
+            }, 800)
+          }
           return {
             runningSessionIds: [...ids],
+            taskStatus,
             // 循环结束后不可能还在等发送间隔
             ...(e.running ? {} : { sendWaiting: st.sendWaiting.filter((id) => id !== e.sessionId) })
           }
         })
         break
+      case 'round-done': {
+        dropPendingChunks()
+        roundDoneSessions.add(e.sessionId)
+        if (e.sessionId === get().activeSession?.id) {
+          scheduleSessionSync(e.sessionId, get().streamingText, get, set)
+        }
+        break
+      }
+      case 'task-status': {
+        set((st) => {
+          const next = { ...st.taskStatus }
+          if (e.phase === 'clear') delete next[e.sessionId]
+          else
+            next[e.sessionId] = {
+              phase: e.phase,
+              attempt: e.attempt,
+              max: e.max,
+              until: e.until,
+              message: e.message
+            }
+          return { taskStatus: next }
+        })
+        break
+      }
       case 'send-wait':
         set((st) => {
           const ids = new Set(st.sendWaiting)
