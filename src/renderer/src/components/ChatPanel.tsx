@@ -1,4 +1,13 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -71,7 +80,18 @@ const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
   }
 ]
 
-function TurnBody({ text }: { text: string }): React.JSX.Element {
+/**
+ * 正文渲染。流式阶段也用同一套 markdown（只跳过语法高亮）：
+ * 收尾时不再从「纯文本」跳成「排版好的 markdown」，内容不会重排/闪动。
+ * memo：会话刷新会给所有轮次换新对象，text 没变就不重新解析 markdown/高亮。
+ */
+const TurnBody = memo(function TurnBody({
+  text,
+  streaming = false
+}: {
+  text: string
+  streaming?: boolean
+}): React.JSX.Element {
   // 工具调用块由下方 ToolCard 可视化表达，正文里不再重复展示原始 JSON
   const cleaned = stripCitationMarkers(stripToolArtifacts(text))
   if (!cleaned) return <></>
@@ -93,7 +113,8 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
             const lang = match?.[1]
             const known = !!lang && hljs.getLanguage(lang)
             let html = ''
-            if (known) {
+            // 流式时每个片段都高亮整段代码太贵（长输出会顶满主线程），收尾后再高亮
+            if (!streaming && known) {
               try {
                 html = hljs.highlight(raw, { language: lang, ignoreIllegals: true }).value
               } catch {
@@ -116,7 +137,7 @@ function TurnBody({ text }: { text: string }): React.JSX.Element {
       </ReactMarkdown>
     </div>
   )
-}
+})
 
 /** 可折叠处理过程（思考）：默认只露一行摘要，展开才显示完整推理（Qoder 同款活动流） */
 function ThinkingBlock({
@@ -361,6 +382,18 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
   // 否则一段工具残留 + 相同说明会在最终答案后面再冒出一条。
   const visibleOf = (t: ChatTurn): string =>
     t.role === 'assistant' ? stripToolArtifacts(t.text).trim() : t.text.trim()
+  // 每轮正文可能很长：归一化结果按轮次缓存，避免内层循环反复处理同一段文本
+  // （工具轮频繁刷新时会反复 strip + 正则，长会话明显卡顿）
+  const keyCache = new Map<ChatTurn, string>()
+  const keyOf = (t: ChatTurn): string => {
+    let key = keyCache.get(t)
+    if (key === undefined) {
+      key = norm(visibleOf(t) || t.text)
+      keyCache.set(t, key)
+    }
+    return key
+  }
+  const isInitAck = (text: string): boolean => /^初始化成功/.test(text.replace(/\s+/g, ''))
   const out: ChatTurn[] = []
   let groupStart = 0
   for (const turn of list) {
@@ -374,18 +407,17 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
       out.push(turn)
       continue
     }
-    const key = norm(visibleOf(turn) || turn.text)
+    const key = keyOf(turn)
     if (!key) {
       out.push(turn)
       continue
     }
-    const isInitAck = (text: string): boolean => /^初始化成功/.test(text.replace(/\s+/g, ''))
     let duplicateOf = -1
     let initAckDup = false
     for (let j = out.length - 1; j >= groupStart; j--) {
       const prev = out[j]
       if (!prev || prev.role !== 'assistant') continue
-      const prevKey = norm(visibleOf(prev) || prev.text)
+      const prevKey = keyOf(prev)
       if (!prevKey) continue
       // 初始化回复可能被抓成一条残缺、一条完整；只保留更完整的那条
       if (isInitAck(turn.text) && isInitAck(prev.text)) {
@@ -416,9 +448,9 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
     const nextThink = (turn.think ?? '').trim()
     // 初始化确认只保留最长的一条；普通重复回复保留文本/处理步骤更完整的
     if (initAckDup) {
-      if (key.length > norm(visibleOf(prev) || prev.text).length) out[duplicateOf] = turn
+      if (key.length > keyOf(prev).length) out[duplicateOf] = turn
     } else if (
-      key.length > norm(visibleOf(prev) || prev.text).length ||
+      key.length > keyOf(prev).length ||
       nextThink.length > prevThink.length
     ) {
       out[duplicateOf] = { ...turn, think: nextThink ? turn.think : prev.think }
@@ -459,39 +491,30 @@ function stripStreamingToolBlocks(text: string): string {
     .trim()
 }
 
-/** 流式回复单独订阅 store：避免每个片段都重渲染整个消息列表 */
-function StreamingReply({
-  scrollRef,
-  stickRef
-}: {
-  scrollRef: React.RefObject<HTMLDivElement | null>
-  stickRef: React.RefObject<boolean>
-}): React.JSX.Element | null {
+/**
+ * 流式回复：和最终轮次共用 TurnBody，边流边排版。
+ * 之前流式阶段是 pre-wrap 纯文本、收尾才换成 markdown，整段文字会「跳」一次；
+ * 用同一套渲染后，收尾只把流式块换成落盘轮次，视觉上连续。
+ */
+function StreamingReply(): React.JSX.Element | null {
   const text = useStore((s) => s.streamingText)
-  useEffect(() => {
-    if (!stickRef.current) return
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [text, scrollRef, stickRef])
+  // 长输出时 markdown 解析降级为可中断更新：输入/滚动不被解析卡住
+  const deferred = useDeferredValue(text)
   if (!text) return null
-  const visible = stripStreamingToolBlocks(text)
+  const visible = stripStreamingToolBlocks(deferred)
   // 超长代码/文档在流式阶段只显示最新一段，避免每次更新都重排几十万字符
   const shown =
-    visible.length > 12_000 ? `…（前文较长，仅显示最新内容）\n${visible.slice(-12_000)}` : visible
+    visible.length > 12_000 ? `…（前文较长，仅显示最新内容）\n\n${visible.slice(-12_000)}` : visible
   return (
     <div className="flex flex-col gap-2">
-      {shown && (
-        <div
-          className="whitespace-pre-wrap text-[13.5px] leading-[1.68]"
-          style={{ color: 'var(--text-body)' }}
-        >
-          {stripCitationMarkers(shown)}
-        </div>
-      )}
-      {!visible && /lidow/i.test(text) && (
-        <div className="text-[12px]" style={{ color: 'var(--text-hint)' }}>
-          正在生成工具调用…
-        </div>
+      {shown ? (
+        <TurnBody text={shown} streaming />
+      ) : (
+        /lidow/i.test(text) && (
+          <div className="text-[12px]" style={{ color: 'var(--text-hint)' }}>
+            正在生成工具调用…
+          </div>
+        )
       )}
       <DeepSearching />
     </div>
@@ -976,6 +999,23 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const scrollRef = useRef<HTMLDivElement>(null)
   /** 用户是否停留在底部（用滚动事件维护；更新后再算会因单次增长过大永久失效） */
   const stickRef = useRef(true)
+  /** 程序化贴底时忽略 scroll 事件，避免把「跟随」误判成用户离开底部 */
+  const autoScrollRef = useRef(false)
+  /** 不在底部时露出「回到最新」按钮 */
+  const [atBottom, setAtBottom] = useState(true)
+
+  const scrollToBottom = useCallback((force = false): void => {
+    const el = scrollRef.current
+    if (!el) return
+    if (!force && !stickRef.current) return
+    autoScrollRef.current = true
+    el.scrollTop = el.scrollHeight
+    stickRef.current = true
+    setAtBottom(true)
+    window.requestAnimationFrame(() => {
+      autoScrollRef.current = false
+    })
+  }, [])
 
   // DSH 插件经 uiInput.set 下发的输入框内容
   useEffect(() => {
@@ -1180,17 +1220,38 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     const el = scrollRef.current
     if (!el) return
     const onScroll = (): void => {
-      stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+      if (autoScrollRef.current) return
+      const near = el.scrollHeight - el.scrollTop - el.clientHeight < 120
+      stickRef.current = near
+      setAtBottom(near)
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
   }, [])
 
   useEffect(() => {
-    if (!stickRef.current) return
-    const el = scrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [turns.length, hasStreaming])
+    scrollToBottom()
+  }, [turns.length, hasStreaming, scrollToBottom])
+
+  // markdown 收尾、工具卡折叠、图片加载都会改内容高度：
+  // 跟随模式下一律重新贴底，避免原本在底部却被换行/折叠留在半空。
+  const contentRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      if (stickRef.current) scrollToBottom()
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [scrollToBottom])
+
+  // 切换会话：默认落在最新消息，不继承上一会话的滚动位置
+  useEffect(() => {
+    stickRef.current = true
+    setAtBottom(true)
+    scrollToBottom(true)
+  }, [activeSession?.id, scrollToBottom])
 
   const preferredProviderId = (): string | undefined => {
     const st = useStore.getState()
@@ -1463,7 +1524,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
       {/* 消息区 */}
       <div ref={scrollRef} className="stable-gutter flex-1 overflow-y-auto">
-        <div className="mx-auto flex min-h-full max-w-[780px] flex-col gap-5 px-6 py-7">
+        <div
+          ref={contentRef}
+          className="mx-auto flex min-h-full max-w-[780px] flex-col gap-5 px-6 py-7"
+        >
           {empty && (
             <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center">
               <div className="flex flex-col items-center gap-3">
@@ -1627,10 +1691,27 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
               不能让它挂在最终答复下面，看起来像「还在想」 */}
           {liveThinking && mode === 'pure' && <LiveThinkingPanel streaming={!hasStreaming} />}
 
-          {hasStreaming && mode === 'pure' && (
-            <StreamingReply scrollRef={scrollRef} stickRef={stickRef} />
-          )}
+          {hasStreaming && mode === 'pure' && <StreamingReply />}
         </div>
+        {/* 用户向上翻看时不强行拉回底部，只给一个回到最新的入口（对齐 cuckoo） */}
+        {!atBottom && (
+          <div className="sticky bottom-3 z-10 mx-auto flex w-fit justify-center" role="presentation">
+            <button
+              className="anim-pop flex items-center gap-1 rounded-full px-3 py-1.5 text-[11.5px]"
+              style={{
+                background: 'var(--surface-raised)',
+                border: '1px solid var(--border)',
+                boxShadow: 'var(--shadow-md)',
+                color: 'var(--text-dim)'
+              }}
+              title="回到最新消息"
+              onClick={() => scrollToBottom(true)}
+            >
+              <IconChevronDown size={12} className="rotate-180" />
+              回到最新
+            </button>
+          </div>
+        )}
       </div>
 
       {/* 计划确认 */}

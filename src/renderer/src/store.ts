@@ -1222,23 +1222,36 @@ export const useStore = create<LidowState>((set, get) => ({
         break
       }
       case 'session-updated': {
-        // 只清当前正在看的会话的残留流文本：后台会话（子代理/续接）落盘时
-        // 不能把用户眼前正在滚动的流式输出打没
-        if (e.sessionId === get().activeSession?.id) {
-          set({ streamingText: '', streamingTps: 0, thinkingText: '' })
-        }
+        // 不能先清空流式文本再去拉会话：两次 set 之间内容会先少一块，
+        // 长回复收尾时表现为「整段消失一帧再重新出现」。拉到落盘后的会话后
+        // 一次性替换，流式块与最终轮次在同一帧交接（对齐 cuckoo 的收尾顺序）。
+        const streamAtEvent = get().streamingText
         void api
           .getSession(e.sessionId)
           .then((sess) => {
-            if (sess && sess.id === get().activeSession?.id) {
-              set({ activeSession: sess })
+            if (!sess || sess.id !== get().activeSession?.id) return
+            const st = get()
+            // 等待期间如果又有新片段进来，说明下一轮已经开始，不能把它清掉
+            const streamSettled = st.streamingText === streamAtEvent
+            const last = sess.turns[sess.turns.length - 1]
+            set({
+              activeSession: sess,
+              ...(streamSettled ? { streamingText: '', streamingTps: 0, thinkingText: '' } : {}),
               // 回复轮已落盘（assistant），清掉「等待首包」加载态
-              if (sess.turns[sess.turns.length - 1]?.role === 'assistant') {
-                set({ pendingReplySessionId: '' })
-              }
+              ...(last?.role === 'assistant' ? { pendingReplySessionId: '' } : {})
+            })
+          })
+          .catch(() => {
+            // 会话文件读不到：兜底清掉流式态，避免一直停在「生成中」
+            if (get().streamingText === streamAtEvent) {
+              set({
+                streamingText: '',
+                streamingTps: 0,
+                thinkingText: '',
+                pendingReplySessionId: ''
+              })
             }
           })
-          .catch(() => undefined)
         void get().refreshSessions().catch(() => undefined)
         break
       }
