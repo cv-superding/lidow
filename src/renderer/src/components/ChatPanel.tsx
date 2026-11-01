@@ -81,60 +81,66 @@ const QUICK_STARTS: { title: string; desc: string; prompt: string }[] = [
 ]
 
 /**
- * 正文渲染。流式阶段也用同一套 markdown（只跳过语法高亮）：
- * 收尾时不再从「纯文本」跳成「排版好的 markdown」，内容不会重排/闪动。
- * memo：会话刷新会给所有轮次换新对象，text 没变就不重新解析 markdown/高亮。
+ * 单块 markdown 渲染。流式阶段按「块」拆分后复用本组件：
+ * 已闭合的块文本不再变化，memo 会直接跳过解析，只重算最后一块
+ * （对照 cuckoo：它用 marked 重绘单个节点；这里用块级 memo 达到同样的增量效果）。
  */
-const TurnBody = memo(function TurnBody({
+const MarkdownContent = memo(function MarkdownContent({
   text,
   streaming = false
 }: {
   text: string
   streaming?: boolean
 }): React.JSX.Element {
-  // 工具调用块由下方 ToolCard 可视化表达，正文里不再重复展示原始 JSON
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
+      components={{
+        code({ className, children, ...props }) {
+          const match = /language-(\w+)/.exec(className ?? '')
+          const raw = String(children)
+          const isBlock = match || raw.includes('\n')
+          if (!isBlock) {
+            return <code {...props}>{children}</code>
+          }
+          // lidow/tool 是工具块语言名，highlight.js 不认识；未知语言一律按纯文本渲染，
+          // 否则 hljs.highlight 抛 Unknown language，整棵 React 树会被卸载成白屏
+          const lang = match?.[1]
+          const known = !!lang && hljs.getLanguage(lang)
+          let html = ''
+          // 流式时每个片段都高亮整段代码太贵（长输出会顶满主线程），收尾后再高亮
+          if (!streaming && known) {
+            try {
+              html = hljs.highlight(raw, { language: lang, ignoreIllegals: true }).value
+            } catch {
+              html = ''
+            }
+          }
+          return (
+            <pre>
+              {html ? (
+                <code dangerouslySetInnerHTML={{ __html: html }} />
+              ) : (
+                <code>{children}</code>
+              )}
+            </pre>
+          )
+        }
+      }}
+    >
+      {text}
+    </ReactMarkdown>
+  )
+})
+
+/** 正文渲染：工具调用块由下方 ToolCard 表达，这里只渲染清理后的 markdown */
+const TurnBody = memo(function TurnBody({ text }: { text: string }): React.JSX.Element {
   const cleaned = stripCitationMarkers(stripToolArtifacts(text))
   if (!cleaned) return <></>
   return (
     <div className="markdown-body">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex]}
-        components={{
-          code({ className, children, ...props }) {
-            const match = /language-(\w+)/.exec(className ?? '')
-            const raw = String(children)
-            const isBlock = match || raw.includes('\n')
-            if (!isBlock) {
-              return <code {...props}>{children}</code>
-            }
-            // lidow/tool 是工具块语言名，highlight.js 不认识；未知语言一律按纯文本渲染，
-            // 否则 hljs.highlight 抛 Unknown language，整棵 React 树会被卸载成白屏
-            const lang = match?.[1]
-            const known = !!lang && hljs.getLanguage(lang)
-            let html = ''
-            // 流式时每个片段都高亮整段代码太贵（长输出会顶满主线程），收尾后再高亮
-            if (!streaming && known) {
-              try {
-                html = hljs.highlight(raw, { language: lang, ignoreIllegals: true }).value
-              } catch {
-                html = ''
-              }
-            }
-            return (
-              <pre>
-                {html ? (
-                  <code dangerouslySetInnerHTML={{ __html: html }} />
-                ) : (
-                  <code>{children}</code>
-                )}
-              </pre>
-            )
-          }
-        }}
-      >
-        {cleaned}
-      </ReactMarkdown>
+      <MarkdownContent text={cleaned} />
     </div>
   )
 })
@@ -372,6 +378,21 @@ function PendingIndicator(): React.JSX.Element {
   )
 }
 
+/**
+ * 轮次正文清理结果缓存：会话刷新只重建变化的轮次（store 的 mergeTurns 会复用旧对象），
+ * 未变化的轮次命中 WeakMap 后不必重复跑 strip 正则。
+ */
+const visibleTextCache = new WeakMap<ChatTurn, string>()
+function visibleTextOf(turn: ChatTurn): string {
+  let text = visibleTextCache.get(turn)
+  if (text === undefined) {
+    text = stripToolArtifacts(turn.text).trim()
+    visibleTextCache.set(turn, text)
+  }
+  return text
+}
+const normKeyCache = new WeakMap<ChatTurn, string>()
+
 /** 旧数据/旧捕获通道可能把同一回答写入多轮：仅显示层去重，保留更完整的一条 */
 function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
   const norm = (text: string): string =>
@@ -381,15 +402,13 @@ function dedupeAssistantTurns(list: ChatTurn[]): ChatTurn[] {
   // 显示层会剥掉工具块；去重也必须按“用户实际看到的正文”比较，
   // 否则一段工具残留 + 相同说明会在最终答案后面再冒出一条。
   const visibleOf = (t: ChatTurn): string =>
-    t.role === 'assistant' ? stripToolArtifacts(t.text).trim() : t.text.trim()
+    t.role === 'assistant' ? visibleTextOf(t) : t.text.trim()
   // 每轮正文可能很长：归一化结果按轮次缓存，避免内层循环反复处理同一段文本
-  // （工具轮频繁刷新时会反复 strip + 正则，长会话明显卡顿）
-  const keyCache = new Map<ChatTurn, string>()
   const keyOf = (t: ChatTurn): string => {
-    let key = keyCache.get(t)
+    let key = normKeyCache.get(t)
     if (key === undefined) {
       key = norm(visibleOf(t) || t.text)
-      keyCache.set(t, key)
+      normKeyCache.set(t, key)
     }
     return key
   }
@@ -492,23 +511,65 @@ function stripStreamingToolBlocks(text: string): string {
 }
 
 /**
- * 流式回复：和最终轮次共用 TurnBody，边流边排版。
- * 之前流式阶段是 pre-wrap 纯文本、收尾才换成 markdown，整段文字会「跳」一次；
- * 用同一套渲染后，收尾只把流式块换成落盘轮次，视觉上连续。
+ * 把流式 markdown 切成「稳定块」：空白行（代码围栏内不算）之后的部分已经定稿，
+ * 只有最后一块还会继续增长。列表/引用/公式块在空行处不断开，保证流式与最终排版一致。
+ */
+function splitStreamingMarkdown(text: string): string[] {
+  const out: string[] = []
+  let buf: string[] = []
+  let fence = ''
+  const flush = (): void => {
+    if (buf.length === 0) return
+    const block = buf.join('\n')
+    buf = []
+    if (out.length > 0 && /^\s*(?:[-*+]|\d+[.)]|>|\$\$|\|)/.test(block)) {
+      out[out.length - 1] += `\n\n${block}`
+    } else {
+      out.push(block)
+    }
+  }
+  for (const line of text.split('\n')) {
+    const marker = /^\s*(```|~~~)/.exec(line)
+    if (marker) {
+      if (!fence) fence = marker[1] ?? '```'
+      else if (line.trim().startsWith(fence)) fence = ''
+    }
+    if (!fence && line.trim() === '') {
+      flush()
+      continue
+    }
+    buf.push(line)
+  }
+  flush()
+  return out
+}
+
+/**
+ * 流式回复：和最终轮次共用 markdown 渲染，但按块增量更新。
+ * 之前每 250ms 重解析整段（实测 24k 字符 ≈ 52ms/次）会明显卡顿；
+ * 块级 memo 后每次只需要渲染最后一块，已输出部分不再重算。
  */
 function StreamingReply(): React.JSX.Element | null {
   const text = useStore((s) => s.streamingText)
   // 长输出时 markdown 解析降级为可中断更新：输入/滚动不被解析卡住
   const deferred = useDeferredValue(text)
-  if (!text) return null
+  // 超长代码/文档在流式阶段只显示最新一段，避免每帧重排几十万字符
   const visible = stripStreamingToolBlocks(deferred)
-  // 超长代码/文档在流式阶段只显示最新一段，避免每次更新都重排几十万字符
   const shown =
     visible.length > 12_000 ? `…（前文较长，仅显示最新内容）\n\n${visible.slice(-12_000)}` : visible
+  const blocks = useMemo(
+    () => splitStreamingMarkdown(stripCitationMarkers(stripToolArtifacts(shown))),
+    [shown]
+  )
+  if (!text) return null
   return (
     <div className="flex flex-col gap-2">
-      {shown ? (
-        <TurnBody text={shown} streaming />
+      {blocks.length > 0 ? (
+        <div className="markdown-body">
+          {blocks.map((block, index) => (
+            <MarkdownContent key={index} text={block} streaming />
+          ))}
+        </div>
       ) : (
         /lidow/i.test(text) && (
           <div className="text-[12px]" style={{ color: 'var(--text-hint)' }}>
@@ -526,7 +587,11 @@ function LiveThinkingPanel({ streaming }: { streaming: boolean }): React.JSX.Ele
   return <ThinkingBlock text={text} streaming={streaming} />
 }
 
-function TurnItem({
+/**
+ * 单轮消息。memo + store 的 mergeTurns（复用未变化的 turn 对象）配合：
+ * 会话刷新时只有真正变化的那一轮会重新渲染，长会话/工具轮不再整列表重绘。
+ */
+const TurnItem = memo(function TurnItem({
   turn,
   showActions,
   showAssistantActions,
@@ -536,13 +601,13 @@ function TurnItem({
   showActions?: boolean
   /** 助手操作栏只在整个任务结束后显示一次，工具中间轮次不再重复 */
   showAssistantActions?: boolean
-  onEditUser?: (text: string) => void
+  onEditUser?: (text: string, turnId: string) => void
 }): React.JSX.Element {
   const isUser = turn.role === 'user'
   const isSystem = turn.role === 'system'
   const [copied, setCopied] = useState(false)
   // 助手轮次里的工具调用块/复制下载残留不算正文；用户轮次保持原文
-  const actionText = isUser ? turn.text : stripToolArtifacts(turn.text).trim()
+  const actionText = isUser ? turn.text : visibleTextOf(turn)
 
   const copy = (): void => {
     void api.copyText(actionText).then((ok) => {
@@ -605,7 +670,7 @@ function TurnItem({
               {copied ? <IconCheck size={13} /> : <IconCopy size={13} />}
             </ActionButton>
             {onEditUser && (
-              <ActionButton title="修改并重新发送" onClick={() => onEditUser(turn.text)}>
+              <ActionButton title="修改并重新发送" onClick={() => onEditUser(turn.text, turn.id)}>
                 <IconEdit size={13} />
               </ActionButton>
             )}
@@ -618,7 +683,7 @@ function TurnItem({
   // status=streaming 且已有工具 = 工具批次正在执行（转圈 + 计时）
   const toolRunning = turn.status === 'streaming' && (turn.toolResults?.length ?? 0) > 0
   // 工具调用块 / 网页复制下载残留不算给用户看的正文；否则会多出一整行空白操作栏
-  const visibleText = stripToolArtifacts(turn.text).trim()
+  const visibleText = visibleTextOf(turn)
   // 只有工具残留、没有可见正文/思考/工具结果的轮次直接不渲染，避免空白间距
   if (turn.text && !visibleText && !turn.think && (turn.toolResults?.length ?? 0) === 0) return <></>
   return (
@@ -641,7 +706,7 @@ function TurnItem({
       )}
     </div>
   )
-}
+})
 
 /** 首次使用引导：由 overlay 注入到 AI 网页里（见 preload/overlay.ts），此处不再实现 */
 
@@ -823,7 +888,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
   const modelRef = useRef<HTMLDivElement | null>(null)
   const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const [editingTurnId, setEditingTurnId] = useState<string | null>(null)
-  const [earlyExpanded, setEarlyExpanded] = useState(false)
   const [composerHeight, setComposerHeight] = useState(0)
   const resizeStart = useRef<{ y: number; h: number } | null>(null)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
@@ -1195,7 +1259,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       let chosen = ''
       for (let i = group.length - 1; i >= 0; i--) {
         const t = group[i]
-        if (t && t.role === 'assistant' && stripToolArtifacts(t.text).trim()) {
+        if (t && t.role === 'assistant' && visibleTextOf(t)) {
           chosen = t.id
           break
         }
@@ -1356,7 +1420,7 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     }
   }
 
-  const startEdit = (text: string, turnId: string): void => {
+  const startEdit = useCallback((text: string, turnId: string): void => {
     setInput(text)
     setEditingTurnId(turnId)
     requestAnimationFrame(() => {
@@ -1365,11 +1429,10 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
       el.focus()
       el.setSelectionRange(text.length, text.length)
     })
-  }
+  }, [])
 
   useEffect(() => {
     setEditingTurnId(null)
-    setEarlyExpanded(false)
   }, [activeSession?.id])
 
   const submit = async (): Promise<void> => {
@@ -1500,11 +1563,8 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
     if (slashOpen) slashSelectedRef.current?.scrollIntoView({ block: 'nearest' })
   }, [slashOpen, slashIndex, slashFiltered.length])
 
-  const totalTextLen = useMemo(() => turns.reduce((n, t) => n + t.text.length, 0), [turns])
-  // 上下文变长后默认折叠较早轮次，只保留最近 6 条，避免纯净模式无限拉长
-  const shouldFoldEarly = turns.length > 8 || totalTextLen > 8_000
-  const keepRecent = 6
-  const visibleTurns = shouldFoldEarly && !earlyExpanded ? turns.slice(-keepRecent) : turns
+  // 不再按长度自动折叠历史：长回复落盘时突然收起会让用户以为刚生成的正文「折叠没了」。
+  // 性能交给每轮的 content-visibility（.turn-row），屏幕外的轮次不参与布局/绘制。
   const empty = turns.length === 0 && !hasStreaming
 
   return (
@@ -1639,34 +1699,15 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
             </div>
           )}
 
-          {shouldFoldEarly && turns.length > keepRecent && (
-            <div className="flex justify-center">
-              <button
-                className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-                style={{
-                  background: 'var(--surface-sunken)',
-                  color: 'var(--text-dim)',
-                  border: '1px solid var(--border)'
-                }}
-                onClick={() => setEarlyExpanded((v) => !v)}
-              >
-                <IconChevronDown
-                  size={12}
-                  className={`transition-transform duration-[150ms] ${earlyExpanded ? 'rotate-180' : ''}`}
-                />
-                {earlyExpanded ? '收起较早消息' : `展开之前 ${turns.length - keepRecent} 条消息`}
-                <span style={{ color: 'var(--text-hint)' }}>· 上下文较长</span>
-              </button>
+          {turns.map((t) => (
+            <div key={t.id} className="turn-row">
+              <TurnItem
+                turn={t}
+                showActions={mode === 'pure'}
+                showAssistantActions={mode === 'pure' && assistantActionIds.has(t.id)}
+                onEditUser={startEdit}
+              />
             </div>
-          )}
-          {visibleTurns.map((t) => (
-            <TurnItem
-              key={t.id}
-              turn={t}
-              showActions={mode === 'pure'}
-              showAssistantActions={mode === 'pure' && assistantActionIds.has(t.id)}
-              onEditUser={(text) => startEdit(text, t.id)}
-            />
           ))}
           {waiting && <PendingIndicator />}
           {sendWaiting && (
@@ -1809,26 +1850,6 @@ export function ChatPanel({ mode = 'pure' }: { mode?: 'pure' | 'workbench' }): R
 
       {/* 输入区 */}
       <div className="relative shrink-0 px-6 pb-4 pt-1">
-        {shouldFoldEarly && turns.length > keepRecent && (
-          <div className="mx-auto mb-2 flex max-w-[780px] justify-center">
-            <button
-              className="flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] transition-colors duration-[130ms] hover:bg-[var(--bg-hover)]"
-              style={{
-                background: 'var(--surface-sunken)',
-                color: 'var(--text-dim)',
-                border: '1px solid var(--border)'
-              }}
-              onClick={() => setEarlyExpanded((v) => !v)}
-            >
-              <IconChevronDown
-                size={12}
-                className={`transition-transform duration-[150ms] ${earlyExpanded ? 'rotate-180' : ''}`}
-              />
-              {earlyExpanded ? '收起较早消息' : `已折叠之前 ${turns.length - keepRecent} 条消息`}
-              <span style={{ color: 'var(--text-hint)' }}>· 上下文较长</span>
-            </button>
-          </div>
-        )}
         <div
           data-composer="true"
           className="relative mx-auto flex max-w-[780px] flex-col rounded-[var(--r-xl)] transition-colors duration-[160ms]"

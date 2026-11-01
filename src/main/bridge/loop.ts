@@ -1229,8 +1229,8 @@ export class AgentLoop {
     let nudges = 0
     let settled = false
 
-    // 流式上报节流：net hook 每 80ms 一条全量文本，长回复时 IPC 序列化
-    // + renderer 全量重渲染会打满主线程（用户实测卡死）。合并到 250ms 一条。
+    // 流式上报节流：net hook 每 80ms 一条全量文本。渲染层现在按 markdown 块增量更新，
+    // 合并到 120ms 一条即可保持顺滑，又不会让 IPC/React 处理频率过高。
     let pendingFlush: NodeJS.Timeout | null = null
     let latestPartial = ''
     let latestTps = 0
@@ -1312,7 +1312,7 @@ export class AgentLoop {
     const chunkPromise = this.deps.awaitReply(sessionId, (partial, tps) => {
       latestPartial = partial
       latestTps = tps
-      if (!pendingFlush) pendingFlush = setTimeout(flushChunk, 250)
+      if (!pendingFlush) pendingFlush = setTimeout(flushChunk, 120)
       lastLen = partial.length
       lastTs = Date.now()
       // 收到新内容 = 流还活着，重置静默计时并清零催继续计数

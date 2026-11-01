@@ -668,6 +668,14 @@ textarea.field {
 /* ============================================================================
    Markdown 正文
    ========================================================================== */
+/* 长会话：屏幕外的轮次跳过布局/绘制。
+   替代此前「超过 8 轮/8000 字自动折叠」的做法——长回复落盘时突然收起历史
+   会让用户以为刚生成的正文被折叠掉了。contain-intrinsic-size 的 auto
+   会记住上次渲染高度，滚动条不会乱跳。 */
+.turn-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+}
 .markdown-body {
   color: var(--text-body);
   font-size: 13.5px;

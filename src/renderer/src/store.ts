@@ -22,7 +22,9 @@ import type {
   AuditEntry,
   MarketPlugin,
   McpServerConfig,
-  ChatAttachment
+  ChatAttachment,
+  ChatTurn,
+  ToolResult
 } from '@shared/types'
 
 /** 右侧工具侧栏的面板（对齐 Qoder：文件 / 任务 / 终端 / 审阅） */
@@ -245,6 +247,102 @@ interface LidowState {
 let bootPromise: Promise<void> | null = null
 /** 会话/标签切换序号：异步 getSession 返回时用来丢弃过期响应 */
 let sessionSeq = 0
+
+/** 工具结果内容签名：工具卡里的内容在完成后不会再变，用来判断能否复用旧轮次对象 */
+function toolResultSig(r: ToolResult): string {
+  const d = r.display
+  let displaySize = 0
+  if (d?.kind === 'diff') displaySize = d.patch.length
+  else if (d?.kind === 'terminal') displaySize = d.output.length
+  else if (d?.kind === 'text') displaySize = d.text.length
+  else if (d?.kind === 'table') displaySize = d.rowCount
+  else if (d?.kind === 'files') displaySize = d.files.length
+  else if (d?.kind === 'image' || d?.kind === 'binary') displaySize = d.size
+  return `${r.callId}|${r.name}|${r.ok ? 1 : 0}|${r.output.length}|${d?.kind ?? ''}|${displaySize}`
+}
+
+/** 轮次内容签名：会话刷新后用它判断这一轮是否真的变了 */
+function turnSig(t: ChatTurn): string {
+  return [
+    t.id,
+    t.role,
+    t.status,
+    t.text,
+    t.think ?? '',
+    t.tps ?? 0,
+    t.attachments?.length ?? 0,
+    (t.toolResults ?? []).map(toolResultSig).join(',')
+  ].join(' ')
+}
+
+/**
+ * 会话刷新时复用未变化的轮次对象：TurnItem / TurnBody 都是 memo，
+ * 对象身份不变就不会重新渲染（长会话里工具轮每次刷新都整列表重绘会卡）。
+ */
+function mergeTurns(prev: ChatTurn[], next: ChatTurn[]): ChatTurn[] {
+  if (prev.length === 0) return next
+  const byId = new Map(prev.map((t) => [t.id, t]))
+  let changed = next.length !== prev.length
+  const merged = next.map((turn) => {
+    const old = byId.get(turn.id)
+    if (old && turnSig(old) === turnSig(turn)) return old
+    changed = true
+    return turn
+  })
+  return changed ? merged : prev
+}
+
+/**
+ * session-updated 合并：工具轮会在极短时间内连发多次，每次都整份读取会话
+ * （长任务会话可达 1MB+）会明显卡顿。合并成最多 150ms 一次，只取最新状态。
+ */
+let sessionSyncTimer: ReturnType<typeof setTimeout> | null = null
+let sessionSyncSid = ''
+let sessionSyncStream = ''
+
+function scheduleSessionSync(
+  sessionId: string,
+  streamAtEvent: string,
+  get: () => LidowState,
+  set: (partial: Partial<LidowState>) => void
+): void {
+  sessionSyncSid = sessionId
+  sessionSyncStream = streamAtEvent
+  if (sessionSyncTimer) return
+  sessionSyncTimer = setTimeout(() => {
+    sessionSyncTimer = null
+    const sid = sessionSyncSid
+    const streamAt = sessionSyncStream
+    void api
+      .getSession(sid)
+      .then((sess) => {
+        if (!sess || sess.id !== get().activeSession?.id) return
+        const st = get()
+        // 等待期间如果又有新片段进来，说明下一轮已经开始，不能把它清掉
+        const streamSettled = st.streamingText === streamAt
+        const last = sess.turns[sess.turns.length - 1]
+        set({
+          // 复用没变化的轮次对象，避免每次刷新把整个消息列表重渲染
+          activeSession: { ...sess, turns: mergeTurns(st.activeSession?.turns ?? [], sess.turns) },
+          ...(streamSettled ? { streamingText: '', streamingTps: 0, thinkingText: '' } : {}),
+          // 回复轮已落盘（assistant），清掉「等待首包」加载态
+          ...(last?.role === 'assistant' ? { pendingReplySessionId: '' } : {})
+        })
+      })
+      .catch(() => {
+        // 会话文件读不到：兜底清掉流式态，避免一直停在「生成中」
+        if (get().streamingText === streamAt) {
+          set({
+            streamingText: '',
+            streamingTps: 0,
+            thinkingText: '',
+            pendingReplySessionId: ''
+          })
+        }
+      })
+    void get().refreshSessions().catch(() => undefined)
+  }, 150)
+}
 
 export const useStore = create<LidowState>((set, get) => ({
   booted: false,
@@ -1222,37 +1320,15 @@ export const useStore = create<LidowState>((set, get) => ({
         break
       }
       case 'session-updated': {
+        // 后台会话（子代理/续接）落盘不刷新当前视图，避免白读整份会话
+        if (e.sessionId !== get().activeSession?.id) {
+          void get().refreshSessions().catch(() => undefined)
+          break
+        }
         // 不能先清空流式文本再去拉会话：两次 set 之间内容会先少一块，
         // 长回复收尾时表现为「整段消失一帧再重新出现」。拉到落盘后的会话后
         // 一次性替换，流式块与最终轮次在同一帧交接（对齐 cuckoo 的收尾顺序）。
-        const streamAtEvent = get().streamingText
-        void api
-          .getSession(e.sessionId)
-          .then((sess) => {
-            if (!sess || sess.id !== get().activeSession?.id) return
-            const st = get()
-            // 等待期间如果又有新片段进来，说明下一轮已经开始，不能把它清掉
-            const streamSettled = st.streamingText === streamAtEvent
-            const last = sess.turns[sess.turns.length - 1]
-            set({
-              activeSession: sess,
-              ...(streamSettled ? { streamingText: '', streamingTps: 0, thinkingText: '' } : {}),
-              // 回复轮已落盘（assistant），清掉「等待首包」加载态
-              ...(last?.role === 'assistant' ? { pendingReplySessionId: '' } : {})
-            })
-          })
-          .catch(() => {
-            // 会话文件读不到：兜底清掉流式态，避免一直停在「生成中」
-            if (get().streamingText === streamAtEvent) {
-              set({
-                streamingText: '',
-                streamingTps: 0,
-                thinkingText: '',
-                pendingReplySessionId: ''
-              })
-            }
-          })
-        void get().refreshSessions().catch(() => undefined)
+        scheduleSessionSync(e.sessionId, get().streamingText, get, set)
         break
       }
       case 'web-session-activated': {
